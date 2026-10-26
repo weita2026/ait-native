@@ -1,4 +1,5 @@
 export const LANGUAGE_BINDING_CONTRACT = "ait.language.binding.v1";
+// Legacy chat identifiers remain available for source compatibility only.
 export const AGENT_CAPABILITIES_CONTRACT =
   "ait.agent.worker.capabilities.v1";
 export const SUPPORTED_TRANSPORTS = Object.freeze([

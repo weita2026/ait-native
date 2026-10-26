@@ -12,6 +12,28 @@ use tower::ServiceExt;
 
 static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+#[path = "tests/snapshot_capture.rs"]
+mod snapshot_capture;
+
+#[path = "tests/actor_plan.rs"]
+mod actor_plan;
+#[path = "tests/actor_plan_pair.rs"]
+mod actor_plan_pair;
+#[path = "tests/actor_registration.rs"]
+mod actor_registration;
+#[path = "tests/actor_workflow.rs"]
+mod actor_workflow;
+#[path = "tests/review_actors.rs"]
+mod review_actors;
+
+#[path = "tests/workflow_upgrade.rs"]
+mod workflow_upgrade;
+
+#[path = "tests/repository_scope.rs"]
+mod repository_scope;
+#[path = "tests/workflow_package.rs"]
+mod workflow_package;
+
 struct TestDirectory(PathBuf);
 
 impl TestDirectory {
@@ -60,6 +82,7 @@ fn state_from_operational(operational: Arc<OperationalBinaryRuntime>) -> ServerS
         workflow_service: binary.workflow,
         repository_service: binary.repository,
         operational_binary: operational,
+        startup_progress: Default::default(),
         zstd_pack_upload_admission: Arc::new(tokio::sync::Semaphore::new(
             NATIVE_ZSTD_BULK_UPLOAD_CONCURRENCY,
         )),
@@ -195,6 +218,10 @@ async fn fresh_install_serves_fixed_numeric_repository_authorities() {
     let health = response_json(health).await;
     assert_eq!(health["ready"], true);
     assert_eq!(health["authority_backend"], "binary_v0");
+    assert_eq!(
+        health["operational_capabilities"]["review_actor_identity_v1"],
+        true
+    );
     assert_eq!(health["repository_identity"], "repository_index");
     assert_eq!(
         health["operational_capabilities"]["runner_contracts"],
@@ -226,6 +253,10 @@ async fn fresh_install_serves_fixed_numeric_repository_authorities() {
     assert_eq!(handshake.status(), StatusCode::OK);
     let handshake = response_json(handshake).await;
     assert_eq!(handshake["package_version"], json!("1.1.4"));
+    assert_eq!(
+        handshake["operational_capabilities"]["review_actor_identity_v1"],
+        true
+    );
     assert_eq!(
         handshake["operational_capabilities"]["runner_contracts"],
         json!(["ait.runner.native-job.v3"])
@@ -1000,7 +1031,11 @@ async fn numeric_repository_queue_routes_serve_the_existing_binary_projection() 
 #[tokio::test]
 async fn numeric_repository_route_owns_plan_linked_task_identity() {
     let directory = TestDirectory::new("numeric-plan-task");
-    let router = build_router_with_state(fresh_state(directory.path()));
+    let state = fresh_state(directory.path());
+    let (_, db) = state.operational_binary.repository_db(0).unwrap();
+    let actor=ait_server_core::foundation::workflow_binary_v0_adapter::BinaryDbServerWorkflowV0Store::new_frozen(db)
+        .resolve_user_actor(&ait_server_core::foundation::workflow_binary_v0_adapter::UserActorIdentity::new("tester","tester@example.test").unwrap()).unwrap();
+    let router = build_router_with_state(state);
 
     let plan = router
         .clone()
@@ -1008,6 +1043,7 @@ async fn numeric_repository_route_owns_plan_linked_task_identity() {
             "/v1/native/repository-authorities/0/sprints",
             json!({
                 "title": "Numeric Repository Plan",
+                "actor_key_index":actor,
                 "status": "draft",
                 "summary": "Route authority is the numeric Repository PK",
                 "artifact_path": "docs/sprints/numeric.md",
@@ -1036,6 +1072,7 @@ async fn numeric_repository_route_owns_plan_linked_task_identity() {
             "/v1/native/repository-authorities/0/tasks",
             json!({
                 "title": "Numeric Repository Task",
+                "actor_key_index":actor,
                 "intent": "Prove route-scoped Plan linkage",
                 "plan_id": "PR-0",
                 "origin_plan_revision_id": "plan-revision:0",

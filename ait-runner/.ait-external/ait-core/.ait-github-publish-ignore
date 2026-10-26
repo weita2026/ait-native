@@ -1,0 +1,28 @@
+# GitHub source publish surface exclusions.
+# Consumed by scripts/github_publish.sh when running `add` without explicit paths.
+
+# Governance and planning authority
+AGENTS.md
+docs/plan.md
+docs/product_plan.md
+docs/market_strategy.md
+docs/engineering_plan.md
+docs/financial_plan.md
+docs/legal_plan.md
+docs/ait.md
+docs/ait_solo_local.md
+docs/ait_solo_remote.md
+docs/ait_team_remote.md
+docs/sprints/**
+
+# ait-web
+src/ait_web/**
+tests/ait_web/**
+docs/ait_web*.md
+docs/ait_auth_and_login_boundary.md
+docs/ait_agent_runtime.md
+docs/server_postgres_cutover_runbook.md
+
+# site
+site/**
+deploy/site/**

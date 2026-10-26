@@ -26,11 +26,11 @@ run_fmt() {
 }
 
 run_clippy() {
-  cargo clippy --workspace --all-targets -- -D warnings
+  cargo clippy --locked --workspace --all-targets -- -D warnings
 }
 
 run_tests() {
-  cargo test --workspace --all-targets
+  cargo test --locked --workspace --all-targets
 }
 
 case "${1:-patchset}" in

@@ -3,6 +3,9 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct QueueIndex<'a> {
+    pub(super) patchsets_by_task: HashMap<(String, String), Vec<&'a JsonMap<String, JsonValue>>>,
+    pub(super) reviews_by_patchset: HashMap<String, Vec<&'a JsonMap<String, JsonValue>>>,
+    pub(super) review_requests_by_patchset: HashMap<String, Vec<&'a JsonMap<String, JsonValue>>>,
     unique_change_key_by_short_id: HashMap<String, String>,
     pub(super) patchsets_by_change_key: HashMap<String, Vec<&'a JsonMap<String, JsonValue>>>,
     pub(super) reviews_by_change_key: HashMap<String, Vec<&'a JsonMap<String, JsonValue>>>,
@@ -35,6 +38,16 @@ impl<'a> QueueIndex<'a> {
             }
         }
         for patchset in input.patchsets.iter() {
+            if let (Some(repo), Some(task)) = (
+                object_text(patchset, "repo_name"),
+                object_text(patchset, "task_id"),
+            ) {
+                index
+                    .patchsets_by_task
+                    .entry((repo, task))
+                    .or_default()
+                    .push(patchset);
+            }
             if let Some(change_key) = index.change_key(patchset) {
                 index
                     .patchsets_by_change_key
@@ -47,6 +60,13 @@ impl<'a> QueueIndex<'a> {
             patchsets.sort_by_key(|left| patchset_number(left));
         }
         for review in input.reviews.iter() {
+            if let Some(id) = object_text(review, "patchset_id") {
+                index
+                    .reviews_by_patchset
+                    .entry(id)
+                    .or_default()
+                    .push(review);
+            }
             if let Some(change_key) = index.change_key(review) {
                 index
                     .reviews_by_change_key
@@ -56,6 +76,13 @@ impl<'a> QueueIndex<'a> {
             }
         }
         for request in input.review_requests.iter() {
+            if let Some(id) = object_text(request, "patchset_id") {
+                index
+                    .review_requests_by_patchset
+                    .entry(id)
+                    .or_default()
+                    .push(request);
+            }
             if let Some(change_key) = index.change_key(request) {
                 index
                     .review_requests_by_change_key
@@ -114,6 +141,9 @@ impl<'a> QueueIndex<'a> {
         change: &JsonMap<String, JsonValue>,
     ) -> Option<&'a JsonMap<String, JsonValue>> {
         let change_key = self.change_key(change)?;
+        if change.get("current_patchset_id") == Some(&JsonValue::Null) {
+            return None;
+        }
         if let Some(current_id) = object_text(change, "current_patchset_id") {
             if let Some(patchset) =
                 self.patchsets_by_change_key
@@ -129,6 +159,22 @@ impl<'a> QueueIndex<'a> {
         self.patchsets_by_change_key
             .get(&change_key)?
             .last()
+            .copied()
+    }
+
+    pub(super) fn current_task_patchset(
+        &self,
+        task: &JsonMap<String, JsonValue>,
+    ) -> Option<&'a JsonMap<String, JsonValue>> {
+        let key = (
+            object_text(task, "repo_name")?,
+            object_text(task, "task_id")?,
+        );
+        let id = object_text(task, "current_patchset_id")?;
+        self.patchsets_by_task
+            .get(&key)?
+            .iter()
+            .find(|row| object_text(row, "patchset_id").as_deref() == Some(id.as_str()))
             .copied()
     }
 }

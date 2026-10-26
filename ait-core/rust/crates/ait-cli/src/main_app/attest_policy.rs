@@ -14,23 +14,20 @@ fn run_attest(repo: RepoRuntime, command: AttestCommand) -> Result<(), String> {
                 args.remote.as_deref(),
                 None,
             )?;
-            emit_result(
-                "ait-cli attest put",
-                &payload,
-                args.json,
-                &["patchset_id", "author_mode", "tests", "lint"],
-            )?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!("{}", crate::binding_output::format_attest_put(&payload)?);
+            }
             Ok(())
         }
         AttestCommand::Show(args) => {
-            let payload =
-                attest_show_cmd(&repo, &args.patchset_id, args.remote.as_deref(), None)?;
-            emit_result(
-                "ait-cli attest show",
-                &payload,
-                args.json,
-                &["attestation_id", "patchset_id", "author_mode"],
-            )?;
+            let payload = attest_show_cmd(&repo, &args.patchset_id, args.remote.as_deref(), None)?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!("{}", crate::binding_output::format_attest_show(&payload)?);
+            }
             Ok(())
         }
     }
@@ -40,12 +37,11 @@ fn run_policy(repo: RepoRuntime, command: PolicyCommand) -> Result<(), String> {
     match command {
         PolicyCommand::Eval(args) => {
             let payload = policy_eval(&repo, &args.patchset_id, args.remote.as_deref(), None)?;
-            emit_result(
-                "ait-cli policy eval",
-                &payload,
-                args.json,
-                &["patchset_id", "lane", "decision", "evaluated_at"],
-            )?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!("{}", crate::binding_output::format_policy_eval(&payload)?);
+            }
             Ok(())
         }
         PolicyCommand::Show(args) => {
@@ -62,12 +58,11 @@ fn run_policy(repo: RepoRuntime, command: PolicyCommand) -> Result<(), String> {
                 args.remote.as_deref(),
                 None,
             )?;
-            emit_result(
-                "ait-cli policy waive",
-                &payload,
-                args.json,
-                &["waiver_id", "patchset_id", "rule_name", "expires_at"],
-            )?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!("{}", crate::binding_output::format_policy_waive(&payload)?);
+            }
             Ok(())
         }
     }

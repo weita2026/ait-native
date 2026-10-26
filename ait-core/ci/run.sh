@@ -38,6 +38,8 @@ export TMPDIR="$owned_root/tmp"
 export CARGO_TARGET_DIR="$owned_root/cargo-target"
 export CARGO_BUILD_BUILD_DIR="$owned_root/cargo-build/{workspace-path-hash}"
 export CARGO_INCREMENTAL=0
+# CI links executable binding tests, even if its caller built an extension.
+unset PYO3_BUILD_EXTENSION_MODULE
 
 cd "$repo_root"
 
@@ -71,6 +73,12 @@ run_patchset_tests() {
     --lib \
     --test server_source_ownership \
     --test patchset_ci_runner \
+    --test workflow_recovery_cli \
+    --test snapshot_task_binding_cli \
+    --test workflow_friction_cli \
+    --test plan_cli \
+    --test workflow_package_frozen_candidate_cli \
+    --test workflow_package_accepted_retry_cli \
     --no-run
 
   cargo test \
@@ -95,7 +103,13 @@ run_patchset_tests() {
     -p ait-core \
     -p ait-cli \
     --test server_source_ownership \
-    --test patchset_ci_runner
+    --test patchset_ci_runner \
+    --test workflow_recovery_cli \
+    --test snapshot_task_binding_cli \
+    --test workflow_friction_cli \
+    --test plan_cli \
+    --test workflow_package_frozen_candidate_cli \
+    --test workflow_package_accepted_retry_cli
 
   # Markdown is Plan lineage and is intentionally absent from remote Snapshot
   # materialization. Canonical source still carries the sole protected authority.

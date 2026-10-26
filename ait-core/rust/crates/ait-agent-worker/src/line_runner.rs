@@ -68,7 +68,6 @@ where
             state_path: shared.paths.sync_state_path.clone(),
             runtime_target: json!({
                 "mode": target.mode.as_str(),
-                "workflow_mode": target.workflow_mode.as_str(),
                 "repo_name": target.repo_name,
                 "repo_root": target.repo_root.to_string_lossy().to_string(),
                 "remote_name": target.remote_name,
@@ -371,7 +370,7 @@ mod tests {
         std::fs::create_dir_all(temp.path().join(".ait/agent-runtime")).expect("runtime dir");
         std::fs::write(
             temp.path().join(".ait/config.json"),
-            r#"{"repo_name":"fixture","workflow_mode":"solo_remote","default_remote":"origin","remotes":{"origin":{"url":"http://127.0.0.1:8088"}}}"#,
+            r#"{"repo_name":"fixture","default_remote":"origin","remotes":{"origin":{"url":"http://127.0.0.1:8088"}}}"#,
         )
         .expect("repo config");
         resolve_agent_worker_config(AgentWorkerConfigInput {
@@ -463,7 +462,7 @@ mod tests {
         assert_eq!(calls[0]["channel_secret"], "line-channel-secret");
         assert_eq!(calls[0]["channel_access_token"], "line-access-secret");
         assert_eq!(calls[0]["webhook_path"], "/callback");
-        assert_eq!(calls[0]["runtime_target"]["mode"], "remote");
+        assert_eq!(calls[0]["runtime_target"]["mode"], "local");
         assert_eq!(calls[0]["runtime_target"]["repo_name"], "fixture");
         assert_eq!(calls[0]["timeout_seconds"], 15.0);
         assert_eq!(calls[0]["local_reply"]["model"], "fixture-model");

@@ -66,6 +66,7 @@ displaydoc	0.2.7	MIT OR Apache-2.0	Jane Lusby <jlusby@yaah.dev>	https://github.c
 equivalent	1.0.2	Apache-2.0 OR MIT		https://github.com/indexmap-rs/equivalent
 errno	0.3.14	MIT OR Apache-2.0	Chris Wong <lambda.fairy@gmail.com>, Dan Gohman <dev@sunfishcode.online>	https://github.com/lambda-fairy/rust-errno
 fastrand	2.5.0	Apache-2.0 OR MIT	Stjepan Glavina <stjepang@gmail.com>	https://github.com/smol-rs/fastrand
+filetime	0.2.29	MIT/Apache-2.0	Alex Crichton <alex@alexcrichton.com>	https://github.com/alexcrichton/filetime
 find-msvc-tools	0.1.9	MIT OR Apache-2.0		https://github.com/rust-lang/cc-rs
 flate2	1.1.9	MIT OR Apache-2.0	Alex Crichton <alex@alexcrichton.com>, Josh Triplett <josh@joshtriplett.org>	https://github.com/rust-lang/flate2-rs
 form_urlencoded	1.2.2	MIT OR Apache-2.0	The rust-url developers	https://github.com/servo/rust-url
@@ -143,9 +144,9 @@ reqwest	0.12.28	MIT OR Apache-2.0	Sean McArthur <sean@seanmonstar.com>	https://g
 ring	0.17.14	Apache-2.0 AND ISC		https://github.com/briansmith/ring
 rustc-hash	2.1.3	Apache-2.0 OR MIT	The Rust Project Developers	https://github.com/rust-lang/rustc-hash
 rustix	1.1.4	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT	Dan Gohman <dev@sunfishcode.online>, Jakub Konka <kubkon@jakubkonka.com>	https://github.com/bytecodealliance/rustix
-rustls	0.23.42	Apache-2.0 OR ISC OR MIT		https://github.com/rustls/rustls
+rustls	0.23.45	Apache-2.0 OR ISC OR MIT		https://github.com/rustls/rustls
 rustls-pki-types	1.15.1	MIT OR Apache-2.0		https://github.com/rustls/pki-types
-rustls-webpki	0.103.13	ISC		https://github.com/rustls/webpki
+rustls-webpki	0.103.15	ISC		https://github.com/rustls/webpki
 rustversion	1.0.23	MIT OR Apache-2.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/rustversion
 ryu	1.0.23	Apache-2.0 OR BSL-1.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/ryu
 serde	1.0.229	MIT OR Apache-2.0	Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>	https://github.com/serde-rs/serde
@@ -169,6 +170,7 @@ syn	2.0.119	MIT OR Apache-2.0	David Tolnay <dtolnay@gmail.com>	https://github.co
 syn	3.0.3	MIT OR Apache-2.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/syn
 sync_wrapper	1.0.2	Apache-2.0	Actyx AG <developer@actyx.io>	https://github.com/Actyx/sync_wrapper
 synstructure	0.13.2	MIT	Nika Layzell <nika@thelayzells.com>	https://github.com/mystor/synstructure
+tar	0.4.46	MIT OR Apache-2.0	Alex Crichton <alex@alexcrichton.com>	https://github.com/composefs/tar-rs
 tempfile	3.27.0	MIT OR Apache-2.0	Steven Allen <steven@stebalien.com>, The Rust Project Developers, Ashley Mannix <ashleymannix@live.com.au>, Jason White <me@jasonwhite.io>	https://github.com/Stebalien/tempfile
 thiserror	2.0.19	MIT OR Apache-2.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/thiserror
 thiserror-impl	2.0.19	MIT OR Apache-2.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/thiserror
@@ -2548,6 +2550,7 @@ Used by:
 - bzip2 0.4.4 (LICENSE-MIT)
 - cc 1.4.0 (LICENSE-MIT)
 - cfg-if 1.0.4 (LICENSE-MIT)
+- filetime 0.2.29 (LICENSE-MIT)
 - find-msvc-tools 0.1.9 (LICENSE-MIT)
 - jobserver 0.1.35 (LICENSE-MIT)
 - js-sys 0.3.103 (LICENSE-MIT)
@@ -3888,7 +3891,7 @@ DEALINGS IN THE SOFTWARE.
 
 --- SHA-256 5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a ---
 Used by:
-- rustls-webpki 0.103.13 (LICENSE)
+- rustls-webpki 0.103.15 (LICENSE)
 
 Except as otherwise noted, this project is licensed under the following
 (ISC-style) terms:
@@ -4856,7 +4859,7 @@ SOFTWARE.
 --- SHA-256 709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c ---
 Used by:
 - hyper-rustls 0.27.9 (LICENSE-MIT)
-- rustls 0.23.42 (LICENSE-MIT)
+- rustls 0.23.45 (LICENSE-MIT)
 
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
 
@@ -5207,7 +5210,7 @@ DEALINGS IN THE SOFTWARE.
 --- SHA-256 7cfafc877eccc46c0e346ccbaa5c51bb6b894d2b818e617d970211e232785ad4 ---
 Used by:
 - hyper-rustls 0.27.9 (LICENSE-ISC)
-- rustls 0.23.42 (LICENSE-ISC)
+- rustls 0.23.45 (LICENSE-ISC)
 
 ISC License (ISC)
 Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
@@ -6127,6 +6130,37 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
+--- SHA-256 8ca6b96cea9e67c6c5c63f452c31bd396db8bd2406231fdea5d48ef462b48077 ---
+Used by:
+- tar 0.4.46 (LICENSE-MIT)
+
+Copyright (c) The tar-rs Project Contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
 --- SHA-256 8ce0830173fdac609dfb4ea603fdc002c2f4af0dc9b1a005653f5da9cf534b18 ---
 Used by:
 - slab 0.4.12 (LICENSE)
@@ -6852,6 +6886,7 @@ Used by:
 - equivalent 1.0.2 (LICENSE-APACHE)
 - errno 0.3.14 (LICENSE-APACHE)
 - fastrand 2.5.0 (LICENSE-APACHE)
+- filetime 0.2.29 (LICENSE-APACHE)
 - find-msvc-tools 0.1.9 (LICENSE-APACHE)
 - flate2 1.1.9 (LICENSE-APACHE)
 - form_urlencoded 1.2.2 (LICENSE-APACHE)
@@ -6875,11 +6910,12 @@ Used by:
 - regex-automata 0.4.16 (LICENSE-APACHE)
 - regex-syntax 0.8.11 (LICENSE-APACHE)
 - rustix 1.1.4 (LICENSE-APACHE)
-- rustls 0.23.42 (LICENSE-APACHE)
+- rustls 0.23.45 (LICENSE-APACHE)
 - similar 2.7.0 (LICENSE)
 - smallvec 1.15.2 (LICENSE-APACHE)
 - socket2 0.6.5 (LICENSE-APACHE)
 - stable_deref_trait 1.2.1 (LICENSE-APACHE)
+- tar 0.4.46 (LICENSE-APACHE)
 - tempfile 3.27.0 (LICENSE-APACHE)
 - url 2.5.8 (LICENSE-APACHE)
 - version_check 0.9.5 (LICENSE-APACHE)

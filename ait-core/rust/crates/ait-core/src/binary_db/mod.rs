@@ -20,6 +20,8 @@ mod fsync_policy;
 mod identities;
 mod locks;
 mod paths;
+#[cfg(test)]
+pub(crate) mod read_profile;
 mod read_txn;
 pub mod remote;
 mod schema_registry;

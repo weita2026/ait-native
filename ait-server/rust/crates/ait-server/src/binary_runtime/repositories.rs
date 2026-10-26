@@ -60,7 +60,12 @@ impl RoutedBinaryNativeRepositoryService {
             .runtime
             .repository_native_service(index)
             .map_err(map_binary_error)?;
-        Ok((index, entry, service))
+        let namespace = namespace_text(entry.record.namespace_ascii);
+        Ok((
+            index,
+            entry,
+            service.with_snapshot_capture_authority(index, namespace),
+        ))
     }
 
     fn project(

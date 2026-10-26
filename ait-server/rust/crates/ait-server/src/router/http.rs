@@ -99,11 +99,21 @@ fn parse_suffixed_tail(tail: &str, suffix: &str, context: &str) -> Result<String
 }
 
 fn release_server_state(config: &ServerBinaryLifecycleConfig) -> ServerState {
-    let operational_binary = Arc::new(
-        OperationalBinaryRuntime::ensure_from_config(config).unwrap_or_else(|error| {
-            panic!("ait-server Binary DB lifecycle validation failed: {error}")
-        }),
-    );
+    release_server_state_with_admitter(
+        config,
+        OperationalBinaryRuntime::ensure_from_config,
+        Default::default(),
+    )
+}
+
+fn release_server_state_with_admitter(
+    config: &ServerBinaryLifecycleConfig,
+    admit: impl FnOnce(&ServerBinaryLifecycleConfig) -> Result<OperationalBinaryRuntime, String>,
+    startup_progress: crate::startup_router::StartupProgressTracker,
+) -> ServerState {
+    let operational_binary = Arc::new(admit(config).unwrap_or_else(|error| {
+        panic!("ait-server Binary DB lifecycle validation failed: {error}")
+    }));
     let binary = BinaryServingServices::new(operational_binary.clone())
         .unwrap_or_else(|error| panic!("ait-server Binary DB serving services failed: {error}"));
     ServerState {
@@ -112,6 +122,7 @@ fn release_server_state(config: &ServerBinaryLifecycleConfig) -> ServerState {
         workflow_service: binary.workflow,
         repository_service: binary.repository,
         operational_binary,
+        startup_progress,
         zstd_pack_upload_admission: Arc::new(tokio::sync::Semaphore::new(
             NATIVE_ZSTD_BULK_UPLOAD_CONCURRENCY,
         )),
@@ -120,6 +131,23 @@ fn release_server_state(config: &ServerBinaryLifecycleConfig) -> ServerState {
 
 pub fn build_router(config: ServerBinaryLifecycleConfig) -> Router {
     build_router_with_state(release_server_state(&config))
+}
+
+pub fn build_router_with_upgrade_progress(
+    config: ServerBinaryLifecycleConfig,
+    progress: crate::startup_router::StartupProgressTracker,
+) -> Router {
+    let observed = progress.clone();
+    let state = release_server_state_with_admitter(
+        &config,
+        |config| {
+            OperationalBinaryRuntime::ensure_from_config_with_progress(config, move |work| {
+                observed.observe_upgrade_progress(work)
+            })
+        },
+        progress,
+    );
+    build_router_with_state(state)
 }
 
 fn build_router_with_state(state: ServerState) -> Router {
@@ -414,6 +442,23 @@ async fn repository_lifecycle_admission<B>(
 where
     B: Send + 'static,
 {
+    if let Some(tail) = request
+        .uri()
+        .path()
+        .strip_prefix("/v1/native/repository-authorities/")
+    {
+        let segment = tail.split('/').next().unwrap_or_default();
+        if let Some(segment) = repository_segment_for_mutation(segment) {
+            if let Ok(index) = parse_canonical_index(segment, "repository_index") {
+                if let Err(error) = state
+                    .operational_binary
+                    .require_repository_not_excluded(index)
+                {
+                    return map_lifecycle_error(error).into_response();
+                }
+            }
+        }
+    }
     if matches!(
         *request.method(),
         Method::GET | Method::HEAD | Method::OPTIONS

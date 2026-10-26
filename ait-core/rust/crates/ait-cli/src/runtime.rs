@@ -66,8 +66,6 @@ const WORKTREE_CONFIG_NAME: &str = ".ait-worktree.json";
 const CONFIG_NAME: &str = "config.json";
 const REPO_DISCOVERY_ENV_VARS: &[&str] = &[ait_core::environment_contract::names::AIT_REPO_ROOT];
 const DEFAULT_AUTHOR_MODE: &str = "ai_with_human_review";
-const DEFAULT_WORKFLOW_SCOPE: &str = "local";
-const DEFAULT_PLAN_TASK_BINDING_MODE: &str = "required";
 pub const SNAPSHOT_BINARY_DB_WRITE_LAYOUT: u32 = 1;
 pub const REMOTE_SYNC_BINARY_DB_WRITE_LAYOUT: u32 = 1;
 
@@ -247,6 +245,7 @@ pub type RepoRemoteSyncLocalStore<const WRITE_LAYOUT: u32> =
 
 #[derive(Clone, Debug)]
 pub struct RepoBinaryDbLocalSnapshotOperationStore<const WRITE_LAYOUT: u32> {
+    defer_line_advance: bool,
     content: LocalContentBinaryDb<WRITE_LAYOUT>,
     lines: BinaryDbLineStore<LocalBinaryDbFs, WRITE_LAYOUT>,
     worktree_config_path: Option<PathBuf>,

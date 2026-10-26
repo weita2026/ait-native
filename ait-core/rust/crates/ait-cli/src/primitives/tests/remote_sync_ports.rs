@@ -28,6 +28,85 @@ fn unavailable_remote_sync_capabilities() -> RemoteSyncCapabilities {
 }
 
 #[test]
+fn snapshot_publication_distinguishes_historical_rows_from_fresh_capture() {
+    let (_temp, repo) = init_remote_sync_backend_dispatch_repo();
+    fs::write(repo.root.join("actor.txt"), "fresh capture").unwrap();
+    let snapshot = create_local_snapshot(
+        repo.root.to_string_lossy().as_ref(),
+        "fixture-ait",
+        "main",
+        Some("fresh capture"),
+        false,
+    )
+    .unwrap();
+    let id = required_string_field(&snapshot, "snapshot_id").unwrap();
+    let mut remote = FakeLineSnapshotRemote::default();
+    let historical =
+        remote_sync::upload_snapshot_chain_to_remote_with_task_remote_and_capabilities(
+            &repo,
+            &mut remote,
+            "fixture-ait",
+            &id,
+            None,
+            &zstd_only_capabilities(),
+        )
+        .unwrap();
+    assert_eq!(historical["uploaded_snapshots"], json!(1));
+    assert!(remote.zstd_commit_requests[0]["capture_binding"].is_null());
+    assert!(remote.zstd_commit_requests[0]["snapshots"][0]
+        .get("actor_key_index")
+        .is_none());
+
+    let mut remote = FakeLineSnapshotRemote::default();
+    let binding = ait_core::repository_pack_json::SnapshotCaptureBinding {
+        repository_index: 0,
+        snapshot_id: id.clone(),
+        owner: ait_core::workflow_binary_db::SnapshotWorkflowBinding {
+            task_id: "RT-1".into(),
+            change_id: String::new(),
+            line_name: "main".into(),
+        },
+    };
+    remote_sync::upload_snapshot_capture(
+        &repo,
+        &mut remote,
+        "fixture-ait",
+        &binding,
+        &zstd_only_capabilities(),
+    )
+    .unwrap();
+    assert_eq!(remote.zstd_commit_requests.len(), 1);
+    assert_eq!(
+        remote.zstd_commit_requests[0]["capture_binding"],
+        binding.to_value()
+    );
+    assert_eq!(
+        remote.zstd_commit_requests[0]["snapshots"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    remote.remote_snapshots.get_mut(&id).unwrap()["actor_key_index"] = json!(7);
+    let reused = remote_sync::upload_snapshot_chain_to_remote_with_task_remote_and_capabilities(
+        &repo,
+        &mut remote,
+        "fixture-ait",
+        &id,
+        None,
+        &zstd_only_capabilities(),
+    )
+    .unwrap();
+    assert_eq!(reused["uploaded_snapshots"], json!(0));
+    assert_eq!(remote.remote_snapshots[&id]["actor_key_index"], json!(7));
+    assert!(remote.zstd_commit_requests[1]["snapshots"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn external_hydration_rebinds_http_authority_to_the_resolved_repository() {
     let mut headers = BTreeMap::new();
     headers.insert("authorization".to_string(), "Bearer fixture".to_string());
@@ -1321,7 +1400,7 @@ fn remote_sync_push_stale_feature_line_with_present_head_uses_line_update_only()
 }
 
 #[test]
-fn remote_sync_solo_local_push_rejects_initialized_default_line_advance() {
+fn remote_sync_local_push_rejects_initialized_default_line_advance() {
     let repo_tmp = tempdir().expect("repo tempdir");
     let repo_root = repo_tmp.path();
     init_repo(&InitRequest {
@@ -1355,7 +1434,6 @@ fn remote_sync_solo_local_push_rejects_initialized_default_line_advance() {
     .expect("create head snapshot");
     let head_snapshot_id = required_string_field(&head, "snapshot_id").expect("head snapshot id");
     let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
-    assert_eq!(repo.effective_workflow_mode(), "solo_local");
     let mut remote = FakeLineSnapshotRemote {
         lines: vec![json!({
             "repo_name": "fixture-ait",
@@ -1388,7 +1466,7 @@ fn remote_sync_solo_local_push_rejects_initialized_default_line_advance() {
 }
 
 #[test]
-fn remote_sync_solo_local_push_rejects_null_default_line_initialization() {
+fn remote_sync_local_push_rejects_null_default_line_initialization() {
     let repo_tmp = tempdir().expect("repo tempdir");
     let repo_root = repo_tmp.path();
     init_repo(&InitRequest {
@@ -1438,14 +1516,26 @@ fn remote_sync_solo_local_push_rejects_null_default_line_initialization() {
     .expect("create local Change");
     let change_ref = required_string_field(&change, "change_ref").expect("change ref");
     fs::write(repo_root.join("src.txt"), "completed local head").expect("head fixture file");
-    let head = create_local_snapshot(
-        repo_root.to_string_lossy().as_ref(),
-        "fixture-ait",
-        "main",
-        Some("completed local head fixture"),
-        false,
-    )
-    .expect("create local head snapshot");
+    let binding = ait_core::workflow_binary_db::SnapshotWorkflowBinding {
+        task_id: task_id.clone(),
+        change_id: "C-01".into(),
+        line_name: "main".into(),
+    };
+    let head = repo
+        .binary_db_stores::<1>()
+        .content_for_root(repo.workspace_root())
+        .create_snapshot_content_with_workflow_binding(
+            "fixture-ait",
+            "main",
+            std::slice::from_ref(&base_snapshot_id),
+            Some("completed local head fixture"),
+            true,
+            ait_core::local_snapshot::SnapshotAuthoringOptions {
+                allow_unchanged_tree: false,
+            },
+            Some((&binding, repo.id_namespace_prefix().as_str())),
+        )
+        .expect("create frozen local revision Snapshot");
     let head_snapshot_id = required_string_field(&head, "snapshot_id").expect("head snapshot id");
     workflow_local_change_land_with_change_store(
         &change_store,
@@ -1457,7 +1547,6 @@ fn remote_sync_solo_local_push_rejects_null_default_line_initialization() {
     .expect("land local Change");
     workflow_local_task_close_with_task_store(&task_store, &task_id, "completed")
         .expect("complete local Task");
-    assert_eq!(repo.effective_workflow_mode(), "solo_local");
     let mut remote = FakeLineSnapshotRemote {
         lines: vec![json!({
             "repo_name": "fixture-ait",
@@ -1780,6 +1869,10 @@ fn create_two_snapshot_zstd_source() -> TwoSnapshotZstdFixture {
     let tmp = tempdir().expect("source repo tempdir");
     let root = tmp.path();
     init_fixture_repo(root);
+    // This fixture requires disjoint parent/child blob packs. The unchanged
+    // init scaffold would otherwise make the child depend on its parent's pack.
+    fs::remove_file(root.join(".aitignore"))
+        .expect("remove init scaffold from disjoint-pack fixture");
     fs::write(root.join("src.txt"), "zstd parent").expect("parent file");
     let parent = create_local_snapshot(
         root.to_string_lossy().as_ref(),
@@ -3369,7 +3462,6 @@ fn remote_sync_zstd_bulk_push_excludes_bounded_remote_head_ancestors_from_plan()
         .parse::<JsonValue>()
         .expect("parse fixture config");
     let config_object = config.as_object_mut().expect("fixture config object");
-    config_object.insert("workflow_mode".to_string(), json!("solo_remote"));
     config_object.insert("workflow_default_scope".to_string(), json!("remote"));
     config_object.insert("task_default_scope".to_string(), json!("remote"));
     config_object.insert("change_default_scope".to_string(), json!("remote"));
@@ -3395,7 +3487,6 @@ fn remote_sync_zstd_bulk_push_excludes_bounded_remote_head_ancestors_from_plan()
     .expect("create main head snapshot");
     let main_head_id = required_string_field(&main_head, "snapshot_id").expect("snapshot id");
     let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
-    assert_eq!(repo.effective_workflow_mode(), "solo_remote");
     remote_sync::set_or_create_local_line_head(&repo, "feature/zstd", Some(&main_base_id))
         .expect("create feature line from main base");
     fs::write(repo_root.join("src.txt"), "feature head").expect("fixture file");
@@ -3422,10 +3513,12 @@ fn remote_sync_zstd_bulk_push_excludes_bounded_remote_head_ancestors_from_plan()
         .cloned()
         .collect::<BTreeSet<_>>();
     assert!(!boundary_only_blob_ids.is_empty());
+    remote_sync::set_or_create_local_line_head(&repo, "feature/bounded", Some(&main_head_id))
+        .unwrap();
     let mut remote = FakeLineSnapshotRemote {
         lines: vec![json!({
             "repo_name": "fixture-ait",
-            "line_name": "main",
+            "line_name": "feature/bounded",
             "status": "active",
             "head_snapshot_id": main_base_id,
         })],
@@ -3444,7 +3537,7 @@ fn remote_sync_zstd_bulk_push_excludes_bounded_remote_head_ancestors_from_plan()
         &mut remote,
         "origin",
         "fixture-ait",
-        "main",
+        "feature/bounded",
         &zstd_only_capabilities(),
     )
     .expect("zstd backend should skip already bounded remote ancestors");

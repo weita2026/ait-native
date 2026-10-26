@@ -2,6 +2,10 @@ use crate::json_support::{JsonMap as Map, JsonValue};
 use crate::land_json::LandJson;
 use crate::policy_json::PolicyJson;
 
+pub(crate) fn workflow_task_has_successful_receipt(task: &Map<String, JsonValue>) -> bool {
+    LandJson::stateless().task_has_successful_receipt(&JsonValue::Object(task.clone()))
+}
+
 pub(crate) trait JsonLookup {
     fn get_json_value(&self, key: &str) -> JsonValue;
 }
@@ -36,13 +40,6 @@ pub(crate) fn command_hint_json(commands: &JsonValue, key: &str) -> JsonValue {
 
 pub(crate) fn workflow_land_policy_has_checks(policy: Option<&Map<String, JsonValue>>) -> bool {
     PolicyJson::stateless().workflow_land_policy_has_checks(policy)
-}
-
-pub(crate) fn workflow_land_change_effectively_landed(
-    change: &Map<String, JsonValue>,
-    landing_summary: Option<&Map<String, JsonValue>>,
-) -> bool {
-    LandJson::stateless().change_effectively_landed(change, landing_summary)
 }
 
 pub(crate) fn workflow_land_submission_status(

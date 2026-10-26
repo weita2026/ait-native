@@ -31,7 +31,7 @@ fn land_json_builds_request_specs_and_bodies() {
     assert_eq!(
         atomic.body,
         Some(json!({
-            "contract": "task-land-atomic/v1",
+            "contract": "task-land-atomic/v2",
             "idempotency_key": "task-land-atomic:123",
             "task_or_change_ref": "RCT-1/C-01",
             "target_line": "main",

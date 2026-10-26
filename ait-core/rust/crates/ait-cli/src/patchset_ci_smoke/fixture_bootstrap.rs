@@ -10,462 +10,179 @@ use ait_core::line_store::LineStore;
 
 struct LocalLandHistory {
     task_ids: Vec<String>,
-    change_refs: Vec<String>,
     final_snapshot_id: String,
-    task_start_ms: Vec<f64>,
-    local_task_land_ms: Vec<f64>,
 }
 
-const LOCAL_HISTORY_LAND_COUNT: usize = 65;
+// Exercise a full publication package; Repository Task capacity is separate.
+const PACKAGE_SOURCE_TASK_COUNT: usize = 64;
 
 pub(super) fn assert_final_snapshot_remote_promotion_contract() -> Result<(), String> {
-    assert_completed_local_null_remote_main_promotion_contract()?;
+    assert_local_package_contract(1, true)?;
+    assert_local_package_contract(PACKAGE_SOURCE_TASK_COUNT, false)
+}
 
+fn assert_local_package_contract(count: usize, empty_remote: bool) -> Result<(), String> {
     let mut remote = spawn_fake_remote();
-    let temp = init_solo_local_fixture_repo_unactivated(&remote.base_url)?;
+    let temp = init_local_fixture_repo_unactivated(&remote.base_url)?;
     let root = temp.path();
-    let mut remote_state = remote
-        .state
-        .lock()
-        .map_err(|_| "fake remote state lock poisoned".to_string())?;
-    remote_state.remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
-    remote_state
-        .ci_run_required_patchset_ids
-        .insert("RP-2".to_string());
-    drop(remote_state);
-    let history = create_local_lands(root, LOCAL_HISTORY_LAND_COUNT)?;
-    let final_change_ref = history
-        .change_refs
-        .last()
-        .ok_or_else(|| "local history has no final Change".to_string())?;
-
-    let ready = command_output(
+    if !empty_remote {
+        remote.state.lock().unwrap().remote_head_snapshot_id =
+            Some(FIXTURE_BASE_SNAPSHOT_ID.into());
+    }
+    let history = create_local_lands(root, count)?;
+    let task = history.task_ids.last().ok_or("history has no final Task")?;
+    let ready = json_output(
+        root,
+        &[
+            "workflow", "ready", task, "--apply", "--remote", "origin", "--json", "--full",
+        ],
+    )?;
+    if ready["next_action"]["code"] != "done" {
+        return Err(format!("package ready did not pass: {ready}"));
+    }
+    let identity = ready["expected_identity"].clone();
+    ait_core::workflow_expected_identity::PackageWorkflowExpectedIdentity::from_value(&identity)?;
+    {
+        let state = remote.state.lock().unwrap();
+        let manifest = state
+            .package_manifest
+            .as_ref()
+            .ok_or("package upload was not decoded")?;
+        let entries = manifest["history_entries"]
+            .as_array()
+            .ok_or("package history missing")?;
+        if entries.len() != count
+            || manifest["base_snapshot_id"] != FIXTURE_BASE_SNAPSHOT_ID
+            || manifest["revision_snapshot_id"] != history.final_snapshot_id
+            || state.remote_head_snapshot_id.as_deref() != Some(FIXTURE_BASE_SNAPSHOT_ID)
+            || !state.created_task_ids.is_empty()
+            || !state.created_change_refs.is_empty()
+            || state.package_completion.is_some()
+        {
+            return Err("ready changed publication authority or source history".into());
+        }
+        for (entry, task) in entries.iter().zip(&history.task_ids) {
+            if entry["local_task_id"] != *task
+                || !entry["local_change_ref"].is_null()
+                || !entry["local_change_id"].is_null()
+            {
+                return Err("package changed Task-only source ownership".into());
+            }
+        }
+    }
+    let inputs = TempDir::new().map_err(|error| error.to_string())?;
+    let expected = inputs.path().join("expected-package.json");
+    fs::write(&expected, identity.to_string()).map_err(|error| error.to_string())?;
+    let message = "1. Reviewed files\nNative smoke source.\n2. Findings\nNone.\n3. Risks\nDisposable mock only.\n4. Tests\nExact fixture package CI passed.\n5. Recommendation\nPass.";
+    let finished = json_output(
         root,
         &[
             "workflow",
-            "ready",
-            final_change_ref,
+            "finish",
+            task,
             "--apply",
             "--remote",
             "origin",
-        ],
-    )?;
-    if ready.status != 0 {
-        return Err(format!(
-            "final snapshot workflow ready did not complete: {}",
-            combined_output(&ready)
-        ));
-    }
-    let remote_task_land_started = Instant::now();
-    let landed = json_output(
-        root,
-        &[
-            "task",
-            "finish",
-            final_change_ref,
-            "--remote",
-            "origin",
+            "--expected-identity",
+            expected.to_str().ok_or("identity path must be UTF-8")?,
+            "--reviewer",
+            "Fixture Bot",
+            "--review-message",
+            message,
             "--json",
             "--full",
         ],
     )?;
-    let remote_task_land_ms = remote_task_land_started.elapsed().as_secs_f64() * 1_000.0;
-    if string_field(&landed, "apply_status").as_deref() != Some("done") {
-        return Err(format!(
-            "final snapshot task land did not complete: {}",
-            encode_value_or(&landed, "{}")
-        ));
-    }
-    let landed_history = landed
-        .get("history_promotion")
-        .filter(|value| value.is_object())
-        .ok_or_else(|| {
-            format!(
-                "remote Task Land omitted history promotion manifest: {}",
-                encode_value_or(&landed, "{}")
-            )
-        })?;
-    if string_field(landed_history, "contract").as_deref() != Some("ait-history-promotion/v2")
-        || landed_history
-            .get("total_entry_count")
-            .and_then(JsonValue::as_u64)
-            != Some(LOCAL_HISTORY_LAND_COUNT as u64)
-        || landed_history
-            .get("entries")
-            .and_then(JsonValue::as_array)
-            .map(Vec::len)
-            != Some(1)
+    if finished["next_action"]["code"] != "done"
+        || finished["completion"]["entries"].as_array().map(Vec::len) != Some(count)
     {
         return Err(format!(
-            "remote Task Land did not return the bounded final stage for all {} history entries: {}",
-            LOCAL_HISTORY_LAND_COUNT,
-            encode_value_or(landed_history, "{}")
+            "guarded package finish did not map the whole source: {finished}"
         ));
     }
-    if landed_history
-        .get("aggregate")
-        .and_then(|aggregate| string_field(aggregate, "patchset_id"))
-        .as_deref()
-        != Some("RP-2")
-    {
-        return Err(format!(
-            "remote Task Land did not preserve the sole aggregate Patchset: {}",
-            encode_value_or(landed_history, "{}")
-        ));
-    }
-
-    let logged = remote
-        .log
-        .lock()
-        .map_err(|_| "fake remote log lock poisoned".to_string())?
-        .clone();
-    let history_posts = logged
-        .iter()
-        .filter(|row| row.method == "POST" && row.url.ends_with("/history-promotion:prepare"))
-        .collect::<Vec<_>>();
-    if history_posts.len() != 2 {
-        return Err(format!(
-            "local history promotion issued {} prepare requests instead of two bounded stages",
-            history_posts.len()
-        ));
-    }
-    let history_bodies = history_posts
-        .iter()
-        .map(|post| parse_value_error_string(&post.body))
-        .collect::<Result<Vec<_>, _>>()?;
-    let promotion_id = string_field(&history_bodies[0], "promotion_id")
-        .ok_or_else(|| "first history stage omitted promotion_id".to_string())?;
-    for (stage_ordinal, (body, expected_entry_count)) in
-        history_bodies.iter().zip([64_usize, 1]).enumerate()
-    {
-        let entries = body
-            .get("entries")
-            .and_then(JsonValue::as_array)
-            .ok_or_else(|| format!("history stage {stage_ordinal} omitted entries"))?;
-        if string_field(body, "contract").as_deref() != Some("history-promotion-prepare/v2")
-            || body.get("stage_ordinal").and_then(JsonValue::as_u64) != Some(stage_ordinal as u64)
-            || body.get("total_entry_count").and_then(JsonValue::as_u64)
-                != Some(LOCAL_HISTORY_LAND_COUNT as u64)
-            || body.get("final_stage").and_then(JsonValue::as_bool) != Some(stage_ordinal == 1)
-            || entries.len() != expected_entry_count
-            || string_field(body, "promotion_id").as_deref() != Some(promotion_id.as_str())
-            || string_field(body, "base_snapshot_id").as_deref() != Some(FIXTURE_BASE_SNAPSHOT_ID)
-            || string_field(body, "revision_snapshot_id").as_deref()
-                != Some(history.final_snapshot_id.as_str())
-        {
-            return Err(format!(
-                "history prepare stage {stage_ordinal} has invalid bounded authority: {}",
-                history_posts[stage_ordinal].body
-            ));
-        }
-    }
-    if !history_bodies[0]
-        .get("previous_stage_patchset_id")
-        .is_some_and(JsonValue::is_null)
-        || string_field(&history_bodies[1], "previous_stage_patchset_id").as_deref()
-            != Some("RHP-STAGE-0")
-        || string_field(&history_bodies[0], "stage_revision_snapshot_id")
-            != string_field(&history_bodies[1], "stage_base_snapshot_id")
-    {
-        return Err("history prepare stages do not form one exact predecessor chain".to_string());
-    }
-    let history_entries = history_bodies
-        .iter()
-        .flat_map(|body| {
-            body.get("entries")
-                .and_then(JsonValue::as_array)
-                .into_iter()
-                .flatten()
-        })
-        .collect::<Vec<_>>();
-    if history_entries.len() != LOCAL_HISTORY_LAND_COUNT {
-        return Err(format!(
-            "history prepare stages carried {} entries instead of {}",
-            history_entries.len(),
-            LOCAL_HISTORY_LAND_COUNT
-        ));
-    }
-    let mut previous_snapshot_id = FIXTURE_BASE_SNAPSHOT_ID.to_string();
-    for (ordinal, entry) in history_entries.iter().enumerate() {
-        if string_field(entry, "local_task_id").as_deref()
-            != history.task_ids.get(ordinal).map(String::as_str)
-            || string_field(entry, "local_change_ref").as_deref()
-                != history.change_refs.get(ordinal).map(String::as_str)
-        {
-            return Err(format!(
-                "history prepare reordered local identity at ordinal {}: {}",
-                ordinal + 1,
-                encode_value_or(entry, "{}")
-            ));
-        }
-        if string_field(entry, "pre_land_target_snapshot_id").as_deref()
-            != Some(previous_snapshot_id.as_str())
-        {
-            return Err(format!(
-                "history prepare broke the Land chain at ordinal {}: {}",
-                ordinal + 1,
-                encode_value_or(entry, "{}")
-            ));
-        }
-        if entry
-            .get("snapshots")
-            .and_then(JsonValue::as_array)
-            .is_none_or(Vec::is_empty)
-        {
-            return Err(format!(
-                "history prepare omitted the complete Snapshot difference at ordinal {}",
-                ordinal + 1
-            ));
-        }
-        previous_snapshot_id = required_string_field(entry, "landed_snapshot_id")?;
-    }
-    if previous_snapshot_id != history.final_snapshot_id {
-        return Err("history prepare chain did not end at the final local Snapshot".to_string());
-    }
-    let patchset_posts = logged
-        .iter()
-        .filter(|row| {
-            row.method == "POST"
-                && row
-                    .url
-                    .starts_with("/v1/native/repository-authorities/7/changes/")
-                && row.url.ends_with("/patchsets")
-        })
-        .collect::<Vec<_>>();
-    if !patchset_posts.is_empty() {
-        return Err(format!(
-            "history promotion fell back to {} standalone Patchset POSTs",
-            patchset_posts.len()
-        ));
-    }
-    let ci_runs = logged
-        .iter()
-        .filter(|row| {
-            row.method == "POST"
-                && row.url == "/v1/native/repository-authorities/7/patchsets/RP-2:runCi"
-        })
-        .count();
-    if ci_runs != 1 {
-        let requests = logged
-            .iter()
-            .map(|row| format!("{} {}", row.method, row.url))
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(format!(
-            "final snapshot promotion ran CI {ci_runs} times instead of once; ready output:\n{}\nrequests:\n{requests}",
-            combined_output(&ready)
-        ));
-    }
-    let land_submissions = logged
-        .iter()
-        .filter(|row| {
-            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/task-land"
-        })
-        .count();
-    if land_submissions != 1 {
-        return Err(format!(
-            "final snapshot promotion submitted atomic Task Land {land_submissions} times instead of once"
-        ));
-    }
-    if logged.iter().any(|row| {
-        row.method == "POST"
-            && row
-                .url
-                .starts_with("/v1/native/repository-authorities/7/changes/")
-            && row.url.ends_with(":submit")
-    }) {
-        return Err("final snapshot promotion fell back to legacy Land submission".to_string());
-    }
-    let task_posts = logged
-        .iter()
-        .filter(|row| {
-            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks"
-        })
-        .count();
-    let change_posts = logged
-        .iter()
-        .filter(|row| {
-            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
-        })
-        .count();
-    if task_posts != 0 || change_posts != 0 {
-        return Err(format!(
-            "history prepare used {task_posts} standalone Task and {change_posts} standalone Change POSTs"
-        ));
-    }
-    let remote_state = remote
-        .state
-        .lock()
-        .map_err(|_| "fake remote state lock poisoned".to_string())?;
-    if history.task_ids.iter().enumerate().any(|(ordinal, _)| {
-        !remote_state
-            .closed_task_ids
-            .contains(&format!("RT-{:04}", ordinal + 1))
-    }) {
-        return Err(format!(
-            "atomic remote Land did not complete all {} promoted Tasks",
-            LOCAL_HISTORY_LAND_COUNT
-        ));
-    }
-    drop(remote_state);
-    for forbidden in ["workflow_record.bin", "workflow_record_payload.bin"] {
-        if root.join(".ait/binary-db").join(forbidden).exists() {
-            return Err(format!(
-                "remote task smoke materialized forbidden local workflow file {forbidden}"
-            ));
-        }
-    }
-    let mean_ms = |values: &[f64]| {
-        if values.is_empty() {
-            0.0
-        } else {
-            values.iter().sum::<f64>() / values.len() as f64
-        }
-    };
-    eprintln!(
-        "AIT_HISTORY_PROMOTION_TIMINGS {}",
-        encode_value_or(
-            &json!({
-                "sample_count": history.task_ids.len(),
-                "task_start_wall_ms": {
-                    "mean": mean_ms(&history.task_start_ms),
-                    "max": history.task_start_ms.iter().copied().fold(0.0_f64, f64::max),
-                    "samples": history.task_start_ms,
-                },
-                "local_task_land_wall_ms": {
-                    "mean": mean_ms(&history.local_task_land_ms),
-                    "max": history.local_task_land_ms.iter().copied().fold(0.0_f64, f64::max),
-                    "samples": history.local_task_land_ms,
-                },
-                "remote_task_land_wall_ms": remote_task_land_ms,
-                "remote_task_land_phase_timings_ms": landed
-                    .get("phase_timings_ms")
-                    .cloned()
-                    .unwrap_or(JsonValue::Null),
-            }),
-            "{}",
-        )
-    );
     remote.stop()?;
-    Ok(())
-}
-
-fn assert_completed_local_null_remote_main_promotion_contract() -> Result<(), String> {
-    let mut remote = spawn_fake_remote();
-    let temp = init_solo_local_fixture_repo_unactivated(&remote.base_url)?;
-    let root = temp.path();
-    remote
-        .state
-        .lock()
-        .map_err(|_| "fake remote state lock poisoned".to_string())?
-        .ci_run_required_patchset_ids
-        .insert("RP-2".to_string());
-    let history = create_local_lands(root, 1)?;
-    let final_change_ref = history
-        .change_refs
-        .last()
-        .ok_or_else(|| "null-main local history has no final Change".to_string())?;
-
-    let ready = command_output(
-        root,
-        &[
-            "workflow",
-            "ready",
-            final_change_ref,
-            "--apply",
-            "--remote",
-            "origin",
-        ],
-    )?;
-    if ready.status != 0 {
-        return Err(format!(
-            "completed-local null-main workflow ready did not complete: {}",
-            combined_output(&ready)
-        ));
-    }
-
-    let logged = remote
-        .log
-        .lock()
-        .map_err(|_| "fake remote log lock poisoned".to_string())?
-        .clone();
-    let seed_commit = logged
+    let log = remote.log.lock().unwrap();
+    let package_posts = log
         .iter()
         .enumerate()
-        .find_map(|(index, row)| {
-            if row.method != "POST" || !row.url.ends_with("/remote-sync/zstd-bulk/commit") {
-                return None;
-            }
-            let body = parse_value_option(&row.body)?;
-            let line_update = body.get("line_update")?;
-            (string_field(line_update, "line_name").as_deref() == Some("main")
-                && line_update
-                    .get("expected_head_snapshot_id")
-                    .is_some_and(JsonValue::is_null)
-                && string_field(line_update, "head_snapshot_id").as_deref()
-                    == Some(FIXTURE_BASE_SNAPSHOT_ID))
-            .then_some((index, body))
+        .filter(|(_, row)| {
+            row.content_type.as_deref()
+                == Some(ait_core::workflow_package::WORKFLOW_PACKAGE_MEDIA_TYPE)
         })
-        .ok_or_else(|| {
-            "completed-local null-main promotion omitted the pre-land null-head CAS seed commit"
-                .to_string()
-        })?;
-    let history_prepare = logged
-        .iter()
-        .enumerate()
-        .find(|(_, row)| row.method == "POST" && row.url.ends_with("/history-promotion:prepare"))
-        .ok_or_else(|| "completed-local null-main promotion omitted history prepare".to_string())?;
-    if seed_commit.0 >= history_prepare.0 {
+        .collect::<Vec<_>>();
+    if package_posts.len() != 1 {
+        return Err("package bytes must be uploaded once".into());
+    }
+    if empty_remote {
+        let seed = log
+            .iter()
+            .enumerate()
+            .find(|(_, row)| {
+                if row.method != "POST"
+                    || !row.url.ends_with("/remote-sync/zstd-bulk/commit")
+                    || row.content_type.as_deref()
+                        == Some(ait_core::workflow_package::WORKFLOW_PACKAGE_MEDIA_TYPE)
+                {
+                    return false;
+                }
+                let Some(body) = parse_value_option(&row.body) else {
+                    return false;
+                };
+                body["line_update"]["line_name"] == "main"
+                    && body["line_update"].get("expected_head_snapshot_id")
+                        == Some(&JsonValue::Null)
+                    && body["line_update"]["head_snapshot_id"] == FIXTURE_BASE_SNAPSHOT_ID
+                    && body["actor_key_index"].as_u64() == Some(0)
+            })
+            .ok_or("null Remote main did not receive its earlier-boundary Actor-aware CAS")?;
+        if seed.0 >= package_posts[0].0 {
+            return Err("package upload preceded null-head initialization".into());
+        }
+    }
+    if log.iter().any(|row| {
+        row.url.ends_with("/history-promotion:prepare")
+            || row.url.ends_with(":submit")
+            || (row.method == "POST"
+                && matches!(
+                    row.url.as_str(),
+                    "/v1/native/repository-authorities/7/tasks"
+                        | "/v1/native/repository-authorities/7/changes"
+                ))
+    }) {
         return Err(
-            "completed-local null-main promotion sent history prepare before the pre-land CAS seed"
-                .to_string(),
+            "package path used legacy preparation or standalone workflow publication".into(),
         );
     }
-    let history_body = parse_value_error_string(&history_prepare.1.body)?;
-    let entries = history_body
-        .get("entries")
-        .and_then(JsonValue::as_array)
-        .ok_or_else(|| "null-main history prepare omitted entries".to_string())?;
-    if string_field(&history_body, "contract").as_deref() != Some("history-promotion-prepare/v1")
-        || string_field(&history_body, "base_snapshot_id").as_deref()
-            != Some(FIXTURE_BASE_SNAPSHOT_ID)
-        || string_field(&history_body, "revision_snapshot_id").as_deref()
-            != Some(history.final_snapshot_id.as_str())
-        || entries.len() != 1
+    if log
+        .iter()
+        .filter(|row| row.method == "POST" && row.url.ends_with("/task-land"))
+        .count()
+        != 1
     {
-        return Err(format!(
-            "completed-local null-main history prepare did not use the exact pre-land base: {}",
-            history_prepare.1.body
-        ));
+        return Err("package finish must commit once".into());
     }
-    let remote_head_snapshot_id = remote
-        .state
-        .lock()
-        .map_err(|_| "fake remote state lock poisoned".to_string())?
-        .remote_head_snapshot_id
-        .clone();
-    if remote_head_snapshot_id.as_deref() != Some(FIXTURE_BASE_SNAPSHOT_ID) {
-        return Err(format!(
-            "workflow ready moved null remote main beyond the pre-land base before Land: {}",
-            remote_head_snapshot_id.as_deref().unwrap_or("null")
-        ));
+    let state = remote.state.lock().unwrap();
+    if state.created_task_ids.len() != count
+        || !state.created_change_refs.is_empty()
+        || state.remote_head_snapshot_id.as_deref() != Some(history.final_snapshot_id.as_str())
+    {
+        return Err("package finish changed source ownership or final target".into());
     }
-
-    remote.stop()?;
+    for forbidden in ["workflow_record.bin", "workflow_record_payload.bin"] {
+        if root.join(".ait/binary-db").join(forbidden).exists() {
+            return Err(format!("forbidden local workflow authority {forbidden}"));
+        }
+    }
     Ok(())
 }
 
 fn create_local_lands(root: &Path, local_land_count: usize) -> Result<LocalLandHistory, String> {
     activate_fixture_binary_db_generation(root)?;
     let mut task_ids = Vec::new();
-    let mut change_refs = Vec::new();
     let mut final_snapshot_id = None;
-    let mut task_start_ms = Vec::new();
-    let mut local_task_land_ms = Vec::new();
     for ordinal in 1..=local_land_count {
         let title = format!("Local history task {ordinal}");
         let intent = format!("Preserve local workflow history {ordinal}");
-        let task_start_started = Instant::now();
         let started = json_output(
             root,
             &[
@@ -473,21 +190,15 @@ fn create_local_lands(root: &Path, local_land_count: usize) -> Result<LocalLandH
                 "--full",
             ],
         )?;
-        task_start_ms.push(task_start_started.elapsed().as_secs_f64() * 1_000.0);
         let task_id = string_field(&started, "task_id")
             .ok_or_else(|| format!("local task start {ordinal} did not return task_id"))?;
-        let change = started
-            .get("change")
-            .ok_or_else(|| format!("local task start {ordinal} did not return change"))?;
-        let change_id = string_field(change, "change_id")
-            .ok_or_else(|| format!("local task start {ordinal} did not return change_id"))?;
-        let change_ref =
-            string_field(change, "change_ref").unwrap_or_else(|| format!("{task_id}/{change_id}"));
-        let worktree = started
-            .get("worktree")
-            .ok_or_else(|| format!("local task start {ordinal} did not return worktree"))?;
-        let worktree_path = string_field(worktree, "open_path")
-            .or_else(|| string_field(worktree, "path"))
+        if !started["change"].is_null() {
+            return Err(format!(
+                "initial Task {task_id} unexpectedly created a Change"
+            ));
+        }
+        let worktree_path = string_field(&started["worktree"], "open_path")
+            .or_else(|| string_field(&started["worktree"], "path"))
             .map(PathBuf::from)
             .ok_or_else(|| format!("local task start {ordinal} returned no worktree path"))?;
         write_file(
@@ -499,7 +210,7 @@ fn create_local_lands(root: &Path, local_land_count: usize) -> Result<LocalLandH
             &[
                 "snapshot",
                 "create",
-                &change_ref,
+                &task_id,
                 "--message",
                 &format!("local history snapshot {ordinal}"),
                 "--json",
@@ -507,12 +218,10 @@ fn create_local_lands(root: &Path, local_land_count: usize) -> Result<LocalLandH
         )?;
         let snapshot_id = string_field(&snapshot, "snapshot_id")
             .ok_or_else(|| format!("local snapshot {ordinal} did not return snapshot_id"))?;
-        let local_task_land_started = Instant::now();
         let local_land = json_output(
             &worktree_path,
-            &["task", "finish", &change_ref, "--local", "--json", "--full"],
+            &["task", "finish", &task_id, "--local", "--json", "--full"],
         )?;
-        local_task_land_ms.push(local_task_land_started.elapsed().as_secs_f64() * 1_000.0);
         if string_field(&local_land, "apply_status").as_deref() != Some("done") {
             return Err(format!(
                 "local Task Land {ordinal} did not complete: {}",
@@ -520,16 +229,12 @@ fn create_local_lands(root: &Path, local_land_count: usize) -> Result<LocalLandH
             ));
         }
         task_ids.push(task_id);
-        change_refs.push(change_ref);
         final_snapshot_id = Some(snapshot_id);
     }
     Ok(LocalLandHistory {
         task_ids,
-        change_refs,
         final_snapshot_id: final_snapshot_id
             .ok_or_else(|| "local history did not create a final Snapshot".to_string())?,
-        task_start_ms,
-        local_task_land_ms,
     })
 }
 
@@ -558,7 +263,7 @@ fn init_fixture_repo_unactivated(base_url: &str) -> Result<TempDir, String> {
             "repository_index": 7,
             "default_line": "main",
             "default_remote": "origin",
-            "workflow_mode": "team_remote",
+            "agent_teams": true,
             "workflow_default_scope": "remote",
             "task_default_scope": "remote",
             "sprint": "off",
@@ -591,7 +296,7 @@ fn init_fixture_repo_unactivated(base_url: &str) -> Result<TempDir, String> {
     Ok(temp)
 }
 
-fn init_solo_local_fixture_repo_unactivated(base_url: &str) -> Result<TempDir, String> {
+fn init_local_fixture_repo_unactivated(base_url: &str) -> Result<TempDir, String> {
     let temp = init_fixture_repo_unactivated(base_url)?;
     let config_path = temp.path().join(".ait/config.json");
     let config_text = fs::read_to_string(&config_path).map_err(|error| error.to_string())?;
@@ -599,10 +304,7 @@ fn init_solo_local_fixture_repo_unactivated(base_url: &str) -> Result<TempDir, S
     let object = config
         .as_object_mut()
         .ok_or_else(|| "fixture config must be an object".to_string())?;
-    object.insert(
-        "workflow_mode".to_string(),
-        JsonValue::String("solo_local".to_string()),
-    );
+    object.insert("agent_teams".to_string(), json!(false));
     object.insert(
         "workflow_default_scope".to_string(),
         JsonValue::String("local".to_string()),

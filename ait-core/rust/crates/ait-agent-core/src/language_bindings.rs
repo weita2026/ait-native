@@ -9,6 +9,7 @@ use ait_core::json_support::{json, JsonMap, JsonValue};
 use crate::{AgentManagementRuntime, TransportKind};
 
 pub const LANGUAGE_BINDING_CONTRACT: &str = "ait.language.binding.v1";
+pub const CHAT_INTEGRATIONS_RETIRED_MESSAGE: &str = "Chat integrations are retired in AIT 1.2.0";
 
 pub fn language_binding_info_json() -> JsonValue {
     json!({
@@ -20,8 +21,6 @@ pub fn language_binding_info_json() -> JsonValue {
         "process_transport_allowed": false,
         "supported_surfaces": [
             "ait-core",
-            "ait-agent",
-            "ait-agent-worker",
         ],
     })
 }
@@ -227,6 +226,7 @@ mod tests {
         assert_eq!(payload["python_binding"], "pyo3");
         assert_eq!(payload["node_binding"], "napi");
         assert_eq!(payload["process_transport_allowed"], false);
+        assert_eq!(payload["supported_surfaces"], json!(["ait-core"]));
     }
 
     #[test]

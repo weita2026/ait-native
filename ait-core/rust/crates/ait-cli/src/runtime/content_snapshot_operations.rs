@@ -16,6 +16,10 @@ pub(super) fn line_record_json(line: &LineRecord) -> JsonValue {
 }
 
 impl<const WRITE_LAYOUT: u32> RepoBinaryDbLocalSnapshotOperationStore<WRITE_LAYOUT> {
+    pub(crate) fn with_deferred_line_advance(mut self) -> Self {
+        self.defer_line_advance = true;
+        self
+    }
     pub(crate) fn with_workflow_binding(
         mut self,
         binding: ait_core::workflow_binary_db::SnapshotWorkflowBinding,
@@ -159,11 +163,13 @@ impl<const WRITE_LAYOUT: u32> LocalSnapshotWriteStore
                         .as_deref()
                         .or(line.created_at.as_deref())
                         .unwrap_or("0");
-                    self.lines.set_line_head(
-                        line_name,
-                        Some(&materialized_snapshot_id),
-                        fallback_updated_at,
-                    )?;
+                    if !self.defer_line_advance {
+                        self.lines.set_line_head(
+                            line_name,
+                            Some(&materialized_snapshot_id),
+                            fallback_updated_at,
+                        )?;
+                    }
                     parent_snapshot_id = Some(materialized_snapshot_id);
                 }
             }
@@ -184,11 +190,13 @@ impl<const WRITE_LAYOUT: u32> LocalSnapshotWriteStore
                             .as_deref()
                             .or(line.created_at.as_deref())
                             .unwrap_or("0");
-                        self.lines.set_line_head(
-                            line_name,
-                            Some(&materialized_snapshot_id),
-                            fallback_updated_at,
-                        )?;
+                        if !self.defer_line_advance {
+                            self.lines.set_line_head(
+                                line_name,
+                                Some(&materialized_snapshot_id),
+                                fallback_updated_at,
+                            )?;
+                        }
                         parent_snapshot_id = Some(materialized_snapshot_id);
                     }
                     _ => {
@@ -220,8 +228,10 @@ impl<const WRITE_LAYOUT: u32> LocalSnapshotWriteStore
             .get("created_at")
             .and_then(JsonValue::as_str)
             .ok_or_else(|| "Binary DB snapshot create payload is missing created_at".to_string())?;
-        self.lines
-            .set_line_head(line_name, Some(&snapshot_id), created_at)?;
+        if !self.defer_line_advance {
+            self.lines
+                .set_line_head(line_name, Some(&snapshot_id), created_at)?;
+        }
         Ok(payload)
     }
 
@@ -275,7 +285,8 @@ impl<const WRITE_LAYOUT: u32> LocalSnapshotWriteStore
             .get("created_at")
             .and_then(JsonValue::as_str)
             .ok_or_else(|| "Binary DB snapshot create payload is missing created_at".to_string())?;
-        self.lines
+        if !self.defer_line_advance {
+            self.lines
             .compare_and_swap_line_head(
                 line_name,
                 expected_head_snapshot_id,
@@ -287,6 +298,7 @@ impl<const WRITE_LAYOUT: u32> LocalSnapshotWriteStore
                     "Created immutable Snapshot {snapshot_id}, but target line compare-and-swap failed: {error}"
                 )
             })?;
+        }
         Ok(payload)
     }
 }
@@ -1802,6 +1814,17 @@ impl<const WRITE_LAYOUT: u32> LineStore for RepoBinaryDbLocalSnapshotOperationSt
 
     fn line_updated_at(&self, line_name: &str) -> Result<Option<String>, String> {
         self.lines.line_updated_at(line_name)
+    }
+
+    fn compare_and_swap_line_head(
+        &self,
+        line_name: &str,
+        expected: Option<&str>,
+        head: Option<&str>,
+        updated_at: &str,
+    ) -> Result<LineRecord, String> {
+        self.lines
+            .compare_and_swap_line_head(line_name, expected, head, updated_at)
     }
 
     fn set_line_updated_at(&self, line_name: &str, updated_at: Option<&str>) -> Result<(), String> {

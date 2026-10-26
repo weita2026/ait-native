@@ -1,0 +1,19 @@
+[[external]]
+name = "ait-db"
+repo_name = "ait-db"
+repository_index = 11
+remote = "origin"
+line = "main"
+snapshot = "SNP-DB-DUPLICATE-PARENT"
+materialize_to = ".ait-external/ait-db"
+license = "Apache-2.0"
+
+[[external]]
+name = "ait-tools"
+repo_name = "ait-tools"
+repository_index = 13
+remote = "origin"
+line = "main"
+snapshot = "SNP-TOOLS-DUPLICATE-PARENT"
+materialize_to = ".ait-external/ait-tools"
+license = "Apache-2.0"

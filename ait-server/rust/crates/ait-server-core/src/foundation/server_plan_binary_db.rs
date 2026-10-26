@@ -3,10 +3,12 @@ mod helpers;
 mod metadata;
 mod packed_content;
 mod read;
+pub mod remote_actor_profile;
 mod schema;
 mod service;
 mod store;
 pub(crate) mod task_start;
+mod validation;
 mod views;
 mod write;
 
@@ -23,6 +25,7 @@ use self::schema::{
     PlanItemRecord, PlanRecord, PlanRevisionPayload, PlanRevisionRecord, ITEM_HAS_REF_META,
     ITEM_STATE_DONE_META, ITEM_STATE_OPEN_META, ITEM_TASKABLE_HINT_META, PLAN_LAYOUT_ID,
     PLAN_STATE_ARCHIVED_META, PLAN_STATE_DRAFT_META, PLAN_STATE_MASK, PLAN_STATE_SUPERSEDED_META,
+    REMOTE_PLAN_LAYOUT_ID,
 };
 #[allow(unused_imports)]
 pub(crate) use self::write::{
@@ -54,9 +57,16 @@ type ServerPlanDefaultWriteTxn<'a, D, const WRITE_LAYOUT: u32> =
     ServerPlanBinaryDbWriteTxn<'a, D, BinaryDbStoreFsyncPolicy<'a, D>, WRITE_LAYOUT>;
 
 pub const SERVER_PLAN_BINARY_DB_LAYOUT_V1: u32 = PLAN_LAYOUT_ID;
+pub const SERVER_PLAN_BINARY_DB_LAYOUT_V2: u32 = REMOTE_PLAN_LAYOUT_ID;
 
 pub type BinaryDbServerPlanServiceV1<D> =
     BinaryDbServerPlanService<D, SERVER_PLAN_BINARY_DB_LAYOUT_V1>;
+pub type BinaryDbServerPlanServiceV2<D> =
+    BinaryDbServerPlanService<D, SERVER_PLAN_BINARY_DB_LAYOUT_V2>;
+
+pub(crate) fn remote_plan_revision_file() -> BinaryFileId {
+    plan_revision_file()
+}
 
 const PLAN_ARTIFACT_CLOSURE_ISSUE_LIMIT: usize = 256;
 
@@ -92,14 +102,14 @@ impl PlanArtifactBlobClosureAudit {
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryDbServerPlanService<D, const WRITE_LAYOUT: u32 = SERVER_PLAN_BINARY_DB_LAYOUT_V1>
+pub struct BinaryDbServerPlanService<D, const WRITE_LAYOUT: u32 = SERVER_PLAN_BINARY_DB_LAYOUT_V2>
 where
     D: ServerRemoteBinaryDb + Clone,
 {
     store: ServerPlanBinaryDbStore<D, WRITE_LAYOUT>,
 }
 
-impl<D> BinaryDbServerPlanService<D, SERVER_PLAN_BINARY_DB_LAYOUT_V1>
+impl<D> BinaryDbServerPlanService<D, SERVER_PLAN_BINARY_DB_LAYOUT_V2>
 where
     D: ServerRemoteBinaryDb + Clone,
 {

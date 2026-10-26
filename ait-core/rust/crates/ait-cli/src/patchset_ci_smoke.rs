@@ -4,6 +4,7 @@ use crate::json_support::{
 };
 use crate::runtime::RepoRuntime;
 use ait_core::json_support::{json, JsonValue};
+use ait_core::repository_pack_json::{SnapshotCaptureBinding, SNAPSHOT_CAPTURE_BINDING_CONTRACT};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
@@ -15,7 +16,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tempfile::TempDir;
 use tiny_http::{Header, Response, Server};
 
@@ -157,21 +158,37 @@ struct RecordedRequest {
     method: String,
     url: String,
     body: String,
+    content_type: Option<String>,
 }
 
 #[derive(Default)]
 struct FakeRemoteState {
+    package_manifest: Option<JsonValue>,
+    package_identity: Option<JsonValue>,
+    package_operations: BTreeSet<String>,
+    package_completion: Option<JsonValue>,
+    actor_keys: std::collections::BTreeMap<(String, String), u32>,
+    task_receipts: std::collections::BTreeMap<String, JsonValue>,
+    created_task_ids: BTreeSet<String>,
+    created_change_refs: BTreeSet<String>,
+    snapshots: std::collections::BTreeMap<String, JsonValue>,
+    snapshot_capture_bindings: std::collections::BTreeMap<String, SnapshotCaptureBinding>,
     remote_head_snapshot_id: Option<String>,
     line_head_snapshot_ids: std::collections::BTreeMap<String, String>,
     archived_line_names: BTreeSet<String>,
     selected_patchset_id: Option<String>,
+    patchset_task_id: Option<String>,
     selected_patchset_base_snapshot_id: Option<String>,
     selected_patchset_revision_snapshot_id: Option<String>,
+    patchset_author_modes: std::collections::BTreeMap<String, String>,
     selected_change_id: Option<String>,
     published_change_task_ids: std::collections::BTreeMap<String, String>,
     ci_run_patchset_ids: BTreeSet<String>,
     ci_run_required_patchset_ids: BTreeSet<String>,
     attested_patchset_ids: BTreeSet<String>,
+    attestations: std::collections::BTreeMap<String, JsonValue>,
+    review_events: Vec<JsonValue>,
+    evaluated_patchset_ids: BTreeSet<String>,
     last_submitted_change_id: Option<String>,
     last_submitted_patchset_id: Option<String>,
     closed_task_ids: BTreeSet<String>,
@@ -189,6 +206,7 @@ struct FakeRemote {
 
 mod cleanup;
 mod fixture_bootstrap;
+mod package_contract;
 mod server_worker;
 mod status_attestation_validation;
 mod suite_execution;

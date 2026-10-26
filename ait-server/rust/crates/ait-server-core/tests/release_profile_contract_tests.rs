@@ -552,6 +552,26 @@ fn command_discovery_adapter_uses_shared_bounded_process_contracts() {
     assert!(!source.contains("sqlite3"));
 }
 
+#[test]
+fn ait_server_launcher_admits_ram_and_retries_only_space_exhaustion_on_ssd() {
+    let source = ait_script_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+        .expect("launcher source");
+    let test = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ait_launcher_cargo_fallback.sh");
+    let output = Command::new("bash")
+        .arg(test)
+        .arg(source)
+        .output()
+        .expect("isolated launcher exercise");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn workspace_manifest_candidates() -> Vec<PathBuf> {
     let repo_root = repo_root_from_manifest_dir();
     vec![

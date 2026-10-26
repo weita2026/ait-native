@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "suites": [
+    {
+      "suite_id": "rust_core",
+      "display_name": "Rust Core",
+      "plane": "patchset",
+      "default_blocking": true,
+      "mode": "gate",
+      "purpose": "Validate every Snapshot-runnable Rust workspace library before remote land.",
+      "runner": {
+        "kind": "test_discovery_sharded",
+        "adapter": "cargo",
+        "manifest_path": "rust/Cargo.toml",
+        "workspace": true,
+        "build_args": [
+          "test",
+          "--profile",
+          "ait-ci",
+          "--locked",
+          "--all-features",
+          "-p",
+          "ait-core",
+          "-p",
+          "ait-cli",
+          "-p",
+          "ait-agent-core",
+          "-p",
+          "ait-agent-worker",
+          "-p",
+          "ait-benchmark",
+          "-p",
+          "ait-napi",
+          "-p",
+          "ait-py",
+          "--lib",
+          "--test",
+          "server_source_ownership",
+          "--test",
+          "patchset_ci_runner",
+          "--no-run",
+          "--message-format=json"
+        ],
+        "doc_tests": false,
+        "checks": [
+          {
+            "kind": "cargo_fmt",
+            "check_id": "rustfmt"
+          },
+          {
+            "kind": "forbid_files",
+            "check_id": "no_python_boundary",
+            "file_name_suffix": ".py",
+            "exclude_dirs": [
+              ".git",
+              ".ait",
+              ".cargo",
+              "target"
+            ]
+          }
+        ]
+      },
+      "artifacts": {
+        "log_path": ".ait/generated/ci/rust_core.log"
+      }
+    }
+  ]
+}

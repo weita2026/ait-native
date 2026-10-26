@@ -27,11 +27,7 @@ test("binding info and version come from the real in-process addon", () => {
   assert.equal(payload.node_binding, "napi");
   assert.equal(payload.process_transport_allowed, false);
   assert.equal(payload.version, "1.1.4");
-  assert.deepEqual(payload.supported_surfaces, [
-    "ait-core",
-    "ait-agent",
-    "ait-agent-worker",
-  ]);
+  assert.deepEqual(payload.supported_surfaces, ["ait-core"]);
   assert.equal(runtime.version(), payload.version);
 });
 
@@ -45,11 +41,11 @@ test("generic call resolves the installed N-API exports directly", () => {
     JSON.parse(runtime.call("bindingInfoJson")),
     runtime.bindingInfo(),
   );
-  assert.equal(requiredAddonExports().includes("runCli"), true);
-  assert.throws(() => runtime.runCli(["ok", 1]), /array of NUL-free strings/);
+  assert.equal(requiredAddonExports().includes("runCli"), false);
+  assert.equal("runCli" in runtime, false);
 });
 
-test("management is exported while retired task publish operations remain absent", () => {
+test("compatibility symbols remain exported while old task publish operations stay absent", () => {
   const runtime = new NativeRuntime();
   const addon = runtime.loadAddon();
 
@@ -83,6 +79,27 @@ test("binding payload validation is explicit", () => {
   runtime.call = () => "{}";
 
   assert.throws(() => runtime.bindingInfo(), NativeProtocolError);
+});
+
+test("core metadata validation does not call retired capability exports", () => {
+  const runtime = new NativeRuntime();
+  const info = {
+    contract: "ait.language.binding.v1",
+    runtime_authority: "rust",
+    node_binding: "napi",
+    process_transport_allowed: false,
+    version: "1.1.4",
+    supported_surfaces: ["ait-core"],
+  };
+  runtime.call = (name) => {
+    assert.equal(name, "bindingInfoJson");
+    return JSON.stringify(info);
+  };
+  assert.deepEqual(runtime.bindingInfo(), info);
+  for (const surfaces of [undefined, [], ["ait-core", "ait-agent"], ["ait-agent-worker"]]) {
+    info.supported_surfaces = surfaces;
+    assert.throws(() => runtime.bindingInfo(), /retained ait-core surface/);
+  }
 });
 
 test("Linux addon selection distinguishes glibc from musl before loading", async () => {

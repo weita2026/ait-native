@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATH="${CARGO_HOME:-${HOME}/.cargo}/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+DEFAULT_REPOSITORY_CARGO_BUILD_MAX_BYTES=4294967296
 CANONICAL_CARGO_BUILD_DIRNAME="canonical"
 MANAGED_WORKTREE_CARGO_TARGET_DIRNAME="task-workspaces"
 
@@ -37,9 +38,249 @@ repository_cargo_target_root() {
 }
 
 repository_cargo_build_root() {
-  local build_root="${ROOT_DIR}/.ait/cargo-build"
-  mkdir -p "${build_root}"
-  (cd "${build_root}" && pwd -P)
+  local primary shared ram available floor reason=""
+  primary="$(repository_cargo_registered_build_root)" || return
+  shared="$(repository_ait_dir)/cargo-build"
+  ram="$(cargo_memory_root)" || return
+  if [[ ! -d "$shared" ]]; then
+    reason="registered RAM build root is unavailable"
+  elif [[ ! -L "$shared" && ( -z "$ram" || ( "$ram" != / && "$primary" != "$ram" && "$primary" != "$ram/"* ) ) ]]; then
+    printf '%s\n' "$primary"
+    return
+  elif [[ -n "$ram" && ! -d "$ram" ]]; then
+    reason="configured RAM mount is unavailable"
+  elif [[ -n "$ram" ]] && ! cargo_memory_mount_available "$ram"; then
+    reason="configured RAM mount is unavailable"
+  else
+    floor="$(cargo_ram_headroom)"
+    available="$(cargo_available_bytes "$primary")" || available=""
+    if [[ -z "$available" ]]; then
+      reason="RAM filesystem capacity is unavailable"
+    elif ! awk -v free="$available" -v floor="$floor" 'BEGIN {exit !(free>=floor)}'; then
+      reason="available RAM storage is below required build headroom"
+    fi
+  fi
+  if [[ -n "$reason" ]]; then
+    local fallback
+    fallback="$(repository_cargo_ssd_build_root)" || return
+    printf 'Cargo RAM-to-SSD fallback: %s; %s\n' "$reason" "$fallback" >&2
+    printf '%s\n' "$fallback"
+    return
+  fi
+  printf '%s\n' "$primary"
+}
+
+repository_ait_dir() {
+  local path="$ROOT_DIR/.ait"
+  mkdir -p "$path"
+  (cd "$path" && pwd -P)
+}
+
+
+cargo_json_string() {
+  local config
+  config="$1"
+  [[ -f "$config" ]] || return 0
+  LC_ALL=C awk -v wanted="$2" '
+    function bad() { failed=1; exit 2 }
+    function ws() { while (substr(s,p,1) ~ /[ \t\r\n]/ && p<=length(s)) p++ }
+    function hex4(  t,n,i,c) {
+      t=substr(s,p,4); if (length(t)!=4 || t ~ /[^0-9a-fA-F]/) bad()
+      p+=4; n=0
+      for(i=1;i<=4;i++) { c=index("0123456789abcdef",tolower(substr(t,i,1)))-1; n=n*16+c }
+      return n
+    }
+    function utf8(n) {
+      if(n<1 || n>1114111 || (n>=55296 && n<=57343)) bad()
+      if(n<128) return sprintf("%c",n)
+      if(n<2048) return sprintf("%c%c",192+int(n/64),128+n%64)
+      if(n<65536) return sprintf("%c%c%c",224+int(n/4096),128+int(n/64)%64,128+n%64)
+      return sprintf("%c%c%c%c",240+int(n/262144),128+int(n/4096)%64,128+int(n/64)%64,128+n%64)
+    }
+    function string(  out,c,n,low) {
+      if(substr(s,p++,1)!="\"") bad()
+      out=""
+      while(p<=length(s)) {
+        c=substr(s,p++,1)
+        if(c=="\"") return out
+        if(c ~ /[[:cntrl:]]/) bad()
+        if(c!="\\") { out=out c; continue }
+        c=substr(s,p++,1)
+        if(c=="u") {
+          n=hex4()
+          if(n>=55296 && n<=56319) {
+            if(substr(s,p,2)!="\\u") bad()
+            p+=2; low=hex4()
+            if(low<56320 || low>57343) bad()
+            n=65536+(n-55296)*1024+low-56320
+          }
+          out=out utf8(n)
+        } else if(c=="\"" || c=="\\" || c=="/") out=out c
+        else if(c=="n") out=out "\n"
+        else if(c=="r") out=out "\r"
+        else if(c=="t") out=out "\t"
+        else if(c=="b") out=out sprintf("%c",8)
+        else if(c=="f") out=out sprintf("%c",12)
+        else bad()
+      }
+      bad()
+    }
+    function value(depth,  c,key,text,start,selected) {
+      if(depth>64) bad()
+      ws(); c=substr(s,p,1)
+      selected=(depth==3 && names[1]=="task_worktree" && names[2]=="memory_root" && ((wanted=="memory" && names[3]=="root") || (wanted=="memory_kind" && names[3]=="kind"))) || (wanted!="memory" && wanted!="memory_kind" && depth==1 && names[1]==wanted)
+      if(selected) result=""
+      if(c=="{") {
+        p++; ws(); if(substr(s,p,1)=="}") { p++; return }
+        while(1) {
+          ws(); key=string(); names[depth+1]=key
+          if((wanted=="memory" || wanted=="memory_kind") && ((depth==0 && key=="task_worktree") || (depth==1 && names[1]=="task_worktree" && key=="memory_root"))) result=""
+          ws(); if(substr(s,p++,1)!=":") bad()
+          value(depth+1); delete names[depth+1]; ws(); c=substr(s,p++,1)
+          if(c=="}") return
+          if(c!=",") bad()
+        }
+      }
+      if(c=="[") {
+        p++; ws(); if(substr(s,p,1)=="]") { p++; return }
+        while(1) { value(depth+1); ws(); c=substr(s,p++,1); if(c=="]") return; if(c!=",") bad() }
+      }
+      if(c=="\"") { text=string(); if(selected) result=text; return }
+      start=p
+      while(p<=length(s) && substr(s,p,1) !~ /[ \t\r\n,}\]]/) p++
+      text=substr(s,start,p-start)
+      if(text !~ /^(true|false|null|-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?)$/) bad()
+    }
+    { s=s $0 "\n" }
+    END {
+      if(failed) exit 2
+      p=1; value(0); ws(); if(p<=length(s)) bad()
+      sub(/^[ \t\r\n]+/,"",result); sub(/[ \t\r\n]+$/,"",result)
+      printf "%s",result
+    }
+  ' "$config"
+}
+
+
+cargo_config_string() {
+  local key="$1"
+  [[ "$key" != repo ]] || key=repo_name
+  cargo_json_string "$(repository_ait_dir)/config.json" "$key"
+}
+
+physical_cargo_path_without_creation() {
+  local path="$1" suffix="" parent
+  while [[ ! -d "$path" ]]; do
+    parent="$(dirname "$path")"
+    [[ "$parent" != "$path" ]] || return 1
+    suffix="/$(basename "$path")$suffix"
+    path="$parent"
+  done
+  printf '%s%s\n' "$(cd "$path" && pwd -P)" "$suffix" | awk -F/ '
+    { for(i=1;i<=NF;i++) { if($i=="" || $i==".") continue; if($i=="..") { if(n>0) n-- } else parts[++n]=$i }
+      if(n==0) { print "/"; next }
+      for(i=1;i<=n;i++) printf "/%s",parts[i]; print ""
+    }'
+}
+
+
+cargo_memory_root() {
+  local path
+  path="$(cargo_config_string memory)" || {
+    printf 'Cannot read configured Cargo RAM root safely.\n' >&2
+    return 2
+  }
+  [[ -n "$path" ]] || return 0
+  case "$path" in
+    "~") path="$HOME" ;;
+    \~/*) path="$HOME/${path#\~/}" ;;
+    /*) ;;
+    *) path="$(dirname "$(repository_ait_dir)")/$path" ;;
+  esac
+  physical_cargo_path_without_creation "$path"
+}
+
+
+cargo_ram_headroom() {
+  awk -v configured="${AIT_CARGO_BUILD_MAX_BYTES:-}" -v floor="$DEFAULT_REPOSITORY_CARGO_BUILD_MAX_BYTES" \
+    'BEGIN { if(configured !~ /^[0-9]+$/ || configured+0<floor) configured=floor; printf "%.0f\n",configured }'
+}
+
+cargo_memory_mount_available() {
+  local root="$1" kind mounted
+  kind="$(cargo_config_string memory_kind)" || return 1
+  case "$kind" in
+    macos_ram_volume)
+      if [[ "$root" == /Volumes/* ]]; then
+        mounted="$(LC_ALL=C df -Pk "$root" 2>/dev/null | awk 'NR==2 {line=$0; for(i=0;i<5;i++) sub(/^[^[:space:]]+[[:space:]]+/,"",line); print line}')" || return 1
+        [[ "$mounted" == "$root" ]] || return 1
+      fi ;;
+    linux_*)
+      mounted="$(LC_ALL=C df -PT "$root" 2>/dev/null | awk 'NR==2 {print $2}')" || return 1
+      [[ "$mounted" == tmpfs || "$mounted" == ramfs ]] || return 1 ;;
+  esac
+}
+
+
+cargo_available_bytes() {
+  local probe="$1"
+  while [[ ! -d "$probe" ]]; do
+    [[ "$probe" != / ]] || return 1
+    probe="$(dirname "$probe")"
+  done
+  LC_ALL=C df -Pk "$probe" 2>/dev/null | awk 'NR==2 && $4~/^[0-9]+$/ {printf "%.0f\n",$4*1024}'
+}
+
+
+repository_cargo_ssd_build_root() {
+  local path ram resolved child
+  path="$(repository_ait_dir)/cargo-build-ssd"
+  if [[ -L "$path" || ( -e "$path" && ! -d "$path" ) ]]; then
+    printf 'Cargo SSD fallback must be a physical repository cache directory: %s\n' "$path" >&2
+    return 2
+  fi
+  ram="$(cargo_memory_root)" || return
+  resolved="$(physical_cargo_path_without_creation "$path")"
+  if [[ -n "$ram" && ( "$ram" == / || "$resolved" == "$ram" || "$resolved" == "$ram/"* ) ]]; then
+    printf 'Cargo SSD fallback is inside the configured RAM root: %s\n' "$resolved" >&2
+    return 2
+  fi
+  for child in "$path/canonical" "$path/task-workspaces"; do
+    if [[ -L "$child" || ( -e "$child" && ! -d "$child" ) ]]; then
+      printf 'Cargo SSD cache namespace is not a physical directory: %s\n' "$child" >&2
+      return 2
+    fi
+  done
+  printf '%s\n' "$resolved"
+}
+
+
+repository_cargo_registered_build_root() {
+  local shared
+  shared="$(repository_ait_dir)/cargo-build"
+  if [[ -d "$shared" ]]; then
+    (cd "$shared" && pwd -P)
+  else
+    printf '%s\n' "$shared"
+  fi
+}
+
+
+repository_cargo_build_leaf() {
+  local root="$1" name path parent
+  name="$(managed_worktree_name || true)"
+  if [[ -n "$name" ]]; then
+    parent="$root/task-workspaces"
+    path="$parent/$name"
+  else
+    parent="$root"
+    path="$root/$CANONICAL_CARGO_BUILD_DIRNAME"
+  fi
+  if [[ -L "$parent" || -L "$path" || ( -e "$path" && ! -d "$path" ) ]]; then
+    printf 'Managed Cargo build leaf is not a physical directory: %s\n' "$path" >&2
+    return 2
+  fi
+  printf '%s\n' "$path"
 }
 
 managed_worktree_name() {
@@ -82,23 +323,16 @@ cargo_target_dir() {
 cargo_build_dir() {
   if [[ -n "${AIT_SHARED_CARGO_BUILD_DIR:-}" ]]; then
     printf '%s\n' "${AIT_SHARED_CARGO_BUILD_DIR}"
-    return 0
+    return
   fi
   if [[ -n "${CARGO_BUILD_BUILD_DIR:-}" ]]; then
     printf '%s\n' "${CARGO_BUILD_BUILD_DIR}"
-    return 0
+    return
   fi
   local build_root
-  build_root="$(repository_cargo_build_root)"
-  local worktree_name
-  worktree_name="$(managed_worktree_name || true)"
-  if [[ -n "${worktree_name}" ]]; then
-    printf '%s/task-workspaces/%s\n' "${build_root}" "${worktree_name}"
-    return 0
-  fi
-  printf '%s/%s\n' "${build_root}" "${CANONICAL_CARGO_BUILD_DIRNAME}"
+  build_root="$(repository_cargo_build_root)" || return
+  repository_cargo_build_leaf "$build_root"
 }
-
 resolved_cargo_dir() {
   local path="$1"
   if [[ "$(basename "${path}")" == "{workspace-path-hash}" ]]; then
@@ -267,6 +501,32 @@ auto_reclaim_cargo_build_dir() {
   release_cargo_gc_lock "${lock_dir}"
 }
 
+invoke_cargo_once() {
+  local space_error
+  cargo_status=0
+  # Preserve both output streams and keep only a bounded in-memory error marker.
+  if space_error="$("$cargo_bin" "$@" 2>&1 >&3 | tee /dev/fd/4 | LC_ALL=C awk '
+    {
+      line=tolower($0)
+      diagnostic=(line ~ /(error:|fatal:|failed to (write|create|build archive)|ar:|ld:|rustc:)/)
+      # Keep the established Server ENOSPC write form, with complete tokens.
+      space=(line ~ /(^|[^[:alnum:]_])(no space left on device|os error 28)([^[:alnum:]_]|$)/ ||
+        (line ~ /(^|[^[:alnum:]_])enospc([^[:alnum:]_]|$)/ && line ~ /(errno|i\/o|io error|failed to (write|create|build archive)|write.*failed|filesystem|file system)/))
+      darwin_space=(line ~ /(^|[[:space:]])(cargo:warning=)?write64\(\)[[:space:]]+failed,[[:space:]]+returned[[:space:]]+-1[[:space:]]+expected[[:space:]]+[0-9]+,[[:space:]]+errno=28([^[:alnum:]_]|$)/)
+      if((diagnostic && space) || darwin_space) found=1
+    }
+    END {print found ? 1 : 0}
+  ')"; then
+    cargo_status=0
+  else
+    cargo_status=$?
+  fi
+  cargo_space_failure=0
+  if [[ "$cargo_status" != 0 && "$space_error" == 1 ]]; then
+    cargo_space_failure=1
+  fi
+}
+
 run_cargo() {
   local cargo_bin
   cargo_bin="$(resolve_cargo)"
@@ -282,15 +542,37 @@ run_cargo() {
   fi
   local target_dir
   local build_dir
-  target_dir="$(cargo_target_dir)"
-  build_dir="$(cargo_build_dir)"
-  ensure_distinct_cargo_dirs "${target_dir}" "${build_dir}"
+  local automatic_build=0 managed_ram=0 ram
+  if [[ -z "${AIT_SHARED_CARGO_BUILD_DIR:-}" && -z "${CARGO_BUILD_BUILD_DIR:-}" ]]; then
+    automatic_build=1
+  fi
+  target_dir="$(cargo_target_dir)" || return
+  build_dir="$(cargo_build_dir)" || return
+  ensure_distinct_cargo_dirs "$target_dir" "$build_dir" || return
+  if [[ "$automatic_build" == 1 ]]; then
+    ram="$(cargo_memory_root)" || return
+    if [[ -n "$ram" && ( "$ram" == / || "$build_dir" == "$ram/"* ) ]]; then
+      managed_ram=1
+    elif [[ -L "$ROOT_DIR/.ait/cargo-build" && "$build_dir" != "$(repository_ait_dir)/cargo-build-ssd/"* ]]; then
+      managed_ram=1
+    fi
+  fi
   export CARGO_TARGET_DIR="${target_dir}"
   export CARGO_BUILD_BUILD_DIR="${build_dir}"
   export CARGO_INCREMENTAL=0
   local cargo_status=0
-  "${cargo_bin}" "$@" || cargo_status=$?
-  auto_reclaim_cargo_build_dir "${build_dir}"
+  local cargo_space_failure=0
+  invoke_cargo_once "$@" 3>&1 4>&2
+  if [[ "$cargo_status" != 0 && "$cargo_space_failure" == 1 && "$managed_ram" == 1 ]]; then
+    local fallback
+    fallback="$(repository_cargo_ssd_build_root)" || return
+    build_dir="$(repository_cargo_build_leaf "$fallback")" || return
+    ensure_distinct_cargo_dirs "$target_dir" "$build_dir" || return
+    printf 'Cargo RAM-to-SSD fallback: Cargo reported filesystem space exhaustion; rerunning this invocation once in %s\n' "$build_dir" >&2
+    export CARGO_BUILD_BUILD_DIR="$build_dir"
+    invoke_cargo_once "$@" 3>&1 4>&2
+  fi
+  auto_reclaim_cargo_build_dir "$build_dir"
   return "${cargo_status}"
 }
 
@@ -632,6 +914,34 @@ compact_one_cargo_build_dir() {
   printf 'Cargo build dir compacted: %s (before: %s)\n' "${build_dir}" "${before}"
 }
 
+owned_fallback_cargo_build_dirs() {
+  local include_worktrees="$1" fallback name current metadata owner recorded canonical
+  fallback="$(repository_cargo_ssd_build_root)" || return
+  current="$(managed_worktree_name || true)"
+  canonical="$(dirname "$(repository_ait_dir)")"
+  if [[ -z "$current" || "$include_worktrees" == 1 ]]; then
+    [[ ! -d "$fallback/canonical" ]] || printf '%s\n' "$fallback/canonical"
+  fi
+  if [[ -n "$current" && -d "$fallback/task-workspaces/$current" && ! -L "$fallback/task-workspaces/$current" ]]; then
+    printf '%s\n' "$fallback/task-workspaces/$current"
+  fi
+  [[ "$include_worktrees" == 1 ]] || return 0
+  local leaf
+  for leaf in "$fallback"/task-workspaces/*; do
+    [[ -d "$leaf" && ! -L "$leaf" ]] || continue
+    name="$(basename "$leaf")"
+    case "$name" in ''|.|..|*[!a-zA-Z0-9._-]*) continue ;; esac
+    metadata="$(repository_ait_dir)/worktrees/$name.json"
+    [[ -f "$metadata" && ! -L "$metadata" ]] || continue
+    recorded="$(cargo_json_string "$metadata" name)" || continue
+    owner="$(cargo_json_string "$metadata" repo_root)" || continue
+    [[ "$recorded" == "$name" && -n "$owner" ]] || continue
+    [[ "$(physical_cargo_path_without_creation "$owner")" == "$canonical" ]] || continue
+    printf '%s\n' "$leaf"
+  done
+  return 0
+}
+
 compact_cargo_targets() {
   local dry_run=0
   local force=0
@@ -666,7 +976,10 @@ Build-dir selection follows:
   1. AIT_SHARED_CARGO_BUILD_DIR, when set.
   2. CARGO_BUILD_BUILD_DIR, when set.
   3. Otherwise a managed Task leaf or the fixed canonical directory beneath
-     .ait/cargo-build is used.
+     .ait/cargo-build is used when RAM has sufficient free headroom.
+     Unavailable or insufficient managed RAM uses .ait/cargo-build-ssd.
+Known fallback canonical/registered Task caches are included without adopting
+unregistered folders or changing the shared RAM link.
 EOF
         return 0
         ;;
@@ -681,7 +994,13 @@ EOF
   local targets=()
   targets+=("$(cargo_target_dir)")
   local build_dirs=()
-  build_dirs+=("$(cargo_build_dir)")
+  local selected_build fallback_dirs fallback_dir
+  selected_build="$(cargo_build_dir)" || return
+  build_dirs+=("$selected_build")
+  fallback_dirs="$(owned_fallback_cargo_build_dirs "$include_worktrees")" || return
+  while IFS= read -r fallback_dir; do
+    [[ -z "$fallback_dir" ]] || build_dirs+=("$fallback_dir")
+  done <<< "$fallback_dirs"
   if [[ "${include_worktrees}" == "1" ]]; then
     local repository_target_root
     repository_target_root="$(repository_cargo_target_root)"
@@ -693,11 +1012,15 @@ EOF
       targets+=("${worktree_target}")
     done
     local repository_build_root
-    repository_build_root="$(repository_cargo_build_root)"
+    repository_build_root="$(repository_cargo_registered_build_root)" || return
     local worktree_build
-    for worktree_build in \
-      "${repository_build_root}/task-workspaces"/* \
-      "${ROOT_DIR}"/.ait-worktree-links/*/.ait/cargo-build/workspaces/*/*; do
+    if [[ "$repository_build_root" != "$(repository_ait_dir)/cargo-build-ssd" ]]; then
+      for worktree_build in "${repository_build_root}/task-workspaces"/*; do
+        [[ -d "${worktree_build}" && ! -L "${worktree_build}" ]] || continue
+        build_dirs+=("${worktree_build}")
+      done
+    fi
+    for worktree_build in "${ROOT_DIR}"/.ait-worktree-links/*/.ait/cargo-build/workspaces/*/*; do
       [[ -d "${worktree_build}" && ! -L "${worktree_build}" ]] || continue
       build_dirs+=("${worktree_build}")
     done
@@ -764,7 +1087,12 @@ task-workspaces leaf beneath .ait/cargo-target, and the canonical checkout uses
 Set AIT_SHARED_CARGO_BUILD_DIR to opt into shared intermediates. Otherwise
 CARGO_BUILD_BUILD_DIR is honored, managed Task worktrees use their dedicated
 task-workspaces leaf, and the canonical checkout reuses the fixed
-.ait/cargo-build/canonical directory. Automatic build-dir reclamation is disabled by default; set a nonzero
+.ait/cargo-build/canonical directory. Managed RAM needs at least 4 GiB free,
+raised by a larger positive AIT_CARGO_BUILD_MAX_BYTES. Insufficient/unavailable
+RAM selects .ait/cargo-build-ssd with the same canonical/Task isolation.
+Proven Cargo filesystem space exhaustion retries only that failed invocation
+once on SSD. Shared RAM links/caches and final target placement are preserved.
+Automatic build-dir reclamation is disabled by default; set a nonzero
 AIT_CARGO_BUILD_MAX_BYTES to opt in. Reclamation is rate-limited by
 AIT_CARGO_BUILD_GC_INTERVAL_SECONDS (default 3600).
 EOF

@@ -4,10 +4,13 @@ pub mod payloads;
 pub mod records;
 
 pub use codec::{PlanCodec, PlanItemCodec, PlanRevisionCodec};
+pub type RemotePlanCodec = PlanCodec<2>;
+pub type RemotePlanRevisionCodec = PlanRevisionCodec<2>;
 pub use files::{
     PLAN_BIN, PLAN_ITEM_BIN, PLAN_ITEM_PAYLOAD_BIN, PLAN_ITEM_RECORD_SIZE, PLAN_LAYOUT_ID,
     PLAN_PAYLOAD_BIN, PLAN_RECORD_SIZE, PLAN_REVISION_BIN, PLAN_REVISION_PAYLOAD_BIN,
-    PLAN_REVISION_RECORD_SIZE,
+    PLAN_REVISION_RECORD_SIZE, REMOTE_PLAN_LAYOUT_ID, REMOTE_PLAN_RECORD_SIZE,
+    REMOTE_PLAN_REVISION_RECORD_SIZE,
 };
 #[cfg(test)]
 pub(crate) use files::{

@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { lstat, readFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveNativeManifest } from "../scripts/native-build.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = "1.1.4";
-const CORE_SNAPSHOT = "SNP-D8DD5ACBA74B";
+const CORE_SNAPSHOT = "SNP-E05379CAEDF7";
 const PACKAGE_NAME = "@wa120/ait-native";
 const PRODUCT_DESCRIPTION =
   "Agent-first, language-neutral workflow for verified repository changes";
@@ -192,8 +193,7 @@ test("source build is locked to the restored ait-core binding", async () => {
 test("published runtime loads an addon directly and has no process relay", async () => {
   const runtime = await readFile(path.join(ROOT, "src", "runtime.js"), "utf8");
   const agent = await readFile(path.join(ROOT, "src", "agent.js"), "utf8");
-  const command = await readFile(path.join(ROOT, "bin", "ait.mjs"), "utf8");
-  const source = `${runtime}\n${agent}\n${command}`;
+  const source = `${runtime}\n${agent}`;
 
   assert.match(runtime, /require\(addonPath\)/);
   assert.match(runtime, /process\.platform/);
@@ -209,13 +209,66 @@ test("published runtime loads an addon directly and has no process relay", async
 test("native build validates the locked external and public monorepo layouts", async () => {
   const build = await readFile(path.join(ROOT, "scripts", "native-build.mjs"), "utf8");
 
-  assert.match(build, /SNP-D8DD5ACBA74B/);
+  assert.match(build, /SNP-E05379CAEDF7/);
   assert.match(build, /\.ait-external-marker\.json/);
   assert.match(build, /ait-monorepo-source\.json/);
   assert.match(build, /ait-release-family\.json/);
   assert.match(build, /rust.*crates.*ait-napi.*Cargo\.toml/s);
   assert.match(build, /--locked/);
   assert.doesNotMatch(build, /language.*detect|project.*detect/i);
+});
+
+test("current public source validation excludes retired chat components", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-public-source-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const nodeRoot = path.join(root, "ait-node");
+  await mkdir(path.join(nodeRoot, "scripts"), { recursive: true });
+  const script = path.join(nodeRoot, "scripts", "native-build.mjs");
+  await copyFile(path.join(ROOT, "scripts", "native-build.mjs"), script);
+  const coreManifest = path.join(root, "ait-core", "rust", "crates", "ait-napi", "Cargo.toml");
+  await mkdir(path.dirname(coreManifest), { recursive: true });
+  await writeFile(coreManifest, "# source-resolution fixture\n");
+  const repositories = ["ait-core", "ait-server", "ait-runner", "ait-python", "ait-node"];
+  const components = ["ait", "ait-server", "ait-runner", "ait-python", "ait-node"];
+  const mapping = {
+    schema: "ait.release.monorepo-source/v1",
+    public_source_identity: "weita2026/ait-native",
+    public_publish: false,
+    subtrees: repositories.map((repository, index) => ({
+      source_repository: repository,
+      path: repository,
+      source_snapshot: repository === "ait-core" ? CORE_SNAPSHOT : "SNP-FIXTURE",
+      license: "Apache-2.0",
+      components: [components[index]],
+    })),
+  };
+  const family = {
+    schema: "ait.release.family/v3",
+    public_source: { model: "release-monorepo", identity: "weita2026/ait-native" },
+    components: repositories.map((repository, index) => ({
+      id: components[index],
+      source_repository: repository,
+      source_snapshot: repository === "ait-core" ? CORE_SNAPSHOT : "SNP-FIXTURE",
+    })),
+  };
+  const writeMetadata = async () => {
+    await writeFile(path.join(root, "ait-monorepo-source.json"), JSON.stringify(mapping));
+    await writeFile(path.join(root, "ait-release-family.json"), JSON.stringify(family));
+  };
+  await writeMetadata();
+  const { resolveNativeManifest: resolveFixture } = await import(pathToFileURL(script).href);
+  const source = await resolveFixture();
+  assert.equal(source.layout, "public-monorepo");
+  assert.equal(await realpath(source.manifestPath), await realpath(coreManifest));
+  for (const retired of ["ait-agent", "ait-agent-worker"]) {
+    family.components.push({ id: retired, source_repository: "ait-core", source_snapshot: CORE_SNAPSHOT });
+    await writeMetadata();
+    await assert.rejects(resolveFixture(), /public family Snapshots differ/);
+    family.components.pop();
+  }
+  mapping.subtrees[0].components.push("ait-agent");
+  await writeMetadata();
+  await assert.rejects(resolveFixture(), /public family Snapshots differ/);
 });
 
 test("cross-platform CI uses one logical runner and builds the addon first", async () => {

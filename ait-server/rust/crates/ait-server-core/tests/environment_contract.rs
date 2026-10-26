@@ -60,6 +60,68 @@ fn is_installed_release_source(relative: &Path) -> bool {
     true
 }
 
+/// Only an actual leading inner attribute proves this entire source module is
+/// absent from installed release builds. Naming or substring matches do not.
+fn has_leading_test_only_attribute(source: &str) -> bool {
+    let mut remaining = source.strip_prefix('\u{feff}').unwrap_or(source);
+    loop {
+        remaining = remaining.trim_start();
+        if let Some(comment) = remaining.strip_prefix("//") {
+            remaining = comment.split_once('\n').map_or("", |(_, rest)| rest);
+            continue;
+        }
+        if remaining.starts_with("/*") {
+            let bytes = remaining.as_bytes();
+            let mut index = 2;
+            let mut depth = 1;
+            while index + 1 < bytes.len() && depth > 0 {
+                match &bytes[index..index + 2] {
+                    b"/*" => {
+                        depth += 1;
+                        index += 2;
+                    }
+                    b"*/" => {
+                        depth -= 1;
+                        index += 2;
+                    }
+                    _ => index += 1,
+                }
+            }
+            if depth != 0 {
+                return false;
+            }
+            remaining = &remaining[index..];
+            continue;
+        }
+        return remaining.starts_with("#![cfg(test)]");
+    }
+}
+
+#[test]
+fn file_level_test_attribute_requires_a_real_inner_attribute() {
+    for source in [
+        "#![cfg(test)]\nmod test_only {}",
+        "\u{feff}\n  #![cfg(test)]\n",
+        "// license\n/* outer /* nested */ comment */\n#![cfg(test)]\n",
+    ] {
+        assert!(has_leading_test_only_attribute(source), "{source}");
+    }
+    for source in [
+        "// #![cfg(test)]\nfn production() {}",
+        "/* #![cfg(test)] */\nfn production() {}",
+        "const TEXT:&str=\"#![cfg(test)]\";",
+        "r#\"#![cfg(test)]\"#",
+        "#[cfg(test)] mod tests {}\nfn production() {}",
+        "#![cfg(any(test,feature=\"runtime\"))]\nfn production() {}",
+        "#![cfg(not(test))]\nfn production() {}",
+        "/* unclosed #![cfg(test)]",
+        "fn production() { /* #![cfg(test)] */ }",
+        "",
+    ] {
+        assert!(!has_leading_test_only_attribute(source), "{source}");
+    }
+}
+
 #[test]
 fn installed_release_environment_access_uses_registered_names() {
     let root = repository_root();
@@ -81,6 +143,9 @@ fn installed_release_environment_access_uses_registered_names() {
             continue;
         }
         let source = fs::read_to_string(&path).expect("read Rust source");
+        if has_leading_test_only_attribute(&source) {
+            continue;
+        }
         for capture in direct_literal.captures_iter(&source) {
             violations.insert(format!(
                 "{} reads literal {} instead of the registry constant",

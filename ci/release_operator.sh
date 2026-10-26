@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+operation_owner=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/release_operation_owner.mjs
+if [[ $# -gt 0 && ${1:-} != --help && ${1:-} != -h ]]; then
+  if [[ -z ${AIT_RELEASE_OPERATION_TOKEN:-} ]]; then
+    exec node "${operation_owner}" --shell "$0" "$@"
+  fi
+  node "${operation_owner}" --check "${AIT_RELEASE_OPERATION_ROOT:?}" || exit 75
+fi
+
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 defaults=${repo_root}/release/endpoint-publication.defaults.json
 

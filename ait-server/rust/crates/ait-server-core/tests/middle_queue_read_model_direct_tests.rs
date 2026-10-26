@@ -316,3 +316,32 @@ fn task_scoped_short_change_ids_do_not_cross_contaminate_queue_state() {
     assert_eq!(first_inbox["requested_groups"].as_array().unwrap().len(), 1);
     assert_eq!(second_inbox["requested_groups"], json!([]));
 }
+
+#[test]
+fn task_candidate_queue_and_inbox_keep_zero_change_work_and_exact_evidence() {
+    let mut payload = json!({
+        "tasks": [{"task_id":"RT-0001","repo_name":"repo","status":"active",
+            "current_patchset_id":"RT-0001/P-02","workflow_state":"validation_pending"}],
+        "changes": [],
+        "patchsets": [
+            {"task_id":"RT-0001","repo_name":"repo","patchset_id":"RT-0001/P-01","patchset_number":1,"change_id":null},
+            {"task_id":"RT-0001","repo_name":"repo","patchset_id":"RT-0001/P-02","patchset_number":2,"change_id":null}
+        ],
+        "reviews": [{"task_id":"RT-0001","patchset_id":"RT-0001/P-01","action":"approve"}]
+    });
+    let value = summary(payload.clone());
+    let task = &value["task_queue"]["items"][0];
+    assert_eq!(task["current_patchset"]["patchset_id"], "RT-0001/P-02");
+    assert_eq!(task["changes"]["total"], 0);
+    assert_eq!(task["workflow"]["state"], "validation_pending");
+    assert_eq!(task["review_state"]["approvals"], 0);
+    assert_eq!(task["next_action"]["code"], "open_task");
+    let inbox = &value["reviewer_inbox"]["items"];
+    assert_eq!(inbox.as_array().unwrap().len(), 1);
+    assert!(inbox[0]["change_id"].is_null());
+    assert_eq!(inbox[0]["current_patchset"]["patchset_id"], "RT-0001/P-02");
+    payload["tasks"][0]["current_patchset_id"] = JsonValue::Null;
+    let value = summary(payload);
+    assert!(value["task_queue"]["items"][0]["current_patchset"].is_null());
+    assert_eq!(value["reviewer_inbox"]["count"], 0);
+}

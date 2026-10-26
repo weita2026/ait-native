@@ -8,6 +8,8 @@ pub fn tree_pack_manifest_path(pack_path: &str, entry_name: &str) -> String {
 impl TreePackEntryArchive {
     pub fn open_with_format(pack_path: &str, persisted_pack_format: &str) -> Result<Self, String> {
         let _trace = crate::perfetto_range!("ait.core.tree_pack.archive.open_with_format");
+        #[cfg(test)]
+        crate::binary_db::read_profile::note("tree_pack_archive_opens", 0);
         TreePackFormatKind::from_persisted(persisted_pack_format)?;
         let pack_index = read_zstd_chunked_container_index(
             pack_path,
@@ -70,6 +72,40 @@ impl TreePackEntryArchive {
             "entry_ordinal": member.member_ordinal,
             "rows": rows,
         }))
+    }
+
+    pub(crate) fn retained_reader_bytes(&self) -> usize {
+        let index = &self.pack_index;
+        std::mem::size_of::<Self>()
+            + self.pack_path.capacity()
+            + index.pack_format.capacity()
+            + index.pack_id.capacity()
+            + index.created_at.capacity()
+            + index.index_entry_name.capacity()
+            + index.chunks.capacity() * std::mem::size_of::<ZstdChunkedChunkIndex>()
+            + index
+                .chunks
+                .iter()
+                .map(|c| c.checksum.capacity())
+                .sum::<usize>()
+            + index.members.capacity() * std::mem::size_of::<ZstdChunkedMemberIndex>()
+            + index
+                .members
+                .iter()
+                .map(|m| {
+                    m.entry_name.capacity()
+                        + m.content_id.capacity()
+                        + m.entry_type.capacity()
+                        + m.checksum.capacity()
+                        + m.base_content_id.as_ref().map_or(0, String::capacity)
+                        + m.delta_algorithm.as_ref().map_or(0, String::capacity)
+                })
+                .sum::<usize>()
+            + self
+                .raw_chunk_cache
+                .values()
+                .map(|b| b.capacity() + 128)
+                .sum::<usize>()
     }
 
     #[cfg(test)]

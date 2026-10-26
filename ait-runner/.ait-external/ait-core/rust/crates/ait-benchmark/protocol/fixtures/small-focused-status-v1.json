@@ -1,0 +1,22 @@
+{
+  "contract": "ait-vcs-benchmark-fixture/v1",
+  "fixture_id": "small-focused-status-v1",
+  "revision": "2026-07-19.1",
+  "scale": "small",
+  "seed": 1151,
+  "file_count": 500,
+  "total_bytes": 4194304,
+  "history_nodes": 1,
+  "max_depth": 8,
+  "binary_percent": 20,
+  "ignored_percent": 10,
+  "features": [
+    "small_text",
+    "large_binary",
+    "deep_directories",
+    "ignored_files",
+    "renames",
+    "branches",
+    "merge_history"
+  ]
+}

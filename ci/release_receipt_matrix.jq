@@ -7,6 +7,15 @@ def ensure($condition; $message):
 ($authority_contract.repositories | INDEX(.repo_name)) as $authority_by_repo |
 ($platform_contract.targets | INDEX(.target)) as $platform_by_target |
 ($family_manifest.components | group_by(.source_repository)) as $component_groups |
+($family_manifest.components | map(.id) | sort) as $component_ids |
+(["ait", "ait-server", "ait-runner", "ait-python", "ait-node"] | sort) as $current_ids |
+(["ait", "ait-agent", "ait-agent-worker", "ait-server", "ait-runner", "ait-python", "ait-node"] | sort) as $legacy_ids |
+(if $component_ids == $current_ids then 31
+ elif $component_ids == $legacy_ids then 43
+ else error("unsupported public family component selector") end) as $artifact_count |
+($family_manifest.family.version | split(".") | .[0:2] | map(tonumber)) as $family_version |
+(if ($family_version[0] > 1 or ($family_version[0] == 1 and $family_version[1] >= 2)) and $component_ids != $current_ids
+ then error("current public family must exclude retired chat components") else . end) |
 [
   $family_manifest.components[] as $component
   | $component.artifacts[] as $artifact
@@ -258,9 +267,9 @@ null
 | ensure(
     ($sources | length) == 5
       and ($builds | length) == 31
-      and ($artifact_rows | length) == 43
-      and ([ $builds[].expected_component_artifact_count ] | add) == 43;
-    "release matrix must resolve to five sources, 31 receipts, and 43 component artifacts"
+      and ($artifact_rows | length) == $artifact_count
+      and ([ $builds[].expected_component_artifact_count ] | add) == $artifact_count;
+    "release matrix must resolve to five sources and 31 receipts with the exact current or historical component artifacts"
   )
 | ensure(
     ([ $builds[] | select(.target == "portable") ] | length) == 1

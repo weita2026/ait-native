@@ -755,7 +755,6 @@ fn native_remote_add_default_persists_remote_config_and_validates_fixed_server_a
         .to_string();
     let config_path = root.join(".ait/config.json");
     let mut config: JsonValue = parse_json_file(&config_path);
-    config["workflow_mode"] = json!("solo_local");
     config["workflow_default_scope"] = json!("local");
     config["task_default_scope"] = json!("local");
     config["change_default_scope"] = json!("local");
@@ -775,17 +774,9 @@ fn native_remote_add_default_persists_remote_config_and_validates_fixed_server_a
     );
     assert_eq!(added["is_default_push"].as_i64(), Some(1));
     assert_eq!(added["is_default_pull"].as_i64(), Some(1));
-    assert_eq!(added["patch_ci"]["status"], json!("ready"));
-    assert_eq!(added["patch_ci"]["required"], json!(true));
-    assert_eq!(
-        added["patch_ci"]["manifest_path"],
-        json!("ci/patch_ci.json")
-    );
-    assert_eq!(
-        added["patch_ci"]["blocking_suite_ids"],
-        json!(["fixture_unit"])
-    );
-    assert!(added["patch_ci"]["snapshot_id"].as_str().is_some());
+    assert_eq!(added["patch_ci"]["status"], json!("deferred_to_workflow"));
+    assert_eq!(added["patch_ci"]["required"], json!(false));
+    assert_eq!(added["patch_ci"]["delivery_policy_default_requires_tests"], json!(true));
     assert_eq!(added["agent_harness"]["status"], json!("synced"));
     assert_eq!(added["agent_harness"]["scope"], json!("local"));
     assert_eq!(
@@ -818,7 +809,7 @@ fn native_remote_add_default_persists_remote_config_and_validates_fixed_server_a
 }
 
 #[test]
-fn native_remote_add_skips_patch_ci_bootstrap_when_tests_are_disabled() {
+fn native_remote_add_without_ci_preserves_required_delivery_tests() {
     let (base_url, log, _state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
@@ -832,12 +823,13 @@ fn native_remote_add_skips_patch_ci_bootstrap_when_tests_are_disabled() {
         .to_string();
     write_file(
         &root.join(".ait/policy.yaml"),
-        "version: 1\npolicy_id: prototype\ndefaults:\n  require_tests: false\n",
+        "version: 1\npolicy_id: prototype\ndefaults:\n  require_tests: true\n",
     );
 
     let added = json_output(root, &["remote", "add", "mirror", &base_url, "--json"]);
 
-    assert_eq!(added["patch_ci"]["status"], json!("not_required"));
+    assert_eq!(added["patch_ci"]["status"], json!("deferred_to_workflow"));
+    assert_eq!(added["patch_ci"]["delivery_policy_default_requires_tests"], json!(true));
     assert_eq!(added["patch_ci"]["required"], json!(false));
     assert_eq!(added["repo_name"], json!(repo_directory_name));
     assert!(!root.join("ci/patch_ci.json").exists());
@@ -852,95 +844,24 @@ fn native_remote_add_skips_patch_ci_bootstrap_when_tests_are_disabled() {
 }
 
 #[test]
-fn native_remote_add_generates_language_neutral_patch_ci_before_any_remote_contact() {
-    let temp = init_repo("https://example.test");
+fn native_remote_add_preserves_invalid_disk_ci_without_head_admission() {
+    let (base_url, log, _state, handle) = spawn_fake_remote();
+    let temp = init_repo(&base_url);
     let root = temp.path();
-    write_file(
-        &root.join("pyproject.toml"),
-        "[project]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
-    );
-
-    let output = cargo_bin()
-        .current_dir(root)
-        .args([
-            "remote",
-            "add",
-            "mirror",
-            "http://127.0.0.1:1",
-            "--default",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Created a language-neutral ci/patch_ci.json starter."),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(
-            "No project manifests were inspected and no validation command was inferred."
-        ),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("Remote registration was not attempted."),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("CONFIGURE_PATCHSET_TEST_COMMAND"),
-        "{stderr}"
-    );
-    assert!(!stderr.contains("python3 -m pytest"), "{stderr}");
-    assert!(stderr.contains("ait snapshot create"), "{stderr}");
-    assert!(
-        stderr.contains("ait remote add mirror http://127.0.0.1:1 --default"),
-        "{stderr}"
-    );
-    assert!(!stderr.contains("--repo-name"), "{stderr}");
-    assert!(!stderr.contains("--discard-export"), "{stderr}");
-
-    let generated = parse_json_file(root.join("ci/patch_ci.json"));
-    assert_eq!(
-        generated["suites"][0]["runner"]["commands"],
-        json!(["CONFIGURE_PATCHSET_TEST_COMMAND"])
-    );
-    let generated_bytes = fs::read(root.join("ci/patch_ci.json")).unwrap();
-
-    let retry = cargo_bin()
-        .current_dir(root)
-        .args([
-            "remote",
-            "add",
-            "mirror",
-            "http://127.0.0.1:1",
-            "--default",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert!(!retry.status.success());
-    let retry_stderr = String::from_utf8_lossy(&retry.stderr);
-    assert!(
-        retry_stderr.contains("still contains the generated placeholder"),
-        "{retry_stderr}"
-    );
-    assert!(
-        retry_stderr.contains("existing configuration was not overwritten"),
-        "{retry_stderr}"
-    );
-    assert_eq!(
-        fs::read(root.join("ci/patch_ci.json")).unwrap(),
-        generated_bytes
-    );
-
-    let remotes = json_output(root, &["remote", "list", "--json"]);
-    assert!(remotes
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|row| row["name"] != "mirror"));
+    let path = root.join("ci/patch_ci.json");
+    write_file(&path, "invalid user-owned CI\n");
+    let stamp = fs::metadata(&path).unwrap().modified().unwrap();
+    let policy = fs::read(root.join(".ait/policy.yaml")).unwrap();
+    let head = json_output(root, &["status", "--json"])["head_snapshot_id"].clone();
+    let added = json_output(root, &["remote", "add", "mirror", &base_url, "--json"]);
+    assert_eq!(added["patch_ci"]["status"], json!("deferred_to_workflow"));
+    assert_eq!(added["patch_ci"]["delivery_policy_default_requires_tests"], json!(true));
+    assert_eq!(fs::read(&path).unwrap(), b"invalid user-owned CI\n");
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), stamp);
+    assert_eq!(fs::read(root.join(".ait/policy.yaml")).unwrap(), policy);
+    assert_eq!(json_output(root, &["status", "--json"])["head_snapshot_id"], head);
+    assert!(log.lock().unwrap().iter().any(|row| row.method == "GET" && row.url == "/v1/native/repository-authorities/7"));
+    handle.join().unwrap();
 }
 
 #[test]
@@ -1119,7 +1040,7 @@ fn native_queue_summary_json_covers_empty_local_inventory() {
 }
 
 #[test]
-fn native_queue_summary_json_reports_local_binary_workflow_authority_in_solo_remote() {
+fn native_queue_summary_json_reports_local_binary_workflow_authority_with_remote_config() {
     let temp = init_repo("http://127.0.0.1:1");
     let root = temp.path();
     disable_default_remote(root);

@@ -54,6 +54,12 @@ pub enum SourceSpec {
         #[serde(default)]
         external_repository_indexes: BTreeMap<String, RepositoryIndex>,
     },
+    WorkflowPackage {
+        repository_index: RepositoryIndex,
+        package_hash: String,
+        base_snapshot_id: String,
+        revision_snapshot_id: String,
+    },
     #[doc(hidden)]
     LegacyRemoteSnapshot {
         repo_name: String,
@@ -346,6 +352,7 @@ impl SourceSpec {
         match self {
             Self::LocalDirectory { .. } => "local_directory",
             Self::RemoteSnapshot { .. } | Self::LegacyRemoteSnapshot { .. } => "remote_snapshot",
+            Self::WorkflowPackage { .. } => "workflow_package",
         }
     }
 
@@ -371,6 +378,16 @@ impl SourceSpec {
                 }
                 Ok(())
             }
+            Self::WorkflowPackage {
+                package_hash,
+                base_snapshot_id,
+                revision_snapshot_id,
+                ..
+            } => {
+                validate_package_hash(package_hash)?;
+                validate_remote_identity(base_snapshot_id, "source.base_snapshot_id")?;
+                validate_remote_identity(revision_snapshot_id, "source.revision_snapshot_id")
+            }
             Self::LegacyRemoteSnapshot { .. } => Err(RunnerError::InvalidRequest(
                 "native-job.v3 forbids legacy repo_name/repo_id routing".to_string(),
             )),
@@ -391,11 +408,26 @@ impl SourceSpec {
                 }
                 validate_remote_identity(snapshot_id, "source.snapshot_id")
             }
-            Self::RemoteSnapshot { .. } => Err(RunnerError::InvalidRequest(
-                "legacy native-job.v1 cannot carry Binary Repository index routing".to_string(),
-            )),
+            Self::RemoteSnapshot { .. } | Self::WorkflowPackage { .. } => {
+                Err(RunnerError::InvalidRequest(
+                    "legacy native-job.v1 cannot carry Binary Repository index routing".to_string(),
+                ))
+            }
         }
     }
+}
+
+pub(crate) fn validate_package_hash(value: &str) -> Result<(), RunnerError> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(RunnerError::InvalidRequest(
+            "source.package_hash must be a lowercase SHA-256 hex digest".into(),
+        ));
+    }
+    Ok(())
 }
 
 impl NativeResult {
@@ -563,6 +595,37 @@ mod tests {
         assert!(encoded["source"].get("repo_id").is_none());
         assert!(encoded["source"].get("repo_name").is_none());
         assert!(encoded["source"].get("path").is_none());
+    }
+
+    #[test]
+    fn workflow_package_has_exact_source_identity_without_a_job_or_path_override() {
+        let mut package = request();
+        package.source = SourceSpec::WorkflowPackage {
+            repository_index: RepositoryIndex::new(0),
+            package_hash: "a".repeat(64),
+            base_snapshot_id: "SNP-000000000001".into(),
+            revision_snapshot_id: "SNP-000000000002".into(),
+        };
+        package.validate().unwrap();
+        let encoded = serde_json::to_value(&package).unwrap();
+        let decoded =
+            NativeJobRequest::parse_bounded(&serde_json::to_vec(&encoded).unwrap()).unwrap();
+        assert_eq!(decoded.source, package.source);
+        for key in ["path", "worker_job_index", "repo_name", "lease_token"] {
+            let mut mixed = encoded.clone();
+            mixed["source"][key] = serde_json::json!("untrusted override");
+            assert!(
+                NativeJobRequest::parse_bounded(&serde_json::to_vec(&mixed).unwrap()).is_err(),
+                "{key}"
+            );
+        }
+        for hash in ["A".repeat(64), "a".repeat(63), "g".repeat(64)] {
+            let mut invalid = encoded.clone();
+            invalid["source"]["package_hash"] = serde_json::json!(hash);
+            assert!(
+                NativeJobRequest::parse_bounded(&serde_json::to_vec(&invalid).unwrap()).is_err()
+            );
+        }
     }
 
     #[test]

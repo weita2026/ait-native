@@ -26,6 +26,7 @@ pub mod perfetto_trace;
 
 // Shared foundation traits and concrete kernels proven through the `plan`
 // wave. These are cross-domain only where the seam is already honest.
+pub mod agent_binary_db;
 pub mod agent_local_workflow_backend;
 pub mod attest_json;
 pub mod benchmark_usage;
@@ -41,6 +42,7 @@ pub mod diagnostics;
 pub mod environment_contract;
 pub mod external;
 pub mod file_io;
+pub mod git_binary_db;
 pub mod json_support;
 pub mod land_json;
 pub mod line_binary_db;
@@ -55,16 +57,19 @@ pub mod plan_filesystem;
 pub mod plan_foundation;
 pub mod plan_http_client;
 pub mod plan_http_contracts;
+pub mod plan_http_sdk;
 pub mod plan_pack_substrate;
 // Keep protocol normalizers behind the stable crate-level module path.
 pub mod plan_ports_protocols;
 pub mod plan_provenance;
+pub mod plan_storage_sdk;
 pub mod plan_store;
 pub mod plan_workflow_json;
 pub mod policy;
 pub mod policy_json;
 pub mod public_references;
 pub mod ref_names;
+pub mod remote_actor_metadata;
 pub mod remote_store;
 pub mod remote_sync_backend;
 pub mod remote_sync_local_store;
@@ -80,6 +85,7 @@ pub mod shared_foundation;
 pub mod snapshot_dag;
 pub mod snapshot_json;
 pub mod snapshot_merge;
+pub mod snapshot_rebase;
 pub mod snapshot_store;
 pub mod stash_binary_db;
 pub mod stash_store;
@@ -103,6 +109,7 @@ pub mod transport_envelope;
 pub mod worker_manifest;
 pub mod workspace_hash_cache;
 // Durable local task/change authority used by solo-local workflows.
+pub mod workflow_admission;
 pub mod workflow_binary_db;
 mod workflow_closeout_command_hints;
 mod workflow_closeout_decision;
@@ -112,7 +119,10 @@ mod workflow_closeout_projection;
 pub mod workflow_closeout_read_model;
 pub mod workflow_closeout_remote;
 pub mod workflow_closeout_views;
+pub mod workflow_context_sdk;
 pub mod workflow_event_store;
+pub mod workflow_expected_identity;
+pub mod workflow_package;
 pub mod workflow_primitives;
 pub mod workflow_release_store;
 // Compatibility wrapper modules that preserve the existing `plan_*` symbol

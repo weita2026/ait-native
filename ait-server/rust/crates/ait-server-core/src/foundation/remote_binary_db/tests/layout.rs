@@ -368,7 +368,7 @@ fn reject_absolute_or_parent_paths() {
 fn filesystem_mutations_repeat_file_family_authorization() -> StoreResult<()> {
     let (db, root, _ctx) = make_db();
     fs::create_dir_all(&root).expect("failed to create authority root");
-    let plan_file = BinaryFileId::new("plan.bin", 1, 4, BinaryDbFileFamily::Plan);
+    let plan_file = BinaryFileId::new("plan.bin", 2, 4, BinaryDbFileFamily::Plan);
     let content_payload =
         BinaryPayloadFileId::new("snapshot_payload.bin", 1, BinaryDbFileFamily::Content);
     let queue_index = BinaryIndexId::new("queue-defense.idx", 1, BinaryDbFileFamily::Queue);

@@ -76,7 +76,6 @@ fn signed_request(raw_payload: &str) -> JsonValue {
         "state_path": "/tmp/line-state.json",
         "runtime_target": {
             "mode": "remote",
-            "workflow_mode": "solo_remote",
             "repo_name": "demo-repo",
             "remote_name": "origin",
             "server_url": "http://127.0.0.1:8088",

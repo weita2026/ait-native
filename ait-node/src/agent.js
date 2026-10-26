@@ -27,6 +27,7 @@ const WORKER_CONTEXT_FIELDS = Object.freeze({
   nowUnixSeconds: "now_unix_seconds",
 });
 
+/** Legacy payload parser. Native chat capability calls are retired in AIT 1.2.0. */
 export class AgentCapabilities {
   constructor(payload) {
     if (!isRecord(payload)) {
@@ -88,6 +89,7 @@ export class AgentCapabilities {
   }
 }
 
+/** Compatibility facade. Chat calls propagate the native retirement error. */
 export class AgentClient {
   constructor(runtime = new NativeRuntime()) {
     if (!(runtime instanceof NativeRuntime)) {

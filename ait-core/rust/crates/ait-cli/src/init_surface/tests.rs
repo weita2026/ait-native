@@ -23,6 +23,118 @@ fn read_config(root: &Path) -> JsonMap<String, JsonValue> {
 }
 
 #[test]
+fn fresh_init_ignore_template_keeps_project_data_and_gitignored_files_visible() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    let paths = [
+        "source.txt",
+        "data.csv",
+        "datasets/input.csv",
+        "checkpoints/model.bin",
+        "fixtures/expected.bin",
+        "local-output/result.txt",
+    ];
+    for path in paths {
+        let file = root.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, b"project data\0\xff").unwrap();
+    }
+    let gitignore = b"local-output/\r\n*.csv\r\n";
+    fs::write(root.join(".gitignore"), gitignore).unwrap();
+    init_repo(&request(root)).unwrap();
+
+    let ignore = fs::read_to_string(root.join(".aitignore")).unwrap();
+    assert!(!ignore.is_empty());
+    assert!(ignore
+        .lines()
+        .all(|line| line.trim().is_empty() || line.trim().starts_with('#')));
+    assert_eq!(fs::read(root.join(".gitignore")).unwrap(), gitignore);
+    let visible =
+        ait_core::plan_filesystem::list_visible_workspace_paths(root.to_str().unwrap(), None, None)
+            .unwrap();
+    for path in paths {
+        assert!(visible.iter().any(|entry| entry == path), "hidden {path}");
+    }
+    assert!(visible.iter().any(|entry| entry == ".aitignore"));
+}
+
+#[test]
+fn fresh_init_and_reinit_preserve_existing_ignore_bytes() {
+    for contents in [
+        b"".as_slice(),
+        b"# user rules\r\n.scratch/\r\n!fixtures/keep.txt",
+    ] {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(".aitignore");
+        fs::write(&path, contents).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        let permissions = fs::metadata(&path).unwrap().permissions();
+        for expected in ["initialized", "reinitialized"] {
+            let result = init_repo(&request(temp.path())).unwrap();
+            assert_eq!(result["action"], expected);
+            assert_eq!(fs::read(&path).unwrap(), contents);
+            assert_eq!(fs::metadata(&path).unwrap().permissions(), permissions);
+        }
+    }
+}
+
+#[test]
+fn reinit_and_repair_do_not_recreate_missing_ignore_file() {
+    let temp = TempDir::new().unwrap();
+    init_repo(&request(temp.path())).unwrap();
+    let path = temp.path().join(".aitignore");
+    fs::remove_file(&path).unwrap();
+    assert_eq!(
+        init_repo(&request(temp.path())).unwrap()["action"],
+        "reinitialized"
+    );
+    assert!(!path.exists());
+    fs::remove_file(temp.path().join(".ait/policy.yaml")).unwrap();
+    let mut repair = request(temp.path());
+    repair.repair_existing = true;
+    assert_eq!(init_repo(&repair).unwrap()["action"], "repaired");
+    assert!(!path.exists());
+}
+
+#[test]
+fn fresh_init_rejects_ignore_directory_before_creating_authority() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join(".aitignore");
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("keep"), b"do not replace").unwrap();
+    let error = init_repo(&request(temp.path())).unwrap_err();
+    assert!(error.contains("workspace ignore file must be a regular file"));
+    assert_eq!(fs::read(path.join("keep")).unwrap(), b"do not replace");
+    assert!(!temp.path().join(".ait").exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn fresh_init_rejects_existing_and_dangling_ignore_symlinks() {
+    use std::os::unix::fs::symlink;
+    for target_exists in [true, false] {
+        let temp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("ignore");
+        if target_exists {
+            fs::write(&target, b"# untouched\n").unwrap();
+        }
+        let path = temp.path().join(".aitignore");
+        symlink(&target, &path).unwrap();
+        let error = init_repo(&request(temp.path())).unwrap_err();
+        assert!(error.contains("Refusing symbolic-link workspace ignore file"));
+        assert_eq!(fs::read_link(&path).unwrap(), target);
+        if target_exists {
+            assert_eq!(fs::read(&target).unwrap(), b"# untouched\n");
+        } else {
+            assert!(!target.exists());
+        }
+        assert!(!temp.path().join(".ait").exists());
+    }
+}
+
+#[test]
 fn plan_preferences_persist_once_and_legacy_missing_fields_use_fixed_defaults() {
     let temp = TempDir::new().unwrap();
     let initialized = init_repo(&request(temp.path())).unwrap();
@@ -105,7 +217,7 @@ fn init_creates_authority_agent_contract_and_configured_sprint_directory() {
     assert_eq!(payload["action"], "initialized");
     assert_eq!(payload["repo_name"], "housekeeper");
     assert_eq!(payload["default_line"], "main");
-    assert_eq!(payload["workflow_mode"]["value"], "solo_local");
+    assert!(payload.get("workflow_mode").is_none());
     assert_eq!(payload["policy_profile"], "prototype");
     assert_eq!(payload["default_author_mode"], "ai_with_human_review");
     assert_eq!(payload["default_model"], "codex");
@@ -123,7 +235,7 @@ fn init_creates_authority_agent_contract_and_configured_sprint_directory() {
     );
     let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
     assert!(agents.contains("<!-- ait:workflow:start -->"));
-    assert!(agents.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(agents.contains("Route: sprint=`on`; scope=`local`"));
     assert!(agents.contains("plan-binding=`required`"));
     assert!(agents.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent"));
     assert!(agents.contains("Work only in the returned `edit_root`"));
@@ -132,11 +244,10 @@ fn init_creates_authority_agent_contract_and_configured_sprint_directory() {
     assert!(agents.contains("Read `docs/plan.md` Current Priorities only"));
     let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
     assert!(claude.contains("<!-- ait:workflow:start -->"));
-    assert!(claude.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(claude.contains("Route: sprint=`on`; scope=`local`"));
     assert!(claude.contains("--edit-root <absolute-path>"));
     assert!(claude.contains("&& cd <absolute-path>"));
-    assert!(!agents.to_ascii_lowercase().contains("json"));
-    assert!(!claude.to_ascii_lowercase().contains("json"));
+
     assert!(claude.contains("Do not omit `--edit-root`"));
     assert!(!claude.contains("@AGENTS.md"));
     assert!(temp.path().join("docs/sprints").is_dir());
@@ -200,6 +311,7 @@ fn recovery_init_is_minimal_and_creates_no_plan_lineage() {
     assert!(plans.is_empty());
     assert!(!temp.path().join("AGENTS.md").exists());
     assert!(!temp.path().join("CLAUDE.md").exists());
+    assert!(!temp.path().join(".aitignore").exists());
     assert!(repo
         .line_store()
         .unwrap()

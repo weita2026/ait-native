@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use crate::json_support::{json, JsonValue};
 use serde::{Deserialize, Serialize};
@@ -48,12 +48,43 @@ impl ExternalLockfile {
             }
         }
 
+        // Ownership comes from the lock graph, never from a marker found on disk.
+        let mut roots = BTreeSet::new();
+        for node in &self.nodes {
+            if !roots.insert(node.materialization_path()) {
+                return Err(ExternalError::with_code(
+                    "external_lock_ownership",
+                    "external materialization roots must be unique",
+                ));
+            }
+        }
+        for node in &self.nodes {
+            let root = node.materialization_path();
+            let owner = roots
+                .iter()
+                .filter(|candidate| **candidate != root && root.starts_with(candidate))
+                .max_by_key(|candidate| candidate.components().count());
+            if owner != node.materialization_parent_path().as_ref() {
+                return Err(ExternalError::with_code(
+                    "external_lock_ownership",
+                    format!(
+                        "external {:?} parent_path must identify its nearest containing lock node",
+                        node.materialize_to
+                    ),
+                ));
+            }
+        }
         Ok(())
     }
 
     pub fn sorted_nodes(&self) -> Vec<ExternalLockNode> {
         let mut nodes = self.nodes.clone();
-        nodes.sort_by_key(|left| left.sort_key());
+        nodes.sort_by_key(|left| {
+            (
+                left.materialization_path().components().count(),
+                left.sort_key(),
+            )
+        });
         nodes
     }
 
@@ -158,6 +189,14 @@ pub struct ExternalLockNode {
 }
 
 impl ExternalLockNode {
+    pub(crate) fn materialization_path(&self) -> PathBuf {
+        normalized_path(&self.materialize_to)
+    }
+
+    pub(crate) fn materialization_parent_path(&self) -> Option<PathBuf> {
+        (!self.parent_path.is_empty()).then(|| normalized_path(&self.parent_path))
+    }
+
     pub fn from_direct_declaration(declaration: &ExternalDeclaration) -> Self {
         Self {
             name: declaration.name.clone(),
@@ -627,4 +666,11 @@ fn lock_node_field(node_name: &str, field: &str) -> String {
 
 fn lock_binding_field(node_name: &str, field: &str) -> String {
     format!("lock node {node_name:?} binding {field}")
+}
+
+fn normalized_path(value: &str) -> PathBuf {
+    Path::new(value)
+        .components()
+        .filter(|part| *part != Component::CurDir)
+        .collect()
 }

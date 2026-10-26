@@ -9,5 +9,10 @@ export {
   NativeProtocolError,
   NativeResolutionError,
 } from "./errors.js";
-export { NativeRuntime, requiredAddonExports } from "./runtime.js";
+export {
+  NativeRuntime, requiredAddonExports, WorkspaceCommandLock,
+  PlanRemoteTransportConfig, PlanHttpClientManager, TaskWorkflowHttpClientManager,
+  HttpTaskRemote, HttpWorkflowCloseoutRemote,
+  DEFAULT_REQUEST_TIMEOUT_SECONDS, LONG_RUNNING_REQUEST_TIMEOUT_SECONDS,
+} from "./runtime.js";
 export { AgentCapabilities, AgentClient } from "./agent.js";

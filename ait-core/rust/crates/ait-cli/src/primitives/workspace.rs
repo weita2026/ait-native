@@ -7,6 +7,117 @@ use ait_core::snapshot_store::SnapshotStore;
 #[cfg(test)]
 use ait_core::task_workflow_store::get_task_with_task_workflow_task_store;
 
+pub(super) mod remote_capture;
+
+pub(super) fn guard_capture_publication_target(
+    repo: &RepoRuntime,
+    row: &crate::runtime::RemoteRow,
+) -> Result<(), String> {
+    remote_capture::guard_target(repo, row)
+}
+
+pub(super) fn guard_capture_publication_target_name(
+    repo: &RepoRuntime,
+    name: &str,
+) -> Result<(), String> {
+    let Some(current) = current_worktree_metadata(repo)? else {
+        return Ok(());
+    };
+    if load_worktree_metadata(repo, &current.name)?
+        .get("capture_remote_url")
+        .is_some()
+    {
+        guard_capture_publication_target(repo, &repo.remote_row(Some(name))?)?;
+    }
+    Ok(())
+}
+
+pub(super) fn guard_current_worktree_merge_capture(repo: &RepoRuntime) -> Result<(), String> {
+    let (_, local) = current_worktree_snapshot_binding(repo)?;
+    if !local {
+        remote_capture::require_merge_capability(repo)?;
+    }
+    Ok(())
+}
+
+pub(super) fn pin_remote_capture_authority(
+    repo: &RepoRuntime,
+    name: &str,
+    row: &crate::runtime::RemoteRow,
+) -> Result<(), String> {
+    let mut metadata = load_worktree_metadata(repo, name)?;
+    let index = capture_remote_repository_index(repo, row)?;
+    let url = row.url.trim_end_matches('/');
+    if [
+        "capture_remote_name",
+        "capture_remote_url",
+        "capture_repository_index",
+    ]
+    .iter()
+    .any(|field| metadata.contains_key(*field))
+    {
+        return require_remote_capture_authority(repo, name, row);
+    }
+    metadata.insert("capture_remote_name".to_string(), json!(row.name));
+    metadata.insert("capture_remote_url".to_string(), json!(url));
+    metadata.insert("capture_repository_index".to_string(), json!(index));
+    save_worktree_metadata(repo, name, &metadata)?;
+    require_remote_capture_authority(repo, name, row)
+}
+
+fn capture_remote_repository_index(
+    repo: &RepoRuntime,
+    row: &crate::runtime::RemoteRow,
+) -> Result<u32, String> {
+    let configured = repo
+        .remote_row(Some(&row.name))
+        .map_err(|_| "Task creation's selected Remote is no longer configured".to_string())?;
+    if row.name.trim().is_empty()
+        || row.url.trim().is_empty()
+        || configured.name != row.name
+        || configured.url.trim_end_matches('/') != row.url.trim_end_matches('/')
+    {
+        return Err("Task creation's selected Remote differs from current configuration".into());
+    }
+    Ok(repo.require_repository_index()?.get())
+}
+
+pub(super) fn require_remote_capture_authority(
+    repo: &RepoRuntime,
+    name: &str,
+    row: &crate::runtime::RemoteRow,
+) -> Result<(), String> {
+    let index = capture_remote_repository_index(repo, row)?;
+    let proof = worktree_show(repo, Some(name), false)?;
+    if proof["capture_authority"] != json!({"remote_name": row.name, "repository_index": index}) {
+        return Err("Existing Task worktree has no matching pinned capture authority; verify its original Remote through supported recovery before retrying".into());
+    }
+    Ok(())
+}
+
+fn snapshot_remote_name(repo: &RepoRuntime) -> Result<String, String> {
+    let current = current_worktree_metadata(repo)?
+        .ok_or("Remote capture requires its registered Task worktree")?;
+    let metadata = load_worktree_metadata(repo, &current.name)?;
+    metadata.get("capture_remote_name").and_then(JsonValue::as_str).map(str::to_string)
+        .ok_or_else(|| "Remote capture requires a pinned worktree authority; verify the existing Task with `ait worktree recover-task` from the repository root first".to_string())
+}
+
+pub(super) fn verify_registered_task_worktree(
+    repo: &RepoRuntime,
+    task: &str,
+) -> Result<RepoRuntime, String> {
+    let bindings = task_scoped_worktree_bindings(repo)?;
+    let matching = bindings
+        .iter()
+        .filter(|binding| binding.metadata.bound_task_id.as_deref() == Some(task))
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err("Recovery requires exactly one registered Task worktree".to_string());
+    }
+    verified_task_scoped_worktree_repo(repo, task, matching[0], "verify remote capture authority")
+}
+
 pub fn snapshot_create(repo: &RepoRuntime, message: Option<&str>) -> Result<JsonValue, String> {
     let binding = current_worktree_snapshot_binding(repo)?;
     snapshot_create_with_binding(repo, message, Some(binding))
@@ -32,9 +143,16 @@ pub(super) fn current_worktree_snapshot_binding(
     let remote = if local {
         None
     } else {
-        repo.default_remote_name()
+        Some(snapshot_remote_name(repo)?)
     };
-    let changes = change_list(repo, local, remote.as_deref())?;
+    let changes = if local {
+        json!(repo
+            .task_store()?
+            .changes_for_task(task_id)
+            .map_err(|error| error.to_string())?)
+    } else {
+        change_list(repo, local, remote.as_deref())?
+    };
     let writable = changes
         .as_array()
         .ok_or("Change list must be an array")?
@@ -48,11 +166,17 @@ pub(super) fn current_worktree_snapshot_binding(
         })
         .filter_map(|change| string_field(change, "change_id"))
         .collect::<Vec<_>>();
+    if writable.is_empty() {
+        return validated_snapshot_binding(repo, task_id, "");
+    }
     if let Some(head) = current_line_head_snapshot_id(repo)?.1 {
-        let owners = repo
-            .task_store()?
-            .snapshot_ownership_rows(&[head])
-            .map_err(|error| error.to_string())?;
+        let owners = if local {
+            repo.task_store()?
+                .snapshot_ownership_rows(&[head])
+                .map_err(|error| error.to_string())?
+        } else {
+            remote_capture::ownership_rows(repo, &[head])?
+        };
         if let Some(change_id) = owners
             .iter()
             .filter(|owner| string_field(owner, "task_id").as_deref() == Some(task_id))
@@ -112,15 +236,12 @@ pub fn snapshot_create_for_reference(
     let remote = if local {
         None
     } else {
-        Some(
-            repo.default_remote_name()
-                .ok_or("Remote Task Snapshot requires its configured remote authority")?,
-        )
+        Some(snapshot_remote_name(repo)?)
     };
     let rows = change_list(repo, local, remote.as_deref())?;
     let rows = rows.as_array().ok_or("Change inventory must be an array")?;
     let change = select_task_change_reference(rows, &reference, TaskChangeSelection::Author)?
-        .ok_or_else(|| format!("Task {reference} has no writable work. Inspect `ait task audit {reference}`; Snapshot creation never starts another Change."))?;
+        .unwrap_or_default();
     snapshot_create_for_task(repo, &reference, &change, message)
 }
 
@@ -159,6 +280,9 @@ pub(super) fn current_worktree_snapshot_store(
         let (binding, local) = current_worktree_snapshot_binding(repo)?;
         if local {
             store = store.with_workflow_binding(binding, repo.id_namespace_prefix());
+        } else {
+            remote_capture::context(repo)?;
+            store = store.with_deferred_line_advance();
         }
     }
     Ok(store)
@@ -175,7 +299,11 @@ pub(super) fn validated_snapshot_binding(
             return Err("Snapshot Change reference belongs to a different Task".to_string());
         }
     }
-    let change_id = canonical_change_id(change_id)?;
+    let change_id = if change_id.trim().is_empty() {
+        String::new()
+    } else {
+        canonical_change_id(change_id)?
+    };
     let metadata = current_worktree_metadata(repo)?.ok_or_else(|| {
         "Snapshot creation requires an active Task and Change in their bound worktree; repository-root authoring is forbidden, including before the first Task.".to_string()
     })?;
@@ -212,43 +340,55 @@ pub(super) fn validated_snapshot_binding(
     let remote_name = if local {
         None
     } else {
-        Some(
-            repo.default_remote_name()
-                .ok_or("Remote Task Snapshot requires its configured remote authority")?,
-        )
+        Some(snapshot_remote_name(repo)?)
     };
+    if local {
+        repo.task_store()?
+            .guard_no_pending_local_finish(
+                &task_id,
+                &repo.workspace_root().join(".ait-worktree/cursor.bin"),
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    if !local {
+        remote_capture::context(repo)?;
+    }
     let task = task_show(repo, &task_id, local, remote_name.as_deref())?;
-    let change_ref = change_reference_for_context(Some(&task_id), &change_id)?;
-    let change = change_show(repo, &change_ref, local, remote_name.as_deref(), None)?;
+    let change = if change_id.is_empty() {
+        None
+    } else {
+        let change_ref = change_reference_for_context(Some(&task_id), &change_id)?;
+        Some(change_show(
+            repo,
+            &change_ref,
+            local,
+            remote_name.as_deref(),
+            None,
+        )?)
+    };
     if string_field(&task, "task_id").as_deref() != Some(task_id.as_str())
         || string_field(&task, "status").as_deref() != Some("active")
     {
         return Err("Snapshot creation requires the exact active Task; completed or canceled Tasks cannot author".to_string());
     }
-    if string_field(&change, "change_id").as_deref() != Some(change_id.as_str())
-        || change_task_id_from_payload(&change).as_deref() != Some(task_id.as_str())
-        || !matches!(
-            string_field(&change, "status").as_deref(),
-            Some("draft" | "active" | "review")
-        )
-    {
-        return Err(
-            "Snapshot creation requires a writable Change belonging to the expected Task"
-                .to_string(),
-        );
+    if let Some(change) = change.as_ref() {
+        if string_field(change, "change_id").as_deref() != Some(change_id.as_str())
+            || change_task_id_from_payload(change).as_deref() != Some(task_id.as_str())
+            || !matches!(
+                string_field(change, "status").as_deref(),
+                Some("draft" | "active" | "review")
+            )
+        {
+            return Err(
+                "Snapshot creation requires a writable Change belonging to the expected Task"
+                    .to_string(),
+            );
+        }
     }
     let binding = ait_core::workflow_binary_db::SnapshotWorkflowBinding {
         task_id,
         change_id,
-        worktree_name: metadata.name,
         line_name: repo.current_line_name()?,
-        author_mode: repo
-            .config
-            .get("default_author_mode")
-            .and_then(JsonValue::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        model_name: String::new(),
     };
     if local {
         repo.task_store()?
@@ -278,8 +418,15 @@ fn snapshot_create_with_binding(
     guard_no_planning_only_artifact_drift(repo, "ait snapshot create")?;
     let workspace_root = repo.workspace_root();
     let line_name = repo.current_line_name()?;
+    let expected_head = local_line_head_snapshot_id(repo, &line_name)?;
     let mut snapshot_store =
         repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)?;
+    let mut remote = if binding.as_ref().is_some_and(|(_, local)| !local) {
+        snapshot_store = snapshot_store.with_deferred_line_advance();
+        Some(remote_capture::context(repo)?)
+    } else {
+        None
+    };
     if let Some((binding, true)) = binding.as_ref() {
         snapshot_store =
             snapshot_store.with_workflow_binding(binding.clone(), repo.id_namespace_prefix());
@@ -291,12 +438,177 @@ fn snapshot_create_with_binding(
         repo.is_worktree(),
     )?;
     if let Some((binding, _)) = binding {
+        if let Some(context) = remote.as_mut() {
+            if snapshot["newly_created"].as_bool() == Some(true) {
+                remote_capture::remember_head(repo, &snapshot, expected_head.as_deref(), &binding)?;
+            }
+            let receipt = remote_capture::commit(repo, context, &snapshot, &binding)?;
+            advance_remote_snapshot_head(repo, &snapshot)?;
+            snapshot["capture_binding"] = receipt;
+        }
         if let Some(output) = snapshot.as_object_mut() {
             output.insert("task_id".to_string(), json!(binding.task_id));
-            output.insert("change_id".to_string(), json!(binding.change_id));
+            output.insert(
+                "change_id".to_string(),
+                json!(normalized_text(Some(&binding.change_id))),
+            );
         }
     }
-    repo.set_worktree_materialized_snapshot(string_field(&snapshot, "snapshot_id").as_deref())?;
+    repo.set_worktree_materialized_snapshot(string_field(&snapshot, "snapshot_id").as_deref())
+        .map_err(|error| if remote.is_some() { format!("SNAPSHOT_CAPTURE_PARTIAL: remote {} committed; materialized cursor update failed: {error}", snapshot["snapshot_id"]) } else { error })?;
+    if remote.is_some() {
+        remote_capture::clear_pending(repo)?;
+    }
+    Ok(snapshot)
+}
+
+fn advance_remote_snapshot_head(repo: &RepoRuntime, snapshot: &JsonValue) -> Result<(), String> {
+    let id = required_string_field(snapshot, "snapshot_id")?;
+    let line = required_string_field(snapshot, "line_name")?;
+    let store = repo.line_store()?;
+    if store
+        .line_by_name(&line)?
+        .and_then(|row| row.head_snapshot_id)
+        .as_deref()
+        == Some(&id)
+    {
+        return Ok(());
+    }
+    let expected = remote_capture::expected_head(repo, snapshot)?;
+    store.compare_and_swap_line_head(&line, expected.as_deref(), Some(&id),
+        snapshot["created_at"].as_str().ok_or("Capture creation time is missing")?)
+        .map(|_| ())
+        .map_err(|e| format!("SNAPSHOT_CAPTURE_PARTIAL: remote {id} committed; local head compare-and-swap failed: {e}"))
+}
+
+/// Resume only an existing server-acknowledged capture; never create/backfill ownership.
+pub fn resume_remote_snapshot_capture(
+    repo: &RepoRuntime,
+    reference: &str,
+    id: &str,
+) -> Result<JsonValue, String> {
+    let reference = parse_snapshot_authoring_reference(reference)?;
+    let (task_id, change_ref) = if is_task_id(&reference) {
+        let rows = change_list(repo, false, Some(&snapshot_remote_name(repo)?))?;
+        let selected = select_task_change_reference(
+            rows.as_array().ok_or("Change inventory must be an array")?,
+            &reference,
+            TaskChangeSelection::Author,
+        )?
+        .ok_or("Resume requires one exact writable Change")?;
+        (reference, selected)
+    } else {
+        let task = reference
+            .rsplit_once('/')
+            .ok_or("Resume requires a Task/Change")?
+            .0
+            .to_string();
+        (task, reference)
+    };
+    let (binding, local) = validated_snapshot_binding(repo, &task_id, &change_ref)?;
+    if local {
+        return Err("Snapshot capture resume requires a remote Task".to_string());
+    }
+    let mut context = remote_capture::context(repo)?;
+    remote_capture::verify_existing(repo, &mut context, id, &binding)?;
+    let mut snapshot = repo
+        .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&repo.workspace_root())?
+        .get_snapshot(id)?;
+    let pending_merge = super::line_merge::validate_resumed_line_merge_capture(repo, id)?;
+    advance_remote_snapshot_head(repo, &snapshot)?;
+    repo.set_worktree_materialized_snapshot(Some(id))
+        .map_err(|e| {
+            format!("SNAPSHOT_CAPTURE_PARTIAL: remote {id} committed; cursor update failed: {e}")
+        })?;
+    if let Some(name) = pending_merge {
+        super::line_merge::clear_line_merge_state(repo, &name).map_err(|e| {
+            format!("SNAPSHOT_CAPTURE_PARTIAL: remote {id} committed; merge closeout failed: {e}")
+        })?;
+    }
+    remote_capture::clear_pending(repo)?;
+    snapshot["task_id"] = json!(binding.task_id);
+    snapshot["change_id"] = json!(normalized_text(Some(&binding.change_id)));
+    snapshot["capture_resumed"] = json!(true);
+    Ok(snapshot)
+}
+
+pub(super) fn finalize_current_worktree_snapshot_capture(
+    repo: &RepoRuntime,
+    snapshot: &JsonValue,
+) -> Result<(), String> {
+    let (binding, local) = current_worktree_snapshot_binding(repo)?;
+    if !local {
+        let mut context = remote_capture::context(repo)?;
+        let expected = local_line_head_snapshot_id(repo, &binding.line_name)?;
+        if snapshot["newly_created"].as_bool() == Some(true) {
+            remote_capture::remember_head(repo, snapshot, expected.as_deref(), &binding)?;
+        }
+        remote_capture::commit(repo, &mut context, snapshot, &binding)?;
+        advance_remote_snapshot_head(repo, snapshot)?;
+        remote_capture::clear_pending(repo)?;
+    }
+    Ok(())
+}
+
+pub(super) fn create_remote_snapshot_with_parent(
+    repo: &RepoRuntime,
+    message: &str,
+    parent: &str,
+    allow_unchanged_tree: bool,
+) -> Result<JsonValue, String> {
+    let (binding, local) = current_worktree_snapshot_binding(repo)?;
+    if local {
+        return Err("Remote capture requires a remote Task".to_string());
+    }
+    let mut context = remote_capture::context(repo)?;
+    let expected = local_line_head_snapshot_id(repo, &binding.line_name)?;
+    let content = repo
+        .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
+        .content_for_root(repo.workspace_root());
+    let mut snapshot = content.create_snapshot_content_with_workflow_binding(
+        &repo.repo_name(),
+        &binding.line_name,
+        &[parent.to_string()],
+        Some(message),
+        repo.is_worktree(),
+        ait_core::local_snapshot::SnapshotAuthoringOptions {
+            allow_unchanged_tree,
+        },
+        None,
+    )?;
+    if snapshot["newly_created"].as_bool() != Some(true)
+        && remote_capture::capture_missing_remotely(
+            &mut context,
+            &required_string_field(&snapshot, "snapshot_id")?,
+        )?
+    {
+        // An earlier failed capture has no durable author. Reauthor this
+        // internal operation as a distinct current capture instead of assigning
+        // the retrying user to that old immutable Snapshot.
+        let retry_message = format!(
+            "{message}\n\nFresh capture after incomplete {} at {}",
+            required_string_field(&snapshot, "snapshot_id")?,
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        );
+        snapshot = content.create_snapshot_content_with_workflow_binding(
+            &repo.repo_name(),
+            &binding.line_name,
+            &[parent.to_string()],
+            Some(&retry_message),
+            repo.is_worktree(),
+            ait_core::local_snapshot::SnapshotAuthoringOptions {
+                allow_unchanged_tree,
+            },
+            None,
+        )?;
+    }
+    if snapshot["newly_created"].as_bool() == Some(true) {
+        remote_capture::remember_head(repo, &snapshot, expected.as_deref(), &binding)?;
+    }
+    snapshot["capture_binding"] = remote_capture::commit(repo, &mut context, &snapshot, &binding)?;
+    advance_remote_snapshot_head(repo, &snapshot)?;
+    // The rebase caller owns its cursor and metadata closeout.
+    remote_capture::clear_pending(repo)?;
     Ok(snapshot)
 }
 
@@ -328,6 +640,50 @@ pub fn snapshot_create_explicit(
     let previous_head_snapshot_id = local_line_head_snapshot_id(repo, &line_name)?;
     let previous_line_updated_at = local_line_updated_at(repo, &line_name)?;
     let parent_snapshot_id = normalized_text(parent_snapshot_id);
+    if !local {
+        let mut context = remote_capture::context(repo)?;
+        let parents = parent_snapshot_id
+            .or(previous_head_snapshot_id.clone())
+            .into_iter()
+            .collect::<Vec<_>>();
+        let content = repo
+            .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
+            .content_for_root(workspace_root);
+        let mut snapshot = content.create_snapshot_content_with_workflow_binding(
+            repo_name,
+            &line_name,
+            &parents,
+            message,
+            repo.is_worktree(),
+            ait_core::local_snapshot::SnapshotAuthoringOptions::default(),
+            None,
+        )?;
+        let id = required_string_field(&snapshot, "snapshot_id")?;
+        if snapshot["newly_created"].as_bool() == Some(true) {
+            remote_capture::remember_head(
+                repo,
+                &snapshot,
+                previous_head_snapshot_id.as_deref(),
+                &binding,
+            )?;
+        }
+        snapshot["capture_binding"] =
+            remote_capture::commit(repo, &mut context, &snapshot, &binding)?;
+        if update_line_ref {
+            advance_remote_snapshot_head(repo, &snapshot)?;
+        }
+        if !touch_line {
+            restore_local_line_updated_at(repo, &line_name, previous_line_updated_at.as_deref())?;
+        }
+        if record_workflow_metadata {
+            repo.set_worktree_materialized_snapshot(Some(&id))
+            .map_err(|e| format!("SNAPSHOT_CAPTURE_PARTIAL: remote {id} committed; cursor update failed: {e}"))?;
+        }
+        if update_line_ref {
+            remote_capture::clear_pending(repo)?;
+        }
+        return Ok(snapshot);
+    }
     let mut snapshot_store =
         repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)?;
     if local {
@@ -487,7 +843,8 @@ pub(super) fn guard_patchset_revision_scope(
     base_snapshot_id: &str,
     revision_snapshot_id: &str,
     change_id: &str,
-    line_name: &str,
+    _line_name: &str,
+    remote_name: &str,
 ) -> Result<(), String> {
     let lineage_snapshot_ids = local_snapshot_chain_segment(
         repo,
@@ -495,19 +852,34 @@ pub(super) fn guard_patchset_revision_scope(
         revision_snapshot_id,
         "patchset publish",
     )?;
-    if !repo.is_worktree() || lineage_snapshot_ids.is_empty() {
+    if lineage_snapshot_ids.is_empty() {
         return Ok(());
     }
-    let Some(metadata) = current_worktree_metadata(repo)? else {
-        return Ok(());
+    let metadata = current_worktree_metadata(repo)?;
+    let expected_task_id = metadata
+        .and_then(|row| row.bound_task_id)
+        .or_else(|| {
+            if is_task_id(change_id) {
+                Some(change_id.to_string())
+            } else {
+                change_id
+                    .rsplit_once('/')
+                    .map(|(task, _)| task.to_string())
+                    .filter(|task| is_task_id(task))
+            }
+        })
+        .ok_or("Publication requires an exact Task owner")?;
+    let ownership_rows = if expected_task_id.starts_with('R') {
+        resolved_remote_snapshot_ownership_rows(repo, &lineage_snapshot_ids, Some(remote_name))?
+    } else {
+        snapshot_ownership_rows(repo, &lineage_snapshot_ids)?
     };
-    if line_name == repo.default_line_name() && !metadata.auto_created_for_task {
-        return Ok(());
-    }
-    let Some(expected_task_id) = metadata.bound_task_id.clone() else {
-        return Ok(());
+    let snapshots = snapshot_store(repo)?;
+    let expected_change_id = if is_task_id(change_id) {
+        None
+    } else {
+        Some(canonical_change_id(change_id)?)
     };
-    let ownership_rows = snapshot_ownership_rows(repo, &lineage_snapshot_ids)?;
     let mut ownership_issues = Vec::new();
     for snapshot_id in &lineage_snapshot_ids {
         let ownership = ownership_rows.iter().find(|row| {
@@ -518,23 +890,32 @@ pub(super) fn guard_patchset_revision_scope(
             continue;
         };
         let owner_task_id = string_field(ownership, "task_id");
-        let owner_worktree_name = string_field(ownership, "worktree_name");
+        let immutable = snapshots
+            .snapshot_by_id(snapshot_id)?
+            .ok_or("Publication Snapshot is missing")?;
+        if ownership["line_name"].as_str() != Some(immutable.line_name.as_str()) {
+            ownership_issues.push(format!(
+                "{snapshot_id} (authoring Line differs from immutable content)"
+            ));
+            continue;
+        }
+        if expected_task_id.starts_with('R')
+            && ((snapshot_id == revision_snapshot_id
+                && ownership["change_id"].as_str() != expected_change_id.as_deref())
+                || ownership["ownership_source"].as_str()
+                    != Some("durable_remote_snapshot_binding"))
+        {
+            ownership_issues.push(format!(
+                "{snapshot_id} (missing exact durable Task/Change/immutable-Line ownership)"
+            ));
+            continue;
+        }
         if owner_task_id.as_deref() != Some(expected_task_id.as_str()) {
             ownership_issues.push(format!(
                 "{snapshot_id} (task {})",
                 owner_task_id.unwrap_or_else(|| "none".to_string())
             ));
             continue;
-        }
-        if owner_worktree_name
-            .as_deref()
-            .map(|value| value != metadata.name)
-            .unwrap_or(false)
-        {
-            ownership_issues.push(format!(
-                "{snapshot_id} (worktree {})",
-                owner_worktree_name.unwrap_or_default()
-            ));
         }
     }
     if ownership_issues.is_empty() {
@@ -711,10 +1092,6 @@ pub(super) fn worktree_metadata_from_payload(
         bound_task_id,
         bound_change_id,
         bound_change_ref,
-        auto_created_for_task: payload
-            .get("auto_created_for_task")
-            .and_then(JsonValue::as_bool)
-            .unwrap_or(false),
         fork_snapshot_id: string_field(payload, "fork_snapshot_id"),
         target_base_line: string_field(payload, "target_base_line"),
         rebase_state: string_field(payload, "rebase_state").unwrap_or_else(|| "idle".to_string()),
@@ -925,6 +1302,22 @@ struct TaskScopedWorktreeBinding {
     registry_name: String,
     metadata: CurrentWorktreeMetadata,
     payload: JsonValue,
+}
+
+pub(super) fn guard_task_pending_finish(repo: &RepoRuntime, task_id: &str) -> Result<(), String> {
+    for binding in task_scoped_worktree_bindings(repo)?
+        .iter()
+        .filter(|binding| binding.metadata.bound_task_id.as_deref() == Some(task_id))
+    {
+        let worktree = verified_task_scoped_worktree_repo(repo, task_id, binding, "task abandon")?;
+        repo.task_store()?
+            .guard_no_pending_local_finish(
+                task_id,
+                &worktree.workspace_root().join(".ait-worktree/cursor.bin"),
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn task_scoped_worktree_bindings(
@@ -1223,6 +1616,13 @@ fn verified_task_scoped_worktree_repo(
     binding: &TaskScopedWorktreeBinding,
     operation: &str,
 ) -> Result<RepoRuntime, String> {
+    let expected_name = task_bound_worktree_name(task_id)?;
+    if binding.registry_name != expected_name {
+        return Err(format!(
+            "Refusing to route `{operation}` because Task `{task_id}` requires fixed worktree name `{expected_name}`, found `{}`.",
+            binding.registry_name
+        ));
+    }
     if binding.metadata.name != binding.registry_name {
         return Err(format!(
             "Refusing to route `{operation}` because worktree registry `{}` declares mismatched name `{}`.",
@@ -1441,6 +1841,26 @@ fn resolve_task_scoped_execution_repo_with_root_guard(
     if reject_root_drift {
         guard_repo_root_control_surface_clean(repo, &bindings, operation)?;
     }
+    if operation == "ait-cli task finish" && lookup_local_change {
+        let path = required_path_field(&binding.payload, "path")?;
+        if !path.join(WORKTREE_CONFIG_NAME).is_file() {
+            let namespace = ait_core::workflow_primitives::workflow_origin_namespace_prefix(
+                "L",
+                Some(&repo.id_namespace_prefix()),
+            )?;
+            if task_id.starts_with(&format!("{namespace}T-"))
+                && repo
+                    .task_store()?
+                    .local_task_receipt(&task_id)
+                    .map_err(|error| error.to_string())?
+                    .is_some()
+            {
+                // A committed receipt authorizes only remaining closeout. The
+                // cleanup path separately verifies an empty registered directory.
+                return Ok(repo.clone());
+            }
+        }
+    }
     verified_task_scoped_worktree_repo(repo, &task_id, binding, operation)
 }
 
@@ -1633,7 +2053,19 @@ pub(super) fn guard_current_worktree_task_bound_authoring(
         }
         return Ok(());
     };
-    if metadata.bound_task_id.is_some() {
+    if let Some(task_id) = metadata.bound_task_id.as_deref() {
+        let namespace = ait_core::workflow_primitives::workflow_origin_namespace_prefix(
+            "L",
+            Some(&repo.id_namespace_prefix()),
+        )?;
+        if task_id.starts_with(&format!("{namespace}T-")) {
+            repo.task_store()?
+                .guard_no_pending_local_finish(
+                    task_id,
+                    &repo.workspace_root().join(".ait-worktree/cursor.bin"),
+                )
+                .map_err(|error| error.to_string())?;
+        }
         return Ok(());
     }
     Err(format!(
@@ -1944,7 +2376,7 @@ pub(crate) fn snapshot_ownership_rows(
     if snapshot_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let mut durable = repo
+    let durable = repo
         .task_store()?
         .snapshot_ownership_rows(snapshot_ids)
         .map_err(|error| error.to_string())?;
@@ -1960,25 +2392,19 @@ pub(crate) fn snapshot_ownership_rows(
         // current worktree happens to have a Task-shaped Line name.
         return Ok(durable);
     }
-    let line_name = repo.current_line_name()?;
-    let store = snapshot_store(repo)?;
-    let inferred = bound_worktree_snapshot_ownership_rows_with_snapshot_store(
-        &store,
-        snapshot_ids,
-        &metadata,
-        &line_name,
-    )?;
-    for row in inferred {
-        if !durable
-            .iter()
-            .any(|existing| existing.get("snapshot_id") == row.get("snapshot_id"))
-        {
-            durable.push(row);
-        }
+    if metadata
+        .bound_task_id
+        .as_deref()
+        .is_some_and(|id| id.starts_with('R'))
+    {
+        // Local and Remote refs are distinct authorities. A promoted Snapshot's
+        // valid Remote numeric binding must not be masked by its local owner.
+        return remote_capture::ownership_rows(repo, snapshot_ids);
     }
     Ok(durable)
 }
 
+#[cfg(test)]
 pub(super) fn bound_worktree_snapshot_ownership_rows_with_snapshot_store<S>(
     snapshot_store: &S,
     snapshot_ids: &[String],
@@ -1991,7 +2417,7 @@ where
     let Some(task_id) = metadata.bound_task_id.as_deref() else {
         return Ok(Vec::new());
     };
-    if !metadata.auto_created_for_task || metadata.fork_snapshot_id.is_none() {
+    if metadata.fork_snapshot_id.is_none() {
         return Ok(Vec::new());
     }
     let task_lines = task_feature_line_candidates(task_id)?;
@@ -2517,7 +2943,7 @@ pub(super) fn restore_workspace_paths_selected(
     let workspace_root = repo.workspace_root();
     for rel in reverse_depth_sort_paths(remove_paths.clone()) {
         let abs_path = workspace_root.join(&rel);
-        if abs_path.exists() {
+        if path_exists_or_directory_link(&abs_path) {
             fs::remove_file(&abs_path).map_err(|err| err.to_string())?;
             prune_empty_parent_dirs(&workspace_root, &abs_path)?;
         }
@@ -2543,15 +2969,11 @@ pub(super) fn restore_workspace_paths_selected(
         if let Some(parent) = abs_path.parent() {
             fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
-        if abs_path.exists() && abs_path.is_dir() {
-            return Err(format!("Cannot restore file over directory: {rel}"));
-        }
         let data = blob_bytes_by_id
             .get(&blob_id)
             .ok_or_else(|| format!("Snapshot blob payload is missing for `{rel}` ({blob_id})."))?;
-        fs::write(&abs_path, data).map_err(|err| err.to_string())?;
         let mode = parse_mode_bits(file_map_row_mode(target).as_deref())?;
-        set_portable_mode(&abs_path, mode).map_err(|err| err.to_string())?;
+        write_snapshot_file(&abs_path, data, mode)?;
     }
     result
         .as_object_mut()
@@ -2628,7 +3050,7 @@ pub(super) fn restore_workspace_all(
     let workspace_root = repo.workspace_root();
     for rel in &remove_paths {
         let abs_path = workspace_root.join(rel);
-        if abs_path.exists() {
+        if path_exists_or_directory_link(&abs_path) {
             fs::remove_file(&abs_path).map_err(|err| err.to_string())?;
             prune_empty_parent_dirs(&workspace_root, &abs_path)?;
         }
@@ -2641,13 +3063,9 @@ pub(super) fn restore_workspace_all(
         if let Some(parent) = abs_path.parent() {
             fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
-        if abs_path.exists() && abs_path.is_dir() {
-            return Err(format!("Cannot restore file over directory: {rel}"));
-        }
         let data = read_selected_snapshot_blob_bytes(repo, &blob_id)?;
-        fs::write(&abs_path, data).map_err(|err| err.to_string())?;
         let mode = parse_mode_bits(file_map_row_mode(&target).as_deref())?;
-        set_portable_mode(&abs_path, mode).map_err(|err| err.to_string())?;
+        write_snapshot_file(&abs_path, &data, mode)?;
     }
     let mut applied = result;
     applied
@@ -3219,12 +3637,12 @@ mod selected_binary_line_tests {
         let (_root_temp, repo) = binary_snapshot_repo();
         let missing = repo.workspace_root().join("missing-task-worktree");
         write_file(
-            &repo.ait_dir.join("worktrees/rt-missing.json"),
+            &repo.ait_dir.join("worktrees/rt-404.json"),
             &json!({
-                "name": "rt-missing",
+                "name": "rt-404",
                 "path": missing,
                 "repo_root": repo.authoritative_repo_root(),
-                "line_name": "feature/rt-missing",
+                "line_name": "feature/rt-404",
                 "bound_task_id": "RT-404",
                 "bound_change_id": "C-01",
             })
@@ -3235,7 +3653,7 @@ mod selected_binary_line_tests {
             resolve_task_scoped_execution_repo(&repo, "RT-404", false, false, None, "test route")
                 .expect_err("missing worktree must fail");
         assert!(error.contains("missing or detached"));
-        assert!(error.contains("ait worktree recreate rt-missing"));
+        assert!(error.contains("ait worktree recreate rt-404"));
     }
 
     #[cfg(unix)]
@@ -3378,6 +3796,75 @@ mod selected_binary_line_tests {
             "nested target\n"
         );
         assert!(!root.join("extra.txt").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn snapshot_restore_preserves_links_and_never_overwrites_replaced_link_targets() {
+        use std::os::unix::fs::symlink;
+        let (_temp, repo) = binary_snapshot_repo();
+        let root = repo.workspace_root();
+        write_file(&root.join("secret.txt"), "secret");
+        set_portable_mode(&root.join("secret.txt"), 0o600).unwrap();
+        write_file(&root.join("plain.txt"), "plain");
+        set_portable_mode(&root.join("plain.txt"), 0o644).unwrap();
+        symlink("secret.txt", root.join("alias")).unwrap();
+        symlink("missing", root.join("dangling")).unwrap();
+        let target = repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&root)
+            .unwrap()
+            .create_snapshot("fixture-ait", "main", Some("links"), false)
+            .unwrap();
+        let target_id = required_string_field(&target, "snapshot_id").unwrap();
+        fs::remove_file(root.join("alias")).unwrap();
+        fs::remove_file(root.join("dangling")).unwrap();
+        workflow_repo_root_restore_after_land(&repo, "main", None, Some(&target_id)).unwrap();
+        assert_eq!(
+            fs::read_link(root.join("alias")).unwrap(),
+            Path::new("secret.txt")
+        );
+        assert_eq!(
+            fs::read_link(root.join("dangling")).unwrap(),
+            Path::new("missing")
+        );
+        assert_eq!(
+            portable_mode(&fs::metadata(root.join("secret.txt")).unwrap(), 0),
+            0o600
+        );
+
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("outside.txt");
+        write_file(&outside_file, "outside");
+        set_portable_mode(&outside_file, 0o600).unwrap();
+        fs::remove_file(root.join("alias")).unwrap();
+        symlink(outside.path(), root.join("alias")).unwrap();
+        fs::remove_file(root.join("plain.txt")).unwrap();
+        symlink(&outside_file, root.join("plain.txt")).unwrap();
+        workspace_restore(&repo, Some(&target_id), None, true, false).unwrap();
+        assert_eq!(
+            fs::read_link(root.join("alias")).unwrap(),
+            Path::new("secret.txt")
+        );
+        assert!(!fs::symlink_metadata(root.join("plain.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(root.join("plain.txt")).unwrap(), b"plain");
+        assert_eq!(fs::read(&outside_file).unwrap(), b"outside");
+        assert_eq!(
+            portable_mode(&fs::metadata(&outside_file).unwrap(), 0),
+            0o600
+        );
+        restore_workspace_paths_selected(
+            &repo,
+            None,
+            &["dangling".to_string()],
+            Some(&target_id),
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(fs::symlink_metadata(root.join("dangling")).is_err());
     }
 
     #[test]

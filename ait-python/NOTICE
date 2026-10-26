@@ -138,6 +138,7 @@ nohash-hasher	0.2.0	Apache-2.0 OR MIT	Parity Technologies <admin@parity.io>	http
 normalize-line-endings	0.3.0	Apache-2.0	Richard Dodd <richdodj@gmail.com>	https://github.com/derekdreery/normalize-line-endings
 num-conv	0.2.2	MIT OR Apache-2.0	Jacob Pratt <jacob@jhpratt.dev>	https://github.com/jhpratt/num-conv
 num-traits	0.2.19	MIT OR Apache-2.0	The Rust Project Developers	https://github.com/rust-num/num-traits
+object	0.37.3	Apache-2.0 OR MIT		https://github.com/gimli-rs/object
 once_cell	1.21.4	MIT OR Apache-2.0	Aleksey Kladov <aleksey.kladov@gmail.com>	https://github.com/matklad/once_cell
 once_cell_polyfill	1.70.2	MIT OR Apache-2.0		https://github.com/polyfill-rs/once_cell_polyfill
 password-hash	0.4.2	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/traits/tree/master/password-hash
@@ -175,9 +176,9 @@ reqwest	0.12.28	MIT OR Apache-2.0	Sean McArthur <sean@seanmonstar.com>	https://g
 ring	0.17.14	Apache-2.0 AND ISC		https://github.com/briansmith/ring
 rustc-hash	2.1.3	Apache-2.0 OR MIT	The Rust Project Developers	https://github.com/rust-lang/rustc-hash
 rustix	1.1.4	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT	Dan Gohman <dev@sunfishcode.online>, Jakub Konka <kubkon@jakubkonka.com>	https://github.com/bytecodealliance/rustix
-rustls	0.23.42	Apache-2.0 OR ISC OR MIT		https://github.com/rustls/rustls
+rustls	0.23.45	Apache-2.0 OR ISC OR MIT		https://github.com/rustls/rustls
 rustls-pki-types	1.15.0	MIT OR Apache-2.0		https://github.com/rustls/pki-types
-rustls-webpki	0.103.13	ISC		https://github.com/rustls/webpki
+rustls-webpki	0.103.15	ISC		https://github.com/rustls/webpki
 rustversion	1.0.23	MIT OR Apache-2.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/rustversion
 ryu	1.0.23	Apache-2.0 OR BSL-1.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/ryu
 semver	1.0.28	MIT OR Apache-2.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/semver
@@ -783,6 +784,37 @@ Used by:
 - password-hash 0.4.2 (LICENSE-MIT)
 
 Copyright (c) 2020 RustCrypto Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+--- SHA-256 0b74dfa0bcee5c420c6b7f67b4b2658f9ab8388c97b8e733975f2cecbdd668a6 ---
+Used by:
+- object 0.37.3 (LICENSE-MIT)
+
+Copyright (c) 2015 The Gimli Developers
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -4432,7 +4464,7 @@ THE SOFTWARE.
 
 --- SHA-256 5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a ---
 Used by:
-- rustls-webpki 0.103.13 (LICENSE)
+- rustls-webpki 0.103.15 (LICENSE)
 
 Except as otherwise noted, this project is licensed under the following
 (ISC-style) terms:
@@ -5478,7 +5510,7 @@ SOFTWARE.
 --- SHA-256 709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c ---
 Used by:
 - hyper-rustls 0.27.9 (LICENSE-MIT)
-- rustls 0.23.42 (LICENSE-MIT)
+- rustls 0.23.45 (LICENSE-MIT)
 
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
 
@@ -5830,7 +5862,7 @@ DEALINGS IN THE SOFTWARE.
 --- SHA-256 7cfafc877eccc46c0e346ccbaa5c51bb6b894d2b818e617d970211e232785ad4 ---
 Used by:
 - hyper-rustls 0.27.9 (LICENSE-ISC)
-- rustls 0.23.42 (LICENSE-ISC)
+- rustls 0.23.45 (LICENSE-ISC)
 
 ISC License (ISC)
 Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
@@ -7579,6 +7611,7 @@ Used by:
 - linux-raw-sys 0.12.1 (LICENSE-APACHE)
 - log 0.4.33 (LICENSE-APACHE)
 - num-traits 0.2.19 (LICENSE-APACHE)
+- object 0.37.3 (LICENSE-APACHE)
 - once_cell 1.21.4 (LICENSE-APACHE)
 - percent-encoding 2.3.2 (LICENSE-APACHE)
 - pkg-config 0.3.33 (LICENSE-APACHE)
@@ -7586,7 +7619,7 @@ Used by:
 - regex-automata 0.4.16 (LICENSE-APACHE)
 - regex-syntax 0.8.11 (LICENSE-APACHE)
 - rustix 1.1.4 (LICENSE-APACHE)
-- rustls 0.23.42 (LICENSE-APACHE)
+- rustls 0.23.45 (LICENSE-APACHE)
 - similar 2.7.0 (LICENSE)
 - smallvec 1.15.2 (LICENSE-APACHE)
 - socket2 0.6.5 (LICENSE-APACHE)

@@ -1,10 +1,8 @@
 use ait_core::json_support::JsonCodec;
 use ait_core::json_support::{JsonMap as Map, JsonValue};
 
-pub(crate) fn parse_json_value_with_error_prefix(
-    text: &str,
-    error_prefix: &str,
-) -> Result<JsonValue, String> {
+#[cfg(test)]
+fn parse_json_value_with_error_prefix(text: &str, error_prefix: &str) -> Result<JsonValue, String> {
     JsonCodec::parse_value_with_error_prefix(text, error_prefix).map_err(String::from)
 }
 
@@ -25,6 +23,7 @@ pub(crate) fn parse_json_object_with_error_prefix(
         .map_err(String::from)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_json_object_or_empty(text: &str) -> Map<String, JsonValue> {
     match JsonCodec::parse_value_with_error_prefix(text, "Invalid JSON") {
         Ok(JsonValue::Object(payload)) => payload,
@@ -32,20 +31,19 @@ pub(crate) fn parse_json_object_or_empty(text: &str) -> Map<String, JsonValue> {
     }
 }
 
-pub(crate) fn encode_json_value_compact(value: &JsonValue) -> Result<String, String> {
+#[cfg(test)]
+fn encode_json_value_compact(value: &JsonValue) -> Result<String, String> {
     JsonCodec::encode_value(value, ait_core::json_support::JsonEncodeOptions::compact())
         .map_err(|err| strip_encode_error_prefix(err.message()))
 }
 
-pub(crate) fn encode_json_value_compact_or_default(value: &JsonValue) -> String {
-    encode_json_value_compact(value).unwrap_or_default()
-}
-
+#[cfg(test)]
 pub(crate) fn encode_json_value_pretty(value: &JsonValue) -> Result<String, String> {
     JsonCodec::encode_value(value, ait_core::json_support::JsonEncodeOptions::pretty())
         .map_err(|err| strip_encode_error_prefix(err.message()))
 }
 
+#[cfg(test)]
 fn strip_encode_error_prefix(message: &str) -> String {
     message
         .strip_prefix("Failed to encode JSON: ")

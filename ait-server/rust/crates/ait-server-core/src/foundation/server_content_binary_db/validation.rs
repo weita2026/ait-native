@@ -27,11 +27,16 @@ pub(super) fn persisted_content_layout<B: BinaryDb>(
 }
 
 pub(super) fn require_supported_content_layout(layout: u32, label: &str) -> StoreResult<()> {
-    if layout == SERVER_CONTENT_BINARY_LAYOUT_ID {
+    let expected = if label == "snapshot" {
+        2
+    } else {
+        SERVER_CONTENT_BINARY_LAYOUT_ID
+    };
+    if layout == expected {
         Ok(())
     } else {
         Err(BinaryDbError::layout_mismatch(format!(
-            "unsupported Binary DB {label} persisted layout: {layout}; supported layout is {SERVER_CONTENT_BINARY_LAYOUT_ID}"
+            "unsupported Binary DB {label} persisted layout: {layout}; supported layout is {expected}"
         )))
     }
 }
@@ -80,7 +85,7 @@ pub(super) fn snapshot_payload_file_for_layout(layout: u32) -> StoreResult<Binar
     require_supported_content_layout(layout, "snapshot")?;
     Ok(BinaryPayloadFileId::new(
         SERVER_SNAPSHOT_PAYLOAD_BIN,
-        layout,
+        SERVER_CONTENT_BINARY_LAYOUT_ID,
         BinaryDbFileFamily::Content,
     ))
 }
@@ -89,7 +94,7 @@ pub(super) fn snapshot_index_for_layout(layout: u32) -> StoreResult<BinaryIndexI
     require_supported_content_layout(layout, "snapshot")?;
     Ok(BinaryIndexId::new_fixed(
         SERVER_SNAPSHOT_ID_IDX,
-        layout,
+        SERVER_CONTENT_BINARY_LAYOUT_ID,
         8,
         true,
         BinaryDbFileFamily::Content,
@@ -116,9 +121,7 @@ pub(super) fn decode_snapshot_record_for_layout(
     raw: &[u8],
 ) -> StoreResult<ServerBinarySnapshotRecord> {
     match layout {
-        SERVER_CONTENT_BINARY_LAYOUT_ID => {
-            ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::decode_record(raw)
-        }
+        2 => ServerBinarySnapshotCodec::<2>::decode_record(raw),
         _ => {
             require_supported_content_layout(layout, "snapshot")?;
             unreachable!("supported content snapshot layout must have a decoder")
@@ -132,9 +135,7 @@ pub(super) fn decode_snapshot_payload_for_layout(
     has_line_name_payload: bool,
 ) -> StoreResult<ServerBinarySnapshotPayload> {
     match layout {
-        SERVER_CONTENT_BINARY_LAYOUT_ID => ServerBinarySnapshotCodec::<
-            SERVER_CONTENT_BINARY_LAYOUT_ID,
-        >::decode_payload(raw, has_line_name_payload),
+        2 => ServerBinarySnapshotCodec::<2>::decode_payload(raw, has_line_name_payload),
         _ => {
             require_supported_content_layout(layout, "snapshot")?;
             unreachable!("supported content snapshot layout must have a payload decoder")
@@ -268,9 +269,9 @@ where
     F: BinaryDbFsyncPolicy,
 {
     let key = server_snapshot_id_index_key(snapshot_id)?;
-    for index in write.lookup_index(ServerBinarySnapshotCodec::<LAYOUT>::id_index(), &key)? {
-        let raw = write.read_record(ServerBinarySnapshotCodec::<LAYOUT>::record_file(), index)?;
-        let record = ServerBinarySnapshotCodec::<LAYOUT>::decode_record(&raw)?;
+    for index in write.lookup_index(ServerBinarySnapshotCodec::<2>::id_index(), &key)? {
+        let raw = write.read_record(ServerBinarySnapshotCodec::<2>::record_file(), index)?;
+        let record = ServerBinarySnapshotCodec::<2>::decode_record(&raw)?;
         if !record.is_tombstone()
             && server_snapshot_id_from_hash48(record.snapshot_hash48)
                 .eq_ignore_ascii_case(snapshot_id)
@@ -288,13 +289,13 @@ pub(super) fn validate_snapshot_link<A: ContentReadAccess, const LAYOUT: u32>(
     let Some(index) = snapshot_index_plus1.checked_sub(1) else {
         return Ok(());
     };
-    let file = ServerBinarySnapshotCodec::<LAYOUT>::record_file();
+    let file = ServerBinarySnapshotCodec::<2>::record_file();
     let count = access.record_count(file.clone())?;
     if index >= count {
         return Err(format!("snapshot index {index} is out of range").into());
     }
     let raw = access.read_record(file, index)?;
-    if ServerBinarySnapshotCodec::<LAYOUT>::decode_record(&raw)?.is_tombstone() {
+    if ServerBinarySnapshotCodec::<2>::decode_record(&raw)?.is_tombstone() {
         return Err(format!("snapshot index {index} is tombstoned").into());
     }
     Ok(())

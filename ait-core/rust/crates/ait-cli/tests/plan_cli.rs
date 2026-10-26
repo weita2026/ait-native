@@ -1,3 +1,5 @@
+#[path = "support/native_home.rs"]
+mod native_home;
 use ait_cli::init_surface::{init_repo as initialize_repo, InitRequest};
 use ait_core::json_support::{json, JsonCodec, JsonValue};
 use assert_cmd::prelude::*;
@@ -20,7 +22,7 @@ fn write_file(path: &Path, content: &str) {
     handle.write_all(content.as_bytes()).unwrap();
 }
 
-fn write_workflow_config(root: &Path, mode: &str, scope: &str, remote_url: &str) {
+fn write_workflow_config(root: &Path, scope: &str, remote_url: &str) {
     write_file(
         &root.join(".ait/config.json"),
         &format!(
@@ -28,7 +30,6 @@ fn write_workflow_config(root: &Path, mode: &str, scope: &str, remote_url: &str)
   "repo_name": "fixture-ait",
   "repository_index": 7,
   "default_line": "main",
-  "workflow_mode": "{mode}",
   "workflow_default_scope": "{scope}",
   "task_default_scope": "{scope}",
   "change_default_scope": "{scope}",
@@ -41,6 +42,7 @@ fn write_workflow_config(root: &Path, mode: &str, scope: &str, remote_url: &str)
       "created_at": "2026-06-08T00:00:00Z"
     }}
   }},
+  "user_name": "Tester",
   "user_email": "tester@example.com"
 }}"#
         ),
@@ -60,7 +62,7 @@ fn init_repo() -> TempDir {
         repair_existing: false,
     })
     .unwrap();
-    write_workflow_config(root, "solo_local", "local", "http://127.0.0.1:1");
+    write_workflow_config(root, "local", "http://127.0.0.1:1");
     write_file(
         &root.join("docs/sprints/example.md"),
         r#"# Example
@@ -74,7 +76,10 @@ fn init_repo() -> TempDir {
 }
 
 fn cargo_bin() -> Command {
-    Command::cargo_bin("ait-cli").unwrap()
+    // Discovery runs harnesses directly without Cargo's runtime binary variable.
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ait-cli"));
+    command.env("CODEX_HOME", native_home::path());
+    command
 }
 
 fn workspace_lock_path(root: &Path) -> std::path::PathBuf {
@@ -128,6 +133,7 @@ fn spawn_plan_sync_server(
     let address = server.server_addr();
     let handle = thread::spawn(move || {
         let mut observed = Vec::new();
+        let mut revision_index = 41;
         let mut received_request = false;
         loop {
             let timeout = if received_request { 1 } else { 10 };
@@ -143,7 +149,27 @@ fn spawn_plan_sync_server(
             let body = String::from_utf8_lossy(&body_bytes);
             observed.push((method.clone(), url.clone()));
 
-            let response = if method == "GET"
+            let response = if method == "GET" && url == "/v1/native/repository-authorities/7" {
+                json_response(
+                    200,
+                    &json!({"repository": {
+                        "repository_index":7, "repository_name":"fixture-ait",
+                        "namespace":"", "policy_flags":0, "tombstoned":false,
+                    }}),
+                )
+            } else if method == "POST" && url == "/v1/native/repository-authorities" {
+                let submitted: JsonValue = serde_json::from_slice(&body_bytes).unwrap();
+                assert_eq!(submitted["repository_index"], 7);
+                assert_eq!(submitted["repository_name"], "fixture-ait");
+                assert_eq!(submitted["namespace"], "");
+                assert_eq!(submitted["policy_flags"], 0);
+                assert_eq!(submitted["user_name"], "Tester");
+                assert_eq!(submitted["user_email"], "tester@example.com");
+                json_response(
+                    200,
+                    &json!({"repository":{"repository_index":7}, "actor_key_index":0}),
+                )
+            } else if method == "GET"
                 && (url == "/v1/native/repository-authorities/7/sprints"
                     || url.starts_with("/v1/native/repository-authorities/7/sprints?"))
             {
@@ -186,6 +212,7 @@ fn spawn_plan_sync_server(
             {
                 let committed =
                     JsonCodec::parse_value_with_error_prefix(&body, "Invalid zstd commit").unwrap();
+                assert_eq!(committed["actor_key_index"], 0);
                 let committed_snapshot_ids = zstd_bulk_ids(&committed, "snapshots", "snapshot_id");
                 let committed_object_pack_ids =
                     zstd_bulk_ids(&committed, "object_packs", "pack_id");
@@ -202,20 +229,31 @@ fn spawn_plan_sync_server(
                         "line_update": JsonValue::Null,
                     }),
                 )
-            } else if method == "POST" && url == "/v1/native/repository-authorities/7/sprints" {
+            } else if method == "POST"
+                && (url == "/v1/native/repository-authorities/7/sprints"
+                    || url == "/v1/native/repository-authorities/7/sprints/PR-42/revisions")
+            {
                 if fail_create {
                     json_response(503, &json!({"detail": "injected Plan publish failure"}))
                 } else {
                     let submitted =
                         JsonCodec::parse_value_with_error_prefix(&body, "Invalid submitted Plan")
                             .unwrap();
+                    assert_eq!(submitted["actor_key_index"], 0);
+                    if url.ends_with("/revisions") {
+                        assert_eq!(
+                            submitted["expected_head_revision_id"],
+                            format!("plan-revision:{revision_index}")
+                        );
+                    }
+                    revision_index += 1;
                     json_response(
                         200,
                         &json!({
                             "repo_name": "fixture-ait",
                             "plan_id": "PR-42",
-                            "plan_revision_id": "plan-revision:42",
-                            "head_revision_id": "plan-revision:42",
+                            "plan_revision_id": format!("plan-revision:{revision_index}"),
+                            "head_revision_id": format!("plan-revision:{revision_index}"),
                             "title": submitted.get("title").cloned().unwrap_or(JsonValue::Null),
                             "status": submitted.get("status").cloned().unwrap_or(JsonValue::Null),
                             "summary": submitted.get("summary").cloned().unwrap_or(JsonValue::Null),
@@ -227,6 +265,18 @@ fn spawn_plan_sync_server(
                         }),
                     )
                 }
+            } else if method == "PATCH"
+                && url == "/v1/native/repository-authorities/7/sprints/PR-42"
+            {
+                let submitted: JsonValue = serde_json::from_slice(&body_bytes).unwrap();
+                assert_eq!(submitted["actor_key_index"], 0);
+                json_response(
+                    200,
+                    &json!({
+                        "plan_id":"PR-42", "head_revision_id":format!("plan-revision:{revision_index}"),
+                        "status":submitted["status"],
+                    }),
+                )
             } else {
                 json_response(
                     404,
@@ -294,7 +344,7 @@ fn local_plan_sync_from_managed_worktree_reads_workspace_directory_end_to_end() 
     let canonical_root = canonical.path();
     let worktree = TempDir::new().unwrap();
     let worktree_root = worktree.path();
-    write_workflow_config(worktree_root, "solo_local", "local", "http://127.0.0.1:1");
+    write_workflow_config(worktree_root, "local", "http://127.0.0.1:1");
     write_file(
         &worktree_root.join(".ait-worktree.json"),
         &json!({
@@ -393,35 +443,38 @@ fn local_plan_admission_repairs_uncommitted_empty_payload_before_command_executi
 }
 
 #[test]
-fn native_plan_scope_defaults_and_cross_mode_overrides_are_compatible() {
+fn native_plan_defaults_ignore_old_scope_keys_and_explicit_scopes_are_independent() {
     let temp = init_repo();
     let root = temp.path();
-
-    write_workflow_config(root, "solo_remote", "remote", "http://127.0.0.1:1");
-    cargo_bin()
-        .current_dir(root)
-        .args(["plan", "list", "--json"])
-        .assert()
-        .failure();
-    cargo_bin()
-        .current_dir(root)
-        .args(["plan", "list", "--local", "--json"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("AGENTS.md"));
-
-    write_workflow_config(root, "solo_local", "local", "http://127.0.0.1:1");
-    cargo_bin()
-        .current_dir(root)
-        .args(["plan", "list", "--json"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("AGENTS.md"));
-    cargo_bin()
-        .current_dir(root)
-        .args(["plan", "list", "--remote", "origin", "--json"])
-        .assert()
-        .failure();
+    for old_scope in ["remote", "local"] {
+        write_workflow_config(root, old_scope, "http://127.0.0.1:1");
+        let config_before = fs::read(root.join(".ait/config.json")).unwrap();
+        for args in [
+            vec!["plan", "list", "--json"],
+            vec!["plan", "list", "--local", "--json"],
+        ] {
+            cargo_bin()
+                .current_dir(root)
+                .args(args)
+                .assert()
+                .success()
+                .stdout(predicate::str::contains("AGENTS.md"));
+        }
+        cargo_bin()
+            .current_dir(root)
+            .args(["plan", "list", "--remote", "origin", "--json"])
+            .assert()
+            .failure();
+        cargo_bin()
+            .current_dir(root)
+            .args(["plan", "list", "--local", "--remote", "origin", "--json"])
+            .assert()
+            .failure();
+        assert_eq!(
+            fs::read(root.join(".ait/config.json")).unwrap(),
+            config_before
+        );
+    }
 }
 
 #[test]
@@ -429,11 +482,18 @@ fn remote_plan_sync_failure_retains_local_lineage_and_retry_is_idempotent() {
     let temp = init_repo();
     let root = temp.path();
     let (failing_url, failing_server) = spawn_plan_sync_server(true);
-    write_workflow_config(root, "solo_remote", "remote", &failing_url);
+    write_workflow_config(root, "remote", &failing_url);
 
     let failed_output = cargo_bin()
         .current_dir(root)
-        .args(["plan", "sync", "docs/sprints/example.md", "--json"])
+        .args([
+            "plan",
+            "sync",
+            "docs/sprints/example.md",
+            "--remote",
+            "origin",
+            "--json",
+        ])
         .output()
         .unwrap();
     assert!(!failed_output.status.success());
@@ -468,8 +528,18 @@ fn remote_plan_sync_failure_retains_local_lineage_and_retry_is_idempotent() {
     assert_eq!(revisions_before.as_array().unwrap().len(), 1);
 
     let (healthy_url, healthy_server) = spawn_plan_sync_server(false);
-    write_workflow_config(root, "solo_remote", "remote", &healthy_url);
-    let retried = json_output(root, &["plan", "sync", "docs/sprints/example.md", "--json"]);
+    write_workflow_config(root, "remote", &healthy_url);
+    let retried = json_output(
+        root,
+        &[
+            "plan",
+            "sync",
+            "docs/sprints/example.md",
+            "--remote",
+            "origin",
+            "--json",
+        ],
+    );
     assert_eq!(retried["status"], "ok");
     assert_eq!(retried["mode"], "local_publish");
     assert_eq!(retried["results"][0]["action"], "unchanged");
@@ -484,6 +554,230 @@ fn remote_plan_sync_failure_retains_local_lineage_and_retry_is_idempotent() {
 
     let revisions_after = json_output(root, &["plan", "revisions", &plan_id, "--local", "--json"]);
     assert_eq!(revisions_after.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn standalone_plan_sync_preserves_legacy_workflow_while_publishing_actor_aware_history() {
+    use ait_core::binary_db::{AuthorityId, LocalStateScope};
+    use ait_core::plan_binary_db::LocalPlanBinaryDb;
+
+    let temp = init_repo();
+    let root = temp.path();
+    let path = "docs/sprints/example.md";
+    // Seed valid existing Plan/content through the actual standalone CLI.
+    let created = json_output(root, &["plan", "sync", path, "--local", "--json"]);
+    assert_eq!(created["status"], "ok");
+    let authority = root.join(".ait/binary-db");
+    let legacy_land = [1u32.to_le_bytes().to_vec(), vec![0; 44]].concat();
+    let legacy_links = [1u32.to_le_bytes().to_vec(), vec![0; 40]].concat();
+    fs::write(authority.join("land.bin"), &legacy_land).unwrap();
+    fs::write(authority.join("snapshot_link.bin"), &legacy_links).unwrap();
+    let forbidden = [
+        "task.bin",
+        "task_payload.bin",
+        "task_change_index.bin",
+        "task_land_index.bin",
+        "change.bin",
+        "change_payload.bin",
+        "change_land_index.bin",
+        "snapshot.bin",
+        "snapshot_payload.bin",
+        "task_snapshot_index.bin",
+        "change_snapshot_index.bin",
+        "worker_job.bin",
+        "worker_job_id.idx",
+        "snapshot_id.idx",
+    ];
+    for leaf in forbidden {
+        let path = authority.join(leaf);
+        if path.exists() {
+            fs::remove_file(&path).unwrap();
+        }
+        fs::create_dir(path).unwrap(); // Any attempt to read/decode it fails.
+    }
+    let unchanged = json_output(root, &["plan", "sync", path, "--local", "--json"]);
+    assert_eq!(unchanged["results"][0]["action"], "unchanged");
+    let artifact = root.join(path);
+    let updated = fs::read_to_string(&artifact).unwrap().replace(
+        "standalone shell.",
+        "standalone shell with bounded storage.",
+    );
+    fs::write(&artifact, updated).unwrap();
+    let revised = json_output(root, &["plan", "sync", path, "--local", "--json"]);
+    assert_eq!(revised["status"], "ok");
+    let (url, server) = spawn_plan_sync_server(false);
+    write_workflow_config(root, "remote", &url);
+    let published = json_output(
+        root,
+        &["plan", "sync", path, "--remote", "origin", "--json"],
+    );
+    assert_eq!(published["status"], "ok");
+    let observed = server.join().unwrap();
+    assert!(observed
+        .iter()
+        .any(|(method, path)| method == "POST"
+            && path == "/v1/native/repository-authorities/7/sprints"));
+    assert!(observed.iter().any(|(method, path)| method == "POST"
+        && path == "/v1/native/repository-authorities/7/sprints/PR-42/revisions"));
+    let store = LocalPlanBinaryDb::<1>::new(
+        authority.clone(),
+        root.to_path_buf(),
+        AuthorityId::new("local:fixture-ait"),
+        LocalStateScope::Repository,
+    );
+    let read = store.begin_read_txn();
+    let plan_index = ait_core::plan_binary_db::parse_repository_plan_id(
+        created["results"][0]["plan_id"].as_str().unwrap(),
+    )
+    .unwrap();
+    let plan = store
+        .get_plan(&read, plan_index, Some("fixture-ait"))
+        .unwrap();
+    assert_eq!(plan.record.published_plan_index(), Some(42));
+    let revisions = store.list_plan_revisions(&read, plan_index).unwrap();
+    assert_eq!(revisions.len(), 2);
+    assert!(revisions
+        .iter()
+        .all(|revision| revision.record.is_published()));
+    drop(read);
+    assert_eq!(fs::read(authority.join("land.bin")).unwrap(), legacy_land);
+    assert_eq!(
+        fs::read(authority.join("snapshot_link.bin")).unwrap(),
+        legacy_links
+    );
+    assert!(forbidden.iter().all(|leaf| authority.join(leaf).is_dir()));
+    let general = cargo_bin()
+        .current_dir(root)
+        .args(["task", "list", "--local", "--json"])
+        .output()
+        .unwrap();
+    assert!(!general.status.success());
+    assert!(
+        String::from_utf8_lossy(&general.stderr)
+            .contains("Local receipt authority must be a direct file"),
+        "{}",
+        String::from_utf8_lossy(&general.stderr)
+    );
+    assert_eq!(fs::read(authority.join("land.bin")).unwrap(), legacy_land);
+    assert_eq!(
+        fs::read(authority.join("snapshot_link.bin")).unwrap(),
+        legacy_links
+    );
+    assert!(forbidden.iter().all(|leaf| authority.join(leaf).is_dir()));
+}
+
+#[test]
+fn role_prune_keeps_binding_protection_without_opening_legacy_workflow() {
+    use ait_core::agent_binary_db::single_team;
+    use ait_core::binary_db::{AuthorityId, LocalBinaryDbFs, LocalStateScope};
+
+    let temp = init_repo();
+    let root = temp.path();
+    let authority = root.join(".ait/binary-db");
+    let role = root.join("docs/roles/1_Developer.md");
+    let unbound_role = root.join("docs/roles/49_Optional.md");
+    write_file(&role, "# Developer\n\nKeep the bound role.\n");
+    write_file(
+        &unbound_role,
+        "# Optional\n\nThis role has no bound session.\n",
+    );
+    json_output(root, &["plan", "sync", "docs/roles", "--local", "--json"]);
+    let db = LocalBinaryDbFs::new(
+        authority.clone(),
+        root.to_path_buf(),
+        AuthorityId::new("local:fixture-ait"),
+        LocalStateScope::Repository,
+    );
+    single_team::ensure_pool(&db).unwrap();
+    let agents = single_team::read(&db).unwrap();
+    single_team::assign(&db, 2, &agents[2], 1, "fixture-bound-developer").unwrap();
+    let mut config: JsonValue =
+        serde_json::from_slice(&fs::read(root.join(".ait/config.json")).unwrap()).unwrap();
+    config["agent_teams"] = json!(true);
+    fs::write(root.join(".ait/config.json"), config.to_string()).unwrap();
+    let land = [1u32.to_le_bytes().to_vec(), vec![0; 44]].concat();
+    let links = [1u32.to_le_bytes().to_vec(), vec![0; 40]].concat();
+    fs::write(authority.join("land.bin"), &land).unwrap();
+    fs::write(authority.join("snapshot_link.bin"), &links).unwrap();
+    for leaf in ["task.bin", "change.bin", "snapshot.bin", "snapshot_id.idx"] {
+        let path = authority.join(leaf);
+        if path.exists() {
+            fs::remove_file(&path).unwrap();
+        }
+        fs::create_dir(path).unwrap();
+    }
+    let before_agents = fs::read(authority.join("agents.bin")).unwrap();
+    let before_payload = fs::read(authority.join("agents_payload.bin")).unwrap();
+    json_output(root, &["plan", "sync", "docs/roles", "--local", "--json"]);
+    let pruned = json_output(
+        root,
+        &["plan", "sync", "docs/roles", "--prune", "--local", "--json"],
+    );
+    assert_eq!(pruned["status"], "ok");
+    fs::remove_file(&unbound_role).unwrap();
+    let unbound = json_output(
+        root,
+        &["plan", "sync", "docs/roles", "--prune", "--local", "--json"],
+    );
+    assert_eq!(unbound["status"], "ok");
+
+    fs::remove_file(&role).unwrap();
+    let before_plans = fs::read(authority.join("plan.bin")).unwrap();
+    let rejected = cargo_bin()
+        .current_dir(root)
+        .args(["plan", "sync", "docs/roles", "--prune", "--local", "--json"])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("Cannot prune a bound role MD"));
+    assert_eq!(fs::read(authority.join("plan.bin")).unwrap(), before_plans);
+    // No Agent file is needed for plain sync, non-role pruning, or the
+    // disabled-Teams guard. A directory would fail any Agent read attempt.
+    write_file(&role, "# Developer\n\nKeep the bound role.\n");
+    for leaf in ["agents.bin", "agents_payload.bin"] {
+        fs::rename(authority.join(leaf), root.join(format!("saved-{leaf}"))).unwrap();
+        fs::create_dir(authority.join(leaf)).unwrap();
+    }
+    json_output(root, &["plan", "sync", "docs/roles", "--local", "--json"]);
+    json_output(
+        root,
+        &[
+            "plan",
+            "sync",
+            "docs/sprints/example.md",
+            "--prune",
+            "--local",
+            "--json",
+        ],
+    );
+    config["agent_teams"] = json!(false);
+    fs::write(root.join(".ait/config.json"), config.to_string()).unwrap();
+    json_output(
+        root,
+        &["plan", "sync", "docs/roles", "--prune", "--local", "--json"],
+    );
+    for leaf in ["agents.bin", "agents_payload.bin"] {
+        fs::remove_dir(authority.join(leaf)).unwrap();
+        fs::rename(root.join(format!("saved-{leaf}")), authority.join(leaf)).unwrap();
+    }
+    assert_eq!(
+        fs::read(authority.join("agents.bin")).unwrap(),
+        before_agents
+    );
+    assert_eq!(
+        fs::read(authority.join("agents_payload.bin")).unwrap(),
+        before_payload
+    );
+    assert_eq!(fs::read(authority.join("land.bin")).unwrap(), land);
+    assert_eq!(
+        fs::read(authority.join("snapshot_link.bin")).unwrap(),
+        links
+    );
+    assert!(
+        ["task.bin", "change.bin", "snapshot.bin", "snapshot_id.idx"]
+            .iter()
+            .all(|leaf| authority.join(leaf).is_dir())
+    );
 }
 
 #[test]

@@ -7,7 +7,7 @@ use crate::foundation::remote_binary_db::{
     BinaryDb, FilesystemServerRemoteBinaryDb, RepoId, RepoName, StoreGeneration, StorePath,
 };
 use crate::foundation::server_binary_db_schema_registry::{
-    SERVER_BINARY_DB_BIN_SCHEMAS, SERVER_BINARY_DB_INDEX_SCHEMAS, SERVER_BINARY_DB_LAYOUT_ID,
+    SERVER_BINARY_DB_BIN_SCHEMAS, SERVER_BINARY_DB_INDEX_SCHEMAS,
 };
 use std::env;
 use std::fs;

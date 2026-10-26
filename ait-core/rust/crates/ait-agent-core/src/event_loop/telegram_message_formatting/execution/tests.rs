@@ -171,7 +171,10 @@ fn assert_public_outcome_is_safe(outcome: &JsonValue) {
             "downstream-secret",
             "queue-secret",
         ] {
-            assert!(!rendered.contains(secret), "public outcome leaked {secret}");
+            assert!(
+                !rendered.contains(secret),
+                "redaction assertion failed: sensitive value was present"
+            );
         }
     }
     assert_eq!(outcome["raw_api_result_exposed"], false);

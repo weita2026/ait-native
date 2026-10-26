@@ -3,10 +3,123 @@
 Authority: this centralized product distribution contract. Internal planning
 lineage remains governed by AIT Plan revisions and is not duplicated here.
 
-Status: current stable-family contract plus immutable historical release and
-RC records. The current stable section below overrides version-relative
+Status: 1.2.0 development requirements, the current stable-family contract,
+and immutable historical release and RC records. The current stable section below overrides version-relative
 wording in dated historical sections; those records remain evidence for their
 own bytes only.
+
+## 1.2.0 qualification requirements
+
+1.2.0 is in development and unpublished. Workflow and migration wording
+below describes the development contract. The stable
+installation baseline remains the dated 1.1.4 record below; no 1.2.0 channel,
+download or latest availability is established here.
+
+The owner-approved [1.2.0 pre-publication acceptance](release_sop.md#120-pre-publication-acceptance)
+adds native Git-independent workflows, concurrent agents, sealed-candidate
+recovery, six-platform execution and representative language-neutral fixtures
+to the existing release gates. It is the active 1.2.0 acceptance entry point,
+not evidence of a completed run or a new published version. Existing artifact,
+channel, Web/security and post-publication obligations remain. Earlier version
+exceptions and results retain only their explicit historical scope; see the
+[disposition table](release_sop.md#disposition-of-earlier-release-standards).
+
+For this 1.2.0 run, the owner explicitly deferred Personal-only protocol,
+current/legacy compatibility and UI acceptance; see the
+[current scope](release_sop.md#owner-deferred-personal-scope--2026-10-24).
+Community and native/platform/binding/install gates remain. The successful
+1.1.4 Web qualification included Personal; public package membership and test
+coverage are separate. The inspected root and LNAT-0021 family manifests do
+not list Personal or Web-test components, but still say 1.1.4 with unbound
+source identities. They are not a frozen 1.2.0 candidate or evidence of release
+readiness. No public Personal-support claim is added by this deferral.
+
+## 1.2.0 chat-integration retirement
+
+The owner decided on 2026-10-24 to retain `ait-agent` and `ait-agent-worker`
+source while excluding these chat-integration components from public 1.2.0
+distribution. Apply the scope and verification in
+[the release SOP](release_sop.md#120-pre-publication-acceptance); retain earlier
+tags, source archives and assets unchanged. Historical component tables below
+do not require these binaries in the 1.2.0 family. Agent Teams and core
+Python/Node bindings remain supported. This decision does not cancel the
+1.2.0 product release or claim that packaging changes have completed.
+
+The current family selectors and source build wrapper produce `ait`,
+`ait-server`, `ait-runner`, the Python binding and the Node-API binding.
+Source crate checks, version stamping, shared binding helpers and licenses
+remain. Historical seven-component tables and the v1.1.4 source-build example
+below describe their original release only.
+
+For upgrades, inspect the actual prior package's recorded file inventory and
+use that channel's native upgrade/uninstall ownership. The inspected 1.1.4
+Homebrew, APT and WinGet packages own the CLI/server/runner trio; PyPI owns
+its CLI/server/binding and npm its command/binding. Do not infer chat files
+from historical source component lists. Preserve user configuration/data.
+Raw GitHub/archive/manual installations have no package receipt authorizing
+removal. Preserve their files and distinguish their command origins from the
+selected new candidate. The GitHub `prior-github`/`candidate-github` check is
+side-by-side manual-origin coverage; native package upgrades need their own
+execution. Never sweep PATH or delete a file by basename.
+
+## 1.2.0 language CLIs and package boundary
+
+The single source product authority is
+`ait-core/docs/product.md#language-cli-binding-contract`; the selected
+[1.2.0 manual](https://ait-native.dev/development/1.2.0/) is its public
+documentation consumer. This section records the required boundary, not
+completed implementation or channel availability.
+
+Both npm `@wa120/ait-native` and pip `ait-native` retain terminal `ait`.
+JavaScript or Python parses existing syntax and calls concrete N-API or PyO3
+functions backed by Rust domain APIs. Neither frontend may relay argv or
+command strings to Rust's CLI parser/dispatcher, or launch another CLI.
+The existing commands, options, output and error behavior remain required.
+
+Keep JavaScript `bin`, Python console entrypoints, package-manager launchers
+and `.node`/`.so`/`.pyd` bindings. Windows installer-generated language
+launchers are allowed. Remove standalone native CLI/Server/Runner payloads
+from these language packages; do not classify an allowed binding or launcher
+by basename alone. Native standalone channels retain their products.
+
+Native's current PyPI selector consumes `ait-python` only. Core's reviewed
+`assemble_pypi` producer must preserve that component's Python entrypoint and
+binding without injecting native CLI/Server commands. Native coordinates the
+final assembly and clean-host consumers; Python owns its component/final-wheel
+boundary validator. Final npm tarballs, all six platform addon packages and
+the actual assembled PyPI wheels must be inspected. Component metadata or
+the absence of `entry_points.txt` cannot prove this boundary.
+
+The six PyPI matrix rows retain installation, upgrade, real `ait` workflow,
+binding and removal checks; they no longer declare a bundled Server service.
+Standalone Server/Runner lifecycle and protocol gates remain in their native
+channels. Full command/API coverage, actual extensions, no-relay negative
+cases and same-candidate review remain release gates. Earlier frozen wheels,
+package composition and evidence keep their original scope.
+
+## 1.2.0 development quickstart and workflow
+
+For a prepared development executable, `ait init` creates or refreshes the
+generated repository workflow. Fresh initialization enables Agent Teams;
+existing repositories retain their settings and repeated initialization
+preserves identities. Usable sessions still require a supported agent host.
+Teams, sprint binding and Local/Remote scope are independent. Follow the
+generated route and the Core-owned team/configuration reference rather than
+historical workflow-mode presets.
+
+`ait team contacts --json` reports bindings and native availability. Session
+ensure prepares an existing member; assignment and desktop runtime status
+remain separate. Preparing a Reviewer session requires server registration.
+Disabling Teams preserves sessions and history.
+
+Remote ready without `--apply` checks readiness. Explicit ready apply prepares
+the candidate; real CI and the required independent review precede guarded
+finish. Preserve the actual returned identity. A preformal Server restart
+may require reprepare of the same sealed content/mode with a new Job, CI and
+review. Accepted formal retries retain the original acceptance and one apply.
+These development semantics do not replace the installed 1.1.4 quickstart or
+qualify an unshipped artifact. Preserve the package ownership and user-data
+boundaries in the retirement guidance above.
 
 ## Current Stable 1.1.4 Release Identity (2026-10-07)
 
@@ -321,7 +434,7 @@ and 1280-by-640 social preview remain byte-stable across repeated exports.
 Security reports continue to use private vulnerability reporting rather than
 public issues or Discussions.
 
-`ait-monorepo-source.json` maps each subtree to its exact internal AIT
+`ait-monorepo-source.json` maps each direct component subtree to its exact internal AIT
 Snapshot, Snapshot manifest hash and creation time, license, components,
 source-cache evidence digest, pre-transform content digest, and exported
 content digest. It also records the coordinator Snapshot, manifest hash, and
@@ -334,13 +447,24 @@ the coordinator. These files are not overlaid into `ait-core/`; historical
 coordination files inside an admitted component subtree remain immutable source
 history and have no current release-control authority.
 
-The export contains no Git submodule, `.git`, `.ait`, `.ait-external`,
-`.ait-runtime`, or task worktree. It permits only two declared source rewrites:
-`ait-runner/Cargo.toml`
-uses `../ait-core/rust/crates/ait-core`, and `ait-python/pyproject.toml` uses
-`../ait-core/rust/crates/ait-py/Cargo.toml`. The exporter fails if either
-literal is absent, repeated, already transformed, or if any other transform is
-declared.
+The export contains no Git submodule, Git/AIT operational state, or task
+worktree. Its sole `.ait-external` source exception is Runner's declared
+immutable Core dependency at `ait-runner/.ait-external/ait-core`. This plain
+accepted Snapshot source retains its declared path, bytes and provenance
+through Runner's manifest/lock and the existing source-cache evidence. No
+private host path or repository state is copied. The five direct family
+bindings remain unchanged.
+
+Only the two existing declared source rewrites are permitted.
+`runner-core-path/v1` rewrites `ait-runner/Cargo.toml` to
+`../ait-core/rust/crates/ait-core` only when the declared dependency and main
+Core have actual source-byte and executable-mode equivalence. Different
+source retains Runner's original `.ait-external/ait-core/rust/crates/ait-core`
+path. The Python rewrite makes `ait-python/pyproject.toml` use
+`../ait-core/rust/crates/ait-py/Cargo.toml`. A selected rewrite fails if its
+original literal is absent, repeated or already transformed; any other
+declared transform is rejected. Family version preparation and the
+prior-to-final version-only delta must preserve the immutable Runner dependency.
 
 The root `.gitattributes` is exactly `* -text`. It disables Git's checkout-time
 line-ending conversion for the complete public tree, so the bytes validated by
@@ -422,8 +546,9 @@ Then tell the coding agent what to change. There is no separate Python, Node,
 AIT workflow block in `AGENTS.md`; an AIT-aware agent uses that block as the
 repository-local execution contract. In particular, the agent:
 
-1. reads the effective workflow mode, mutation scope, sprint mode, and current
-   repository Plan/configuration before changing files;
+1. follows the generated effective route for Local/Remote scope, Agent Teams
+   and sprint, reading additional Plan/configuration only when required by
+   the assignment or an actual admission action;
 2. records authored Markdown through the configured Plan sync path;
 3. for a normal governed change, creates a sprint item and Task, works only in
    the Task-bound worktree, and preserves unrelated user edits;

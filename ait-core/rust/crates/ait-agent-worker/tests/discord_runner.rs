@@ -38,7 +38,7 @@ fn fixture_context() -> (tempfile::TempDir, WorkerRunContext) {
     fs::create_dir_all(temp.path().join(".ait/agent-runtime")).expect("runtime dir");
     fs::write(
         temp.path().join(".ait/config.json"),
-        r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
+        r#"{"repo_name":"fixture"}"#,
     )
     .expect("repo config");
     fs::write(
@@ -564,7 +564,7 @@ fn compiled_bot_token_runner_owns_gateway_and_stops_without_python_fallback() {
     fs::create_dir_all(repo.path().join(".ait/agent-runtime")).expect("runtime dir");
     fs::write(
         repo.path().join(".ait/config.json"),
-        r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
+        r#"{"repo_name":"fixture"}"#,
     )
     .expect("repo config");
     fs::write(

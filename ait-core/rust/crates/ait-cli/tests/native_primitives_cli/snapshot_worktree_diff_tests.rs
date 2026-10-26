@@ -230,6 +230,11 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
     let (base_url, log, state, handle) = spawn_fake_remote();
     let temp = init_repo(&base_url);
     let root = temp.path();
+    bind_fixture_reviewers(root);
+    let reviewer_env = [
+        ("CODEX_THREAD_ID", "einstein-session"),
+        ("CODEX_SESSION_ID", "einstein-session"),
+    ];
     state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
 
     write_file(
@@ -240,6 +245,39 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
     let snapshot_id = snapshot["snapshot_id"].as_str().unwrap().to_string();
     assert!(snapshot_id.starts_with("SNP-"));
 
+    // Model the authority's immutable capture readback, not a local ownership
+    // guess. Initial work belongs to the Task and creates no Change.
+    let binding = ait_core::repository_pack_json::SnapshotCaptureBinding {
+        repository_index: 7,
+        snapshot_id: snapshot_id.clone(),
+        owner: ait_core::workflow_binary_db::SnapshotWorkflowBinding {
+            task_id: "RT-1".to_string(),
+            change_id: String::new(),
+            line_name: "main".to_string(),
+        },
+    }
+    .to_value();
+    state.lock().unwrap().durable_task = Some(DurableTaskFixture {
+        capture: json!({"snapshot_id":snapshot_id,"line_name":"main","capture_binding":null}),
+        ..Default::default()
+    });
+    let unbound = command_output_with_env(
+        root,
+        &[
+            "patchset",
+            "publish",
+            "RT-1",
+            "--summary",
+            "Unbound history",
+            "--json",
+        ],
+        &[],
+    );
+    assert!(!unbound.status.success());
+    assert!(String::from_utf8_lossy(&unbound.stderr)
+        .contains("Publication requires unique numeric capture ownership"));
+    state.lock().unwrap().durable_task.as_mut().unwrap().capture["capture_binding"] = binding;
+
     let patchset = json_output(
         root,
         &[
@@ -248,10 +286,16 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
             "RT-1",
             "--summary",
             "Native Rust patchset",
+            "--author-mode",
+            "ai_only_experimental",
             "--json",
         ],
     );
-    assert_eq!(patchset["patchset"]["patchset_id"].as_str(), Some("RP-2"));
+    assert_eq!(
+        patchset["patchset"]["patchset_id"].as_str(),
+        Some("RT-1/P-02")
+    );
+    assert!(patchset["patchset"]["change_id"].is_null());
     let patchset_id = patchset["patchset"]["patchset_id"]
         .as_str()
         .unwrap()
@@ -281,7 +325,7 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
     assert_eq!(rerun["queued"].as_bool(), Some(true));
     assert_eq!(rerun["trigger"].as_str(), Some("manual_rerun"));
 
-    let approve = json_output(
+    let approve = json_output_with_env(
         root,
         &[
             "review",
@@ -292,10 +336,11 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
             &patchset_id,
             "--json",
         ],
+        &reviewer_env,
     );
     assert_eq!(approve["action"].as_str(), Some("approve"));
 
-    let code_review = json_output(
+    let code_review = json_output_with_env(
         root,
         &[
             "review",
@@ -308,8 +353,14 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
             "Reviewed files: src/lib.rs; Findings: none; Risks: low; Tests: cargo test; Recommendation: land",
             "--json",
         ],
+        &reviewer_env,
     );
     assert_eq!(code_review["action"].as_str(), Some("code_review_summary"));
+
+    assert_eq!(
+        code_review["task_review"]["result"]["action"].as_str(),
+        Some("task_approve")
+    );
 
     let attestation = json_output(
         root,
@@ -326,10 +377,7 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
     assert_eq!(policy["decision"].as_str(), Some("pass"));
 
     for (args, exact_patchset_expected) in [
-        (
-            &["patchset", "ci-status", patchset_id.as_str()][..],
-            true,
-        ),
+        (&["patchset", "ci-status", patchset_id.as_str()][..], true),
         (&["attest", "show", patchset_id.as_str()][..], true),
         (&["policy", "show", patchset_id.as_str()][..], true),
         (&["review", "show", "RT-1"][..], false),
@@ -349,7 +397,10 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
         assert!(!human.contains("RC-1"), "stdout:\n{human}");
     }
 
-    let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
+    let task_land = json_output(
+        root,
+        &["task", "finish", "RT-1", "--remote", "origin", "--json"],
+    );
     assert_eq!(
         task_land["apply_status"].as_str(),
         Some("done"),
@@ -368,34 +419,29 @@ fn native_snapshot_and_remote_primitives_work_end_to_end() {
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
     assert!(logged.iter().any(|row| row.method == "POST"
-        && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"));
+        && row.url == "/v1/native/repository-authorities/7/changes/RT-1/patchsets"));
     assert!(logged.iter().any(|row| {
         row.method == "GET"
             && row.url
-                == format!(
-                    "/v1/native/repository-authorities/7/read/patchsets/{patchset_id}/ci-status?recent_limit=10"
-                )
+                == "/v1/native/repository-authorities/7/read/patchsets/RT-1%2FP-02/ci-status?recent_limit=10"
     }));
     assert!(logged.iter().any(|row| {
         row.method == "POST"
-            && row.url
-                == format!("/v1/native/repository-authorities/7/patchsets/{patchset_id}:runCi")
+            && row.url == "/v1/native/repository-authorities/7/patchsets/RT-1%2FP-02:runCi"
             && row.body == "{\"trigger\":\"manual_rerun\"}"
     }));
     assert!(logged.iter().any(|row| row.method == "PUT"
-        && row.url
-            == format!("/v1/native/repository-authorities/7/patchsets/{patchset_id}/attestation")
-        && row.body.contains("\"tests\":\"pass\"")));
+        && row.url == "/v1/native/repository-authorities/7/patchsets/RT-1%2FP-02/attestation"
+        && row.body.contains("\"verification_state\":\"pass\"")));
     assert!(logged.iter().any(|row| row.method == "GET"
-        && row.url
-            == format!("/v1/native/repository-authorities/7/patchsets/{patchset_id}/attestation")));
+        && row.url == "/v1/native/repository-authorities/7/patchsets/RT-1%2FP-02/attestation"));
     assert!(logged.iter().any(|row| row.method == "POST"
-        && row.url == "/v1/native/repository-authorities/7/changes/RC-1/reviews"
+        && row.url == "/v1/native/repository-authorities/7/changes/RT-1/reviews"
         && row.body.contains("\"action\":\"code_review_summary\"")));
     assert!(logged.iter().any(|row| {
         row.method == "POST"
             && row.url == "/v1/native/repository-authorities/7/task-land"
-            && row.body.contains("\"contract\":\"task-land-atomic/v1\"")
+            && row.body.contains("\"contract\":\"task-land-atomic/v2\"")
     }));
     assert!(!logged.iter().any(|row| row.method == "POST"
         && row.url == "/v1/native/repository-authorities/7/tasks/RT-1:close"));
@@ -412,7 +458,7 @@ fn native_snapshot_create_rejects_clean_workspace_without_advancing_head() {
         .args([
             "snapshot",
             "create",
-            "LT-0001/C-01",
+            "LT-0001",
             "--message",
             "message-only snapshot",
             "--json",
@@ -448,7 +494,7 @@ fn native_patchset_ci_status_human_output_surfaces_reset_notice() {
     let mut command = cargo_bin();
     let output = command
         .current_dir(root)
-        .args(["patchset", "ci-status", "RP-RESET"])
+        .args(["patchset", "ci-status", "RT-1/P-03"])
         .output()
         .unwrap();
 
@@ -459,7 +505,10 @@ fn native_patchset_ci_status_human_output_surfaces_reset_notice() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("patchset_id: RP-RESET"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("patchset_id: RT-1/P-03"),
+        "stdout:\n{stdout}"
+    );
     assert!(!stdout.contains("change_id:"), "stdout:\n{stdout}");
     assert!(stdout.contains("recommended_action"), "stdout:\n{stdout}");
     assert!(
@@ -489,14 +538,17 @@ fn native_task_land_closes_when_base_stale_submit_already_moved_target_to_revisi
     {
         let mut guard = state.lock().unwrap();
         guard.remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
-        guard.selected_patchset_id = Some("RP-2".to_string());
+        guard.selected_patchset_id = Some("RT-1/P-02".to_string());
         guard.selected_patchset_base_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
         guard.selected_patchset_revision_snapshot_id = Some(revision_snapshot_id.clone());
         guard.land_submit_base_stale_converged = true;
         guard.omit_landing_summary_after_base_stale_converged = true;
     }
 
-    let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
+    let task_land = json_output(
+        root,
+        &["task", "finish", "RT-1", "--remote", "origin", "--json"],
+    );
 
     assert_eq!(
         task_land["apply_status"].as_str(),
@@ -514,9 +566,9 @@ fn native_task_land_closes_when_base_stale_submit_already_moved_target_to_revisi
         land_result["local_sync"]["landed_snapshot_id"].as_str(),
         Some(revision_snapshot_id.as_str())
     );
-    assert_eq!(task_land["change"]["status"].as_str(), Some("landed"));
+    assert!(task_land["change"].is_null());
     assert_eq!(
-        task_land["change"]["landed_snapshot_id"].as_str(),
+        task_land["task"]["successful_land"]["landed_snapshot_id"].as_str(),
         Some(revision_snapshot_id.as_str())
     );
     assert_eq!(
@@ -559,12 +611,15 @@ fn native_task_land_submits_when_target_line_already_points_at_revision() {
     {
         let mut guard = state.lock().unwrap();
         guard.remote_head_snapshot_id = Some(revision_snapshot_id.clone());
-        guard.selected_patchset_id = Some("RP-2".to_string());
+        guard.selected_patchset_id = Some("RT-1/P-02".to_string());
         guard.selected_patchset_base_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
         guard.selected_patchset_revision_snapshot_id = Some(revision_snapshot_id.clone());
     }
 
-    let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
+    let task_land = json_output(
+        root,
+        &["task", "finish", "RT-1", "--remote", "origin", "--json"],
+    );
 
     assert_eq!(
         task_land["apply_status"].as_str(),
@@ -578,7 +633,7 @@ fn native_task_land_submits_when_target_line_already_points_at_revision() {
         land_result["result"]["landed_snapshot_id"].as_str(),
         Some(revision_snapshot_id.as_str())
     );
-    assert_eq!(task_land["change"]["status"].as_str(), Some("landed"));
+    assert!(task_land["change"].is_null());
     {
         let guard = state.lock().unwrap();
         assert!(guard.land_submitted);
@@ -617,12 +672,15 @@ fn native_task_land_submits_when_target_line_already_contains_revision() {
     {
         let mut guard = state.lock().unwrap();
         guard.remote_head_snapshot_id = Some(containing_snapshot_id.clone());
-        guard.selected_patchset_id = Some("RP-2".to_string());
+        guard.selected_patchset_id = Some("RT-1/P-02".to_string());
         guard.selected_patchset_base_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
         guard.selected_patchset_revision_snapshot_id = Some(selected_revision_snapshot_id.clone());
     }
 
-    let task_land = json_output(root, &["task", "finish", "RT-1", "--json"]);
+    let task_land = json_output(
+        root,
+        &["task", "finish", "RT-1", "--remote", "origin", "--json"],
+    );
 
     assert_eq!(
         task_land["apply_status"].as_str(),
@@ -654,8 +712,14 @@ fn native_task_land_submits_when_target_line_already_contains_revision() {
 fn native_snapshot_create_prefers_worktree_workspace_root() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
     let (temp, worktree, _) = init_cli_local_draft_worktree_repo(&base_url);
-    write_file(&temp.path().join("src/lib.rs"), "pub fn repo_root_version() -> &'static str { \"root\" }\n");
-    write_file(&worktree.join("src/lib.rs"), "pub fn worktree_version() -> &'static str { \"worktree override\" }\n");
+    write_file(
+        &temp.path().join("src/lib.rs"),
+        "pub fn repo_root_version() -> &'static str { \"root\" }\n",
+    );
+    write_file(
+        &worktree.join("src/lib.rs"),
+        "pub fn worktree_version() -> &'static str { \"worktree override\" }\n",
+    );
 
     let snapshot = json_output(
         &worktree,
@@ -855,8 +919,14 @@ fn native_worktree_restore_reads_target_snapshot_without_status_manifest_cache()
 fn native_snapshot_namespace_supports_list_show_and_diff() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
     let (temp, worktree, _) = init_cli_local_draft_worktree_repo(&base_url);
-    write_file(&temp.path().join("src/lib.rs"), "pub fn repo_root_version() -> &'static str { \"root\" }\n");
-    write_file(&worktree.join("src/lib.rs"), "pub fn worktree_version() -> &'static str { \"worktree override\" }\n");
+    write_file(
+        &temp.path().join("src/lib.rs"),
+        "pub fn repo_root_version() -> &'static str { \"root\" }\n",
+    );
+    write_file(
+        &worktree.join("src/lib.rs"),
+        "pub fn worktree_version() -> &'static str { \"worktree override\" }\n",
+    );
 
     let snapshot = json_output(
         &worktree,
@@ -1160,8 +1230,14 @@ fn native_top_level_diff_reports_worktree_dirty_paths_and_name_only() {
 fn native_snapshot_diff_works_without_snapshot_files_view() {
     let (base_url, _log, _state, handle) = spawn_fake_remote();
     let (temp, worktree, _) = init_cli_local_draft_worktree_repo(&base_url);
-    write_file(&temp.path().join("src/lib.rs"), "pub fn repo_root_version() -> &'static str { \"root\" }\n");
-    write_file(&worktree.join("src/lib.rs"), "pub fn worktree_version() -> &'static str { \"worktree override\" }\n");
+    write_file(
+        &temp.path().join("src/lib.rs"),
+        "pub fn repo_root_version() -> &'static str { \"root\" }\n",
+    );
+    write_file(
+        &worktree.join("src/lib.rs"),
+        "pub fn worktree_version() -> &'static str { \"worktree override\" }\n",
+    );
 
     let snapshot = json_output(
         &worktree,
@@ -1558,8 +1634,7 @@ fn native_removed_blame_options_fail_before_any_mutation() {
     let numeric_patchset =
         command_output_with_env(root, &["blame", "src/lib.rs", "--patchset", "7"], &[]);
     assert!(!numeric_patchset.status.success());
-    assert!(String::from_utf8_lossy(&numeric_patchset.stderr)
-        .contains("TASK_ID/P-##"));
+    assert!(String::from_utf8_lossy(&numeric_patchset.stderr).contains("TASK_ID/P-##"));
 
     assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), workspace_before);
     assert_eq!(local_line_head(root, "main"), head_before);
@@ -1584,7 +1659,7 @@ fn native_blame_resolves_one_exact_patchset_without_repo_or_change_options() {
             "blame",
             "src/lib.rs",
             "--patchset",
-            "RP-1",
+            "RT-1/P-01",
             "--remote",
             "origin",
             "--line",
@@ -1593,7 +1668,12 @@ fn native_blame_resolves_one_exact_patchset_without_repo_or_change_options() {
         ],
     );
     assert_eq!(payload["target"]["kind"], "patchset");
-    assert_eq!(payload["target"]["patchset_id"], "RP-1");
+    assert_eq!(payload["target"]["patchset_id"], "RT-1/P-01");
+    assert_eq!(payload["target"]["task_id"], "RT-1");
+    assert!(payload["target"]["change_id"].is_null());
+    assert!(payload["target"]["change_ref"].is_null());
+    assert_eq!(payload["lines"][0]["task_id"], "RT-1");
+    assert!(payload["lines"][0]["change_id"].is_null());
     assert_eq!(payload["resolved_snapshot_id"], FIXTURE_BASE_SNAPSHOT_ID);
     assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), workspace_before);
 
@@ -1603,7 +1683,7 @@ fn native_blame_resolves_one_exact_patchset_without_repo_or_change_options() {
             "blame",
             "src/lib.rs",
             "--patchset",
-            "RP-1",
+            "RT-1/P-01",
             "--remote",
             "origin",
             "--line",
@@ -1613,15 +1693,21 @@ fn native_blame_resolves_one_exact_patchset_without_repo_or_change_options() {
     );
     assert!(human.status.success());
     let human = String::from_utf8_lossy(&human.stdout);
-    assert!(human.contains("target: patchset RP-1"), "stdout:\n{human}");
+    assert!(
+        human.contains("target: patchset RT-1/P-01"),
+        "stdout:\n{human}"
+    );
     assert!(!human.contains("change: RC-1"), "stdout:\n{human}");
 
     handle.join().unwrap();
     let logged = log.lock().unwrap();
     assert!(logged.iter().any(|row| {
-        row.method == "GET" && row.url == "/v1/native/repository-authorities/7/patchsets/RP-1"
+        row.method == "GET"
+            && row.url == "/v1/native/repository-authorities/7/patchsets/RT-1%2FP-01"
     }));
+    assert!(logged.iter().all(|row| row.method == "GET"));
     assert!(!logged.iter().any(|row| row.url.contains("change_ref=")));
+    assert!(!logged.iter().any(|row| row.url.contains("/changes/")));
 }
 
 #[test]
@@ -1629,12 +1715,12 @@ fn native_current_line_blame_recovers_published_ownership_after_worktree_cleanup
     let (base_url, log, state, handle) = spawn_fake_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
     let root = temp.path();
+    use_published_revision_fixture(&worktree, &state);
     let snapshot = checkpoint_bound_worktree_fixture(&worktree, "published checkpoint");
     let id = snapshot["snapshot_id"].as_str().unwrap();
     {
         let mut remote = state.lock().unwrap();
         remote.selected_patchset_revision_snapshot_id = Some(id.to_string());
-        remote.task_completed = true;
     }
     seed_binary_line(root, "main", id);
     fs::copy(worktree.join("src/lib.rs"), root.join("src/lib.rs")).unwrap();
@@ -1643,7 +1729,7 @@ fn native_current_line_blame_recovers_published_ownership_after_worktree_cleanup
     let payload = json_output(root, &["blame", "src/lib.rs", "--json"]);
     assert_eq!(payload["target"]["kind"], "current_line");
     assert_eq!(payload["lines"][0]["task_id"], "RT-1");
-    assert_eq!(payload["lines"][0]["change_id"], "RC-1");
+    assert_eq!(payload["lines"][0]["change_id"], "C-01");
     assert_eq!(
         payload["lines"][0]["provenance_confidence"],
         "derived_from_patchset"
@@ -1653,7 +1739,7 @@ fn native_current_line_blame_recovers_published_ownership_after_worktree_cleanup
         .lock()
         .unwrap()
         .iter()
-        .any(|row| row.url.ends_with("/changes/RC-1/patchsets")));
+        .any(|row| row.url.ends_with("/changes/RT-1%2FC-01/patchsets")));
 }
 
 #[test]

@@ -1,0 +1,16 @@
+{
+  "contract": "ait-agent-token-game-acceptance/v1",
+  "workload_id": "GD-02",
+  "minimum_score": 90,
+  "required_checks": [
+    "common-gameplay",
+    "seeded-replay",
+    "armored-enemy-two-hit",
+    "armored-enemy-250-score",
+    "armored-enemy-distinct-visual",
+    "project-local-startup",
+    "zero-python-and-no-external-network"
+  ],
+  "required_paths": ["index.html", "styles.css", "src/game.js", "scripts/self-test.mjs"],
+  "forbidden_paths": ["node_modules", ".venv"]
+}

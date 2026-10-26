@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import base64
+import ast
+import configparser
 import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -225,8 +227,7 @@ def validate_public_monorepo_authority(
     if (
         core_row.get("path") != "ait-core"
         or core_row.get("license") != "Apache-2.0"
-        or core_row.get("components")
-        != ["ait", "ait-agent", "ait-agent-worker"]
+        or core_row.get("components") != ["ait"]
         or core_row.get("transforms") != []
         or python_row.get("path") != "ait-python"
         or python_row.get("license") != "Apache-2.0"
@@ -234,6 +235,13 @@ def validate_public_monorepo_authority(
         or python_row.get("transforms") != ["python-core-path/v1"]
     ):
         raise ReleaseAdapterError("public Python/core source mapping is invalid")
+    components = family.get("components")
+    if not isinstance(components, list) or any(
+        isinstance(row, dict)
+        and row.get("id") in {"ait-agent", "ait-agent-worker"}
+        for row in components
+    ):
+        raise ReleaseAdapterError("public family contains retired chat components")
     core_snapshot = snapshot_id(core_row.get("source_snapshot"))
     python_snapshot = snapshot_id(python_row.get("source_snapshot"))
     if core_snapshot is None or python_snapshot is None:
@@ -260,8 +268,6 @@ def validate_public_monorepo_authority(
         raise ReleaseAdapterError("public Python core-path transform is invalid")
     if (
         component_snapshot(family, "ait", "ait-core") != core_snapshot
-        or component_snapshot(family, "ait-agent", "ait-core") != core_snapshot
-        or component_snapshot(family, "ait-agent-worker", "ait-core") != core_snapshot
         or component_snapshot(family, "ait-python", "ait-python")
         != python_snapshot
     ):
@@ -835,11 +841,374 @@ def build_release(target: str, version: str) -> dict[str, object]:
     }
 
 
-def verify_wheel(wheel: Path, target: str, version: str) -> None:
+def validate_python_frontend(payload: bytes, label: str) -> None:
+    try:
+        tree = ast.parse(payload.decode("utf-8-sig"))
+    except (UnicodeDecodeError, SyntaxError) as error:
+        raise ReleaseAdapterError(f"invalid Python frontend {label!r}") from error
+    imports: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports[alias.asname or alias.name.split(".")[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                imports[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+    def qualified(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return imports.get(node.id, node.id)
+        if isinstance(node, ast.Attribute):
+            return qualified(node.value) + "." + node.attr
+        return ""
+
+    def native_relay_name(name: str) -> bool:
+        leaf = name.rsplit(".", 1)[-1].replace("_", "").lower()
+        return leaf.endswith(("runcli", "entrywithargs"))
+    process_modules = {"subprocess", "multiprocessing", "pty"}
+    for target in imports.values():
+        if target.split(".")[0] in process_modules:
+            raise ReleaseAdapterError(f"Python frontend imports a process relay in {label!r}")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        target = qualified(node.func)
+        leaf = target.rsplit(".", 1)[-1]
+        process = (target in {"os.system", "os.popen", "os.fork"}
+                   or target.startswith(("os.exec", "os.spawn", "asyncio.create_subprocess")))
+        native_relay = native_relay_name(target)
+        if leaf in {"call", "resolve_callable", "__import__", "import_module"} and node.args:
+            value = node.args[0]
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                native_relay |= native_relay_name(value.value) or value.value.split(".")[0] in process_modules
+        if process or native_relay:
+            raise ReleaseAdapterError(f"Python frontend contains a CLI/process relay in {label!r}")
+
+
+def _python_cli_script(payload: bytes) -> bool:
+    """Recognize a text Python console script; installers create PE launchers."""
+    try:
+        tree = ast.parse(payload.decode("utf-8-sig"))
+    except (UnicodeDecodeError, SyntaxError):
+        return False
+    names: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in {"sys", "re"}:
+                    return False
+                names[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            if node.level or node.module != "ait_python.cli":
+                return False
+            for alias in node.names:
+                if alias.name != "main":
+                    return False
+                names[alias.asname or alias.name] = "ait_python.cli.main"
+    invoked = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name):
+            function = names.get(node.func.id)
+        elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            function = names.get(node.func.value.id, "") + "." + node.func.attr
+        else:
+            return False
+        if function not in {"ait_python.cli.main", "sys.exit", "re.sub"}:
+            return False
+        invoked |= function == "ait_python.cli.main"
+    return invoked
+
+
+MACHO_IMAGES = {
+    b"\xce\xfa\xed\xfe": ("little", False), b"\xcf\xfa\xed\xfe": ("little", True),
+    b"\xfe\xed\xfa\xce": ("big", False), b"\xfe\xed\xfa\xcf": ("big", True),
+}
+FAT_MACHO_IMAGES = {b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}
+
+
+class _ImageReader:
+    """Read bounded image structures without loading foreign native code."""
+
+    def __init__(self, payload: bytes, order: str = "little") -> None:
+        self.payload, self.order = payload, order
+
+    def span(self, start: int, size: int) -> bytes:
+        if start < 0 or size < 0 or start + size > len(self.payload):
+            raise ReleaseAdapterError("invalid native shared image bounds")
+        return self.payload[start:start + size]
+
+    def integer(self, start: int, size: int) -> int:
+        return int.from_bytes(self.span(start, size), self.order)
+
+    def table(self, start: int, count: int, stride: int, minimum: int) -> range:
+        if not count:
+            return range(0)
+        if stride < minimum:
+            raise ReleaseAdapterError("invalid native shared image table")
+        self.span(start, count * stride)
+        return range(start, start + count * stride, stride)
+
+    def string(self, start: int, size: int) -> bytes:
+        data = self.span(start, size)
+        end = data.find(b"\0")
+        if end < 0:
+            raise ReleaseAdapterError("unterminated native export name")
+        return data[:end]
+
+    def uleb(self, start: int, end: int) -> tuple[int, int]:
+        value = 0
+        for shift in range(0, 70, 7):
+            if start >= end:
+                break
+            byte = self.integer(start, 1)
+            start += 1
+            if shift == 63 and byte > 1:
+                break
+            value |= (byte & 0x7f) << shift
+            if not byte & 0x80:
+                return value, start
+        raise ReleaseAdapterError("invalid native export-trie integer")
+
+
+def _elf_initializer(payload: bytes) -> bool:
+    if len(payload) < 16 or payload[4] not in (1, 2) or payload[5] not in (1, 2):
+        raise ReleaseAdapterError("invalid native ELF shared image")
+    wide = payload[4] == 2
+    image = _ImageReader(payload, "little" if payload[5] == 1 else "big")
+    image.span(0, 64 if wide else 52)
+    if image.integer(16, 2) != 3 or image.integer(24, 8 if wide else 4):
+        raise ReleaseAdapterError("expected a native shared extension, not an executable")
+    program = image.integer(32 if wide else 28, 8 if wide else 4)
+    for entry in image.table(program, image.integer(56 if wide else 44, 2), image.integer(54 if wide else 42, 2), 56 if wide else 32):
+        if image.integer(entry, 4) == 3:
+            raise ReleaseAdapterError("ELF interpreter identifies an executable")
+    sections = image.integer(40 if wide else 32, 8 if wide else 4)
+    count = image.integer(60 if wide else 48, 2)
+    if not count and sections:
+        count = image.integer(sections + (32 if wide else 20), 8 if wide else 4)
+    rows = list(image.table(sections, count, image.integer(58 if wide else 46, 2), 64 if wide else 40))
+    for section in rows:
+        if image.integer(section + 4, 4) != 11:  # SHT_DYNSYM
+            continue
+        link = image.integer(section + (40 if wide else 24), 4)
+        if link >= len(rows):
+            raise ReleaseAdapterError("invalid ELF export string-table link")
+        strings = rows[link]
+        if image.integer(strings + 4, 4) != 3:
+            raise ReleaseAdapterError("invalid ELF export string-table section")
+        string_start = image.integer(strings + (24 if wide else 16), 8 if wide else 4)
+        string_size = image.integer(strings + (32 if wide else 20), 8 if wide else 4)
+        image.span(string_start, string_size)
+        start = image.integer(section + (24 if wide else 16), 8 if wide else 4)
+        size = image.integer(section + (32 if wide else 20), 8 if wide else 4)
+        stride = image.integer(section + (56 if wide else 36), 8 if wide else 4)
+        if not stride or size % stride:
+            raise ReleaseAdapterError("invalid ELF dynamic symbol table")
+        for symbol in image.table(start, size // stride, stride, 24 if wide else 16):
+            name = image.integer(symbol, 4)
+            info = image.integer(symbol + (4 if wide else 12), 1)
+            visibility = image.integer(symbol + (5 if wide else 13), 1) & 3
+            defined = image.integer(symbol + (6 if wide else 14), 2) != 0
+            if defined and info >> 4 in (1, 2) and visibility in (0, 3):
+                if name >= string_size:
+                    raise ReleaseAdapterError("invalid ELF export name offset")
+                if image.string(string_start + name, string_size - name) == b"PyInit_ait_py":
+                    return True
+    return False
+
+
+def _macho_trie_initializer(payload: bytes) -> bool:
+    image = _ImageReader(payload)
+    wanted = b"_PyInit_ait_py"
+    pending, seen = [(0, b"")], set()
+    while pending:
+        node, prefix = pending.pop()
+        if node in seen:
+            raise ReleaseAdapterError("cyclic native export trie")
+        seen.add(node)
+        size, cursor = image.uleb(node, len(payload))
+        terminal_end = cursor + size
+        image.span(cursor, size)
+        if prefix == wanted and size:
+            flags, data = image.uleb(cursor, terminal_end)
+            _, data = image.uleb(data, terminal_end)
+            if flags & 8:
+                image.string(data, terminal_end - data)
+            return True
+        count = image.integer(terminal_end, 1)
+        cursor = terminal_end + 1
+        for _ in range(count):
+            edge = image.string(cursor, len(payload) - cursor)
+            cursor += len(edge) + 1
+            child, cursor = image.uleb(cursor, len(payload))
+            if not edge:
+                raise ReleaseAdapterError("empty native export-trie edge")
+            if wanted.startswith(prefix + edge):
+                pending.append((child, prefix + edge))
+    return False
+
+
+def _macho_initializer(payload: bytes) -> bool:
+    order, wide = MACHO_IMAGES[payload[:4]]
+    image = _ImageReader(payload, order)
+    header = 32 if wide else 28
+    image.span(0, header)
+    if image.integer(12, 4) not in (6, 8):
+        raise ReleaseAdapterError("expected a native shared extension, not an executable")
+    commands_end = header + image.integer(20, 4)
+    image.span(header, commands_end - header)
+    cursor, symbols, tries = header, [], []
+    for _ in image.table(header, image.integer(16, 4), 8, 8):
+        command, size = image.integer(cursor, 4), image.integer(cursor + 4, 4)
+        if size < 8 or cursor + size > commands_end:
+            raise ReleaseAdapterError("invalid Mach-O load command")
+        if command == 2:
+            if size < 24:
+                raise ReleaseAdapterError("invalid Mach-O symbol command")
+            symbols.append(tuple(image.integer(cursor + field, 4) for field in (8, 12, 16, 20)))
+        elif command in (0x22, 0x80000022):
+            if size < 48:
+                raise ReleaseAdapterError("invalid Mach-O dyld command")
+            tries.append((image.integer(cursor + 40, 4), image.integer(cursor + 44, 4)))
+        elif command == 0x80000033:
+            if size < 16:
+                raise ReleaseAdapterError("invalid Mach-O export command")
+            tries.append((image.integer(cursor + 8, 4), image.integer(cursor + 12, 4)))
+        cursor += size
+    nonempty_tries = [(start, size) for start, size in tries if size]
+    if nonempty_tries:
+        return any(_macho_trie_initializer(image.span(start, size)) for start, size in nonempty_tries)
+    for start, count, strings, string_size in symbols:
+        image.span(strings, string_size)
+        for symbol in image.table(start, count, 16 if wide else 12, 16 if wide else 12):
+            kind = image.integer(symbol + 4, 1)
+            if kind & 0xe0 or not kind & 1 or kind & 0x10 or kind & 0x0e not in (2, 14):
+                continue
+            name = image.integer(symbol, 4)
+            if name >= string_size:
+                raise ReleaseAdapterError("invalid Mach-O export name offset")
+            if image.string(strings + name, string_size - name) == b"_PyInit_ait_py":
+                return True
+    return False
+
+
+def _pe_initializer(payload: bytes) -> bool:
+    image = _ImageReader(payload)
+    start = image.integer(60, 4)
+    if image.span(start, 4) != b"PE\0\0" or not image.integer(start + 22, 2) & 0x2000:
+        raise ReleaseAdapterError("expected a native shared extension, not an executable")
+    optional = start + 24
+    optional_size = image.integer(start + 20, 2)
+    image.span(optional, optional_size)
+    magic = image.integer(optional, 2)
+    if magic not in (0x10b, 0x20b):
+        raise ReleaseAdapterError("invalid PE optional header")
+    directory = 112 if magic == 0x20b else 96
+    if optional_size < directory + 8 or not image.integer(optional + directory - 4, 4):
+        return False
+    export_rva, export_size = image.integer(optional + directory, 4), image.integer(optional + directory + 4, 4)
+    if not export_rva or not export_size:
+        return False
+    sections = list(image.table(optional + optional_size, image.integer(start + 6, 2), 40, 40))
+
+    def location(rva: int, size: int) -> tuple[int, int]:
+        headers = image.integer(optional + 60, 4)
+        if rva < headers and rva + size <= headers:
+            image.span(rva, size)
+            return rva, headers - rva
+        for section in sections:
+            base, raw_size, raw = (image.integer(section + field, 4) for field in (12, 16, 20))
+            delta = rva - base
+            if delta >= 0 and delta + size <= raw_size:
+                image.span(raw + delta, size)
+                return raw + delta, raw_size - delta
+        raise ReleaseAdapterError("invalid PE export address")
+
+    exports, _ = location(export_rva, 40)
+    functions = image.integer(exports + 20, 4)
+    count = image.integer(exports + 24, 4)
+    addresses, _ = location(image.integer(exports + 28, 4), functions * 4)
+    names, _ = location(image.integer(exports + 32, 4), count * 4)
+    ordinals, _ = location(image.integer(exports + 36, 4), count * 2)
+    for index in range(count):
+        name, maximum = location(image.integer(names + index * 4, 4), 1)
+        if image.string(name, maximum) != b"PyInit_ait_py":
+            continue
+        ordinal = image.integer(ordinals + index * 2, 2)
+        if ordinal >= functions:
+            raise ReleaseAdapterError("invalid PE export ordinal")
+        return image.integer(addresses + ordinal * 4, 4) != 0
+    return False
+
+
+def validate_python_extension_image(payload: bytes) -> None:
+    if payload.startswith(b"\x7fELF"):
+        found = _elf_initializer(payload)
+    elif payload[:4] in MACHO_IMAGES:
+        found = _macho_initializer(payload)
+    elif payload.startswith(b"MZ"):
+        found = _pe_initializer(payload)
+    else:
+        raise ReleaseAdapterError("invalid native shared extension image")
+    if not found:
+        raise ReleaseAdapterError("native shared extension does not export PyInit_ait_py")
+
+
+def _native_image(payload: bytes) -> bool:
+    return payload.startswith((b"\x7fELF", b"MZ")) or payload[:4] in MACHO_IMAGES or payload[:4] in FAT_MACHO_IMAGES
+
+
+def _binding_extension(path: PurePosixPath) -> bool:
+    return len(path.parts) == 2 and path.parts[0] == "ait_py" and path.name.startswith("ait_py.") and path.suffix in {".so", ".pyd"}
+
+
+def validate_language_cli_payload(archive: zipfile.ZipFile, dist_info: str) -> None:
+    entry_path = f"{dist_info}/entry_points.txt"
+    try:
+        entries = configparser.ConfigParser(interpolation=None)
+        entries.read_string(archive.read(entry_path).decode("utf-8"))
+    except (KeyError, UnicodeDecodeError, configparser.Error) as error:
+        raise ReleaseAdapterError("wheel lacks valid Python console entrypoint metadata") from error
+    if (not entries.has_section("console_scripts")
+            or dict(entries.items("console_scripts")) != {"ait": "ait_python.cli:main"}
+            or entries.has_section("gui_scripts")):
+        raise ReleaseAdapterError("wheel must expose only the ait Python console command")
+    if "ait_python/cli.py" not in archive.namelist():
+        raise ReleaseAdapterError("wheel lacks its Python CLI frontend")
+    found_extension = False
+    for info in archive.infolist():
+        path = PurePosixPath(info.filename)
+        payload = archive.read(info)
+        extension = _binding_extension(path)
+        if extension:
+            validate_python_extension_image(payload)
+            found_extension = True
+        if _native_image(payload) and not extension:
+            raise ReleaseAdapterError(f"wheel contains a standalone executable or relay: {info.filename!r}")
+        if path.parts[0] in {"ait_python", "ait_py"} and path.suffix == ".py":
+            validate_python_frontend(payload, info.filename)
+        script = any(part.endswith(".data") and path.parts[index + 1:index + 2] == ("scripts",)
+                     for index, part in enumerate(path.parts))
+        command = path.name.lower() in {"ait", "ait.exe", "ait-server", "ait-server.exe",
+                                       "ait-runner", "ait-runner.exe"}
+        if script or command:
+            if path.name.lower() not in {"ait", "ait-script.py", "ait-script.pyw"} or not _python_cli_script(payload):
+                raise ReleaseAdapterError(f"wheel contains a standalone executable or relay: {info.filename!r}")
+    if not found_extension:
+        raise ReleaseAdapterError("wheel lacks a valid native ait_py extension")
+
+
+def verify_wheel(wheel: Path, target: str, version: str, *, distribution: str = "ait-python") -> None:
+    if distribution not in {"ait-python", "ait-native"}:
+        raise ReleaseAdapterError("wheel distribution must be ait-python or ait-native")
     spec = target_spec(target)
-    if wheel.name != expected_wheel_name(target, version) or not wheel.is_file():
+    expected = expected_wheel_name(target, version).replace("ait_python-", distribution.replace("-", "_") + "-", 1)
+    if wheel.name != expected or not wheel.is_file():
         raise ReleaseAdapterError(f"expected wheel is missing: {wheel}")
-    dist_info = f"ait_python-{version}.dist-info"
+    dist_info = f"{distribution.replace('-', '_')}-{version}.dist-info"
+    legal_prefix = "ait-python/" if distribution == "ait-native" else ""
     record_path = f"{dist_info}/RECORD"
     sbom_path = f"{dist_info}/sboms/ait-py.cyclonedx.json"
     with zipfile.ZipFile(wheel) as archive:
@@ -873,8 +1242,8 @@ def verify_wheel(wheel: Path, target: str, version: str) -> None:
             "ait_py/__init__.py",
             f"{dist_info}/METADATA",
             f"{dist_info}/WHEEL",
-            f"{dist_info}/licenses/LICENSE",
-            f"{dist_info}/licenses/NOTICE",
+            f"{dist_info}/licenses/{legal_prefix}LICENSE",
+            f"{dist_info}/licenses/{legal_prefix}NOTICE",
             record_path,
             sbom_path,
         }
@@ -882,14 +1251,14 @@ def verify_wheel(wheel: Path, target: str, version: str) -> None:
         if missing:
             raise ReleaseAdapterError(f"wheel lacks required members: {missing}")
         for legal_name in ("LICENSE", "NOTICE"):
-            member = f"{dist_info}/licenses/{legal_name}"
+            member = f"{dist_info}/licenses/{legal_prefix}{legal_name}"
             if archive.read(member) != (ROOT / legal_name).read_bytes():
                 raise ReleaseAdapterError(
                     f"wheel {legal_name} differs from the repository authority"
                 )
         extension_suffix = ".pyd" if spec.system == "windows" else ".so"
         if not any(
-            name.startswith("ait_py/ait_py") and name.endswith(extension_suffix)
+            _binding_extension(PurePosixPath(name)) and name.endswith(extension_suffix)
             for name in names
         ):
             raise ReleaseAdapterError("wheel lacks the native ait_py extension")
@@ -903,12 +1272,13 @@ def verify_wheel(wheel: Path, target: str, version: str) -> None:
                 "wheel CycloneDX SBOM must contain valid UTF-8 JSON"
             ) from error
         validate_canonical_sbom(sbom)
+        validate_language_cli_payload(archive, dist_info)
     required_metadata = (
-        "Name: ait-python",
+        f"Name: {distribution}",
         f"Version: {version}",
         "License-Expression: Apache-2.0",
-        "License-File: LICENSE",
-        "License-File: NOTICE",
+        f"License-File: {legal_prefix}LICENSE",
+        f"License-File: {legal_prefix}NOTICE",
         "Requires-Python: >=3.11",
     )
     for row in required_metadata:
@@ -917,6 +1287,50 @@ def verify_wheel(wheel: Path, target: str, version: str) -> None:
     expected_tag = f"Tag: {ABI3_PYTHON_TAG}-{ABI3_ABI_TAG}-{spec.platform_tag}"
     if expected_tag not in wheel_metadata.splitlines():
         raise ReleaseAdapterError(f"wheel metadata lacks exact tag {expected_tag!r}")
+
+
+def installed_smoke_code(version: str, *, distribution: str = "ait-python") -> str:
+    return f"""
+from importlib.metadata import distribution, version
+from pathlib import Path
+import sys
+import ait_py
+import ait_py.ait_py as native
+import ait_python
+
+assert version({distribution!r}) == {version!r}
+assert ait_python.__version__ == {version!r}
+assert Path(native.__file__).is_relative_to(Path(sys.prefix))
+assert Path(ait_python.__file__).is_relative_to(Path(sys.prefix))
+assert {{entry.name: entry.value for entry in distribution({distribution!r}).entry_points
+        if entry.group == 'console_scripts'}} == {{'ait': 'ait_python.cli:main'}}
+runtime = ait_python.NativeRuntime()
+info = runtime.binding_info()
+assert info['runtime_authority'] == 'rust'
+assert info['supported_surfaces'] == ['ait-core']
+assert info['process_transport_allowed'] is False
+assert runtime.call('transport_envelope_ir_version')
+assert isinstance(runtime.call('runtime_binding_state_default_payload'), dict)
+assert isinstance(runtime.call('worker_manifest_default_config'), dict)
+for name, error_type in (
+    ('ait_agent_worker_capabilities', RuntimeError),
+    ('ait_agent_management', RuntimeError),
+    ('ait_agent_worker_transaction', RuntimeError),
+    ('ait_agent_web_runtime_execute', ValueError),
+    ('ait_agent_env_file_load', ValueError),
+    ('ait_agent_telegram_workflow_notification_format', ValueError),
+    ('ait_agent_telegram_turn_input_plan', ValueError),
+    ('ait_agent_telegram_message_delivery_execute', ValueError),
+    ('ait_agent_telegram_workflow_query_plan', ValueError),
+):
+    args = () if name == 'ait_agent_worker_capabilities' else ({{}},)
+    try:
+        getattr(ait_py, name)(*args)
+    except error_type as error:
+        assert 'Chat integrations are retired in AIT 1.2.0' in str(error)
+    else:
+        raise AssertionError(f'Retired native export {{name}} returned success')
+"""
 
 
 def smoke_release(target: str, version: str) -> dict[str, object]:
@@ -932,6 +1346,8 @@ def smoke_release(target: str, version: str) -> dict[str, object]:
         "Scripts/python.exe" if spec.system == "windows" else "bin/python"
     )
     environment = release_environment(spec)
+    environment.pop("PYTHONPATH", None)
+    environment["PYTHONNOUSERSITE"] = "1"
     run_command(
         [
             str(python),
@@ -945,14 +1361,13 @@ def smoke_release(target: str, version: str) -> dict[str, object]:
         ],
         environment,
     )
-    smoke_code = (
-        "from importlib.metadata import version; "
-        "import ait_py, ait_python; "
-        f"assert version('ait-python') == {version!r}; "
-        f"assert ait_python.__version__ == {version!r}; "
-        "assert ait_python.NativeRuntime().binding_info()['runtime_authority'] == 'rust'"
-    )
+    smoke_code = installed_smoke_code(version)
     run_command([str(python), "-c", smoke_code], environment)
+    console = smoke_root / ("Scripts/ait.exe" if spec.system == "windows" else "bin/ait")
+    cli_environment = environment.copy()
+    cli_environment["PATH"] = str(console.parent)
+    run_command([str(console), "--version"], cli_environment)
+    run_command([str(console), "doctor", "plan-authority", "--json"], cli_environment)
     run_command([str(python), "-m", "pip", "check"], environment)
     return {
         "action": "smoke",

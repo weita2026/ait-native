@@ -232,6 +232,43 @@ where
         Ok(record)
     }
 
+    /// Only the package converter may call this after proving Task/Change
+    /// ownership. Both head materialization and final archival share its commit.
+    pub(crate) fn materialize_package_line_in_tx<F: BinaryDbFsyncPolicy>(
+        &self,
+        tx: &mut BinaryDbWriteTxn<'_, B, F>,
+        name: &str,
+        head: u32,
+        now: u64,
+        archive: bool,
+    ) -> StoreResult<u32> {
+        if !name.starts_with("import/") || now == 0 {
+            return Err("Invalid package Line materialization".into());
+        }
+        let (index, mut record) = self
+            .line_by_name_in_write(tx, name)?
+            .ok_or("Proven package Line is missing")?;
+        validate_snapshot_link::<_, WRITE_LAYOUT>(
+            tx,
+            head.checked_add(1).ok_or("Snapshot index overflow")?,
+        )?;
+        record.head_snapshot_index_plus1 = head + 1;
+        record.updated_at_s = now;
+        if archive {
+            record.line_meta |= ServerBinaryLineRecord::META_ARCHIVED;
+            record.archived_at_s = now;
+        } else {
+            record.line_meta &= !ServerBinaryLineRecord::META_ARCHIVED;
+            record.archived_at_s = 0;
+        }
+        tx.overwrite_record(
+            ServerBinaryLineCodec::<WRITE_LAYOUT>::record_file(),
+            index,
+            &ServerBinaryLineCodec::<WRITE_LAYOUT>::encode_record(&record)?,
+        )?;
+        Ok(index)
+    }
+
     pub fn create_line(
         &self,
         line_name: &str,

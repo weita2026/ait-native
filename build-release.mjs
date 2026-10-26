@@ -688,6 +688,7 @@ async function validateReleaseControl(family) {
         "ait.release.clean-host.aggregate/v1",
         "distribution-target-32-2026-08-17.2",
         "distribution-target-runner-bundle-32-2026-08-26.1",
+        "distribution-target-120-32-2026-10-24.1",
         "row_count: rows.length",
       ],
     ],
@@ -831,7 +832,11 @@ async function validateProtectedWorkflows() {
     "target: x86_64-pc-windows-msvc",
     "init_cli_creates_then_reinitializes_the_agent_contract",
     "init_is_idempotent_and_creates_only_an_empty_runtime_root",
-    "installed_run_initializes_then_serves_from_an_explicit_root",
+    "direct_start_initializes_then_serves_from_an_explicit_root",
+    "main_app::tests::root_command_inventory_is_frozen",
+    "root_ait_agent_namespace_is_absent",
+    'import { runSingleCargoCase } from "./ci/release_windows_retained_source.mjs";',
+    'import { runSingleCargoCase } from "./source/ci/release_windows_retained_source.mjs";',
     "ait.release.pre-rc-qualification/v1",
     "immutable_release_tag_created: false",
     "release_receipts_created: false",
@@ -881,8 +886,8 @@ async function validateProtectedWorkflows() {
     "ait-pre-tag-clean-host-${{ inputs.release_id }}",
     "name: Activate preinstalled Linux Homebrew",
     "test -x /home/linuxbrew/.linuxbrew/bin/brew",
-    "name: Register inbox Windows Package Manager",
-    "Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe",
+    "name: Bootstrap Windows Package Manager",
+    "./control/ci/release_winget_bootstrap.ps1",
     "C:\\Program Files\\Git\\bin\\bash.exe",
     "Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_PATH",
     "AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}",
@@ -1080,6 +1085,8 @@ async function validatePublicReadme() {
     "https://github.com/weita2026/ait-native/discussions",
     "https://github.com/weita2026/ait-native/issues/new/choose",
     "python -m pip install ait-native==",
+    "## Install the Python or JavaScript CLI",
+    "npm install --global @wa120/ait-native@",
     "ait init",
     "ait --version",
     "## Try your first Task",
@@ -1092,9 +1099,10 @@ async function validatePublicReadme() {
     OFFICIAL_WEBSITE,
     "## Upgrading from 0.x",
     "There is no `ait install` command in 1.x.",
-    "AIT has two workflow presets",
-    "`solo_local`",
-    "`solo_remote`",
+    "# AIT 1.2.0",
+    "Agent Teams, sprint binding and Local/Remote scope are independent.",
+    "ait team contacts --json",
+    "## Moving to 1.2.0",
     "## What each install route gives you",
     "AGENTS.md",
     "ait task start",
@@ -1112,7 +1120,7 @@ async function validatePublicReadme() {
     "The workload-median token saving is **20.32%**, with an aggregate bootstrap",
     "numbers are published for transparency, not as a product claim",
     "It never tries to\ndetect a project type",
-    "local work never needs a running `ait-server`",
+    "local repository initialization does not need a running `ait-server`",
     "package-owned `native/ait_napi.node`",
     "does not locate or launch a child executable",
     "non-publishable",
@@ -1131,6 +1139,7 @@ async function validatePublicReadme() {
     "ait workflow tier --json",
     "--profile quick",
     "ait workflow local-land",
+    "AIT has two workflow presets",
     "parallel AI execution",
     "90 seconds",
   ]) {
@@ -1160,7 +1169,7 @@ async function validatePublicReadme() {
     for (const required of [
       "FIRST_TASK_ACCEPTED", "claim_eligible=false", "34.95%", "36.28%", "20.32%",
       "@wa120/ait-native", "Apache-2.0", "AGPL-3.0-only", "ait-task-tour.gif",
-      "python -m pip install ait-native==", "./build-release.sh",
+      "python -m pip install ait-native==", "npm install --global @wa120/ait-native@", "./build-release.sh",
     ]) {
       if (!text.includes(required)) fail(`${name} is missing ${JSON.stringify(required)}`);
     }
@@ -1424,6 +1433,9 @@ async function validateOperationalIgnorePolicy() {
       "**/.ait-external/",
       "**/.ait-runtime/",
       "**/.ait-worktree-links/",
+      "!/ait-runner/.ait-external/",
+      "!/ait-runner/.ait-external/ait-core/",
+      "!/ait-runner/.ait-external/ait-core/**",
     ],
     "public operational ignore entries",
   );
@@ -1473,7 +1485,8 @@ async function validateTrackedSourceTree() {
       fail(`public source Git index contains a Gitlink: ${trackedPath}`);
     }
     if (
-      segments.some((segment) => AIT_OPERATIONAL_DIRECTORIES.has(segment)) ||
+      segments.some((segment, index) => AIT_OPERATIONAL_DIRECTORIES.has(segment) &&
+        !(segment === ".ait-external" && index === 1 && segments[0] === "ait-runner" && segments[2] === "ait-core")) ||
       ((segments[0] === ".build" || segments[0] === "dist") && segments.length > 1) ||
       segments.at(-1) === ".gitmodules"
     ) {
@@ -1497,7 +1510,7 @@ async function validateTree(current = ROOT, relative = "") {
         }
         fail(`public source tree contains nested Git metadata: ${childRelative}`);
       }
-      if (AIT_OPERATIONAL_DIRECTORIES.has(row.name)) {
+      if (AIT_OPERATIONAL_DIRECTORIES.has(row.name) && childRelative !== "ait-runner/.ait-external") {
         continue;
       }
       if (relative === "" && (row.name === ".build" || row.name === "dist")) {
@@ -1530,7 +1543,7 @@ async function sourceContentDigest() {
       ) {
         continue;
       }
-      if (row.isDirectory() && AIT_OPERATIONAL_DIRECTORIES.has(row.name)) {
+      if (row.isDirectory() && AIT_OPERATIONAL_DIRECTORIES.has(row.name) && childRelative !== "ait-runner/.ait-external") {
         continue;
       }
       const child = path.join(current, row.name);
@@ -1565,6 +1578,12 @@ function validatePublicSourceContract(family) {
     family?.public_source?.identity !== "weita2026/ait-native"
   ) {
     fail("family manifest does not declare the admitted public monorepo contract");
+  }
+  const [major, minor] = String(family.family?.version ?? "").split(".").map(Number);
+  if ((major > 1 || (major === 1 && minor >= 2)) &&
+      (family.components?.some(row => ["ait-agent", "ait-agent-worker"].includes(row.id)) ||
+       family.distributions?.some(row => row.components?.some(id => ["ait-agent", "ait-agent-worker"].includes(id))))) {
+    fail("current public family cannot include retired chat executables or assets");
   }
   const subtrees = family.public_source.subtrees;
   if (!Array.isArray(subtrees) || subtrees.length !== 5) {
@@ -1727,6 +1746,7 @@ async function validateBuildInputs(expectedGitCommit) {
     ".github/workflows/ait-release-prepublish-clean-host.yml",
     ".github/workflows/ait-release-latest-alias.yml",
     ".github/workflows/ait-release-winget-discovery.yml",
+    ".github/workflows/ait-release-winget-pre-review.yml",
     ".github/workflows/ait-release-protected-promotion.yml",
     ".github/workflows/pypi-publish.yml",
     ".gitattributes",
@@ -1755,14 +1775,27 @@ async function validateBuildInputs(expectedGitCommit) {
     "ci/release_clean_host_phase.mjs",
     "ci/release_clean_host_probe.mjs",
     "ci/release_clean_host_test.sh",
+    "ci/release_winget_bootstrap.ps1",
+    "ci/release_winget_pre_review.ps1",
+    "ci/release_winget_pre_review_verify.mjs",
+    "ci/release_winget_pre_review_test.mjs",
+    "ci/release_winget_submit.mjs",
+    "ci/release_winget_submit_test.sh",
+    "ci/release_closeout.mjs",
+    "ci/release_closeout_test.mjs",
     "ci/release_candidate_promote.sh",
     "ci/release_endpoint_publication.sh",
     "ci/release_endpoint_remote.sh",
     "ci/release_latest_alias.sh",
     "ci/release_operator.sh",
+    "ci/release_operation_owner.mjs",
+    "ci/release_product_acceptance.mjs",
+    "ci/release_operation_owner_test.mjs",
     "ci/release_operator_test.sh",
     "ci/release_pre_rc_delta.mjs",
     "ci/release_pre_rc_qualification_test.sh",
+    "ci/release_windows_retained_source.mjs",
+    "ci/release_windows_retained_source_test.mjs",
     "ci/release_prepublish_oci.sh",
     "ci/release_prepublish_stage.sh",
     "ci/release_prepublish_test.sh",
@@ -1795,14 +1828,9 @@ async function validateBuildInputs(expectedGitCommit) {
   await validateTrackedSourceTree();
   await validateReleaseControl(family);
   await validateProtectedWorkflows();
-  const runnerManifest = await readFile(path.join(ROOT, "ait-runner", "Cargo.toml"), "utf8");
   const pythonManifest = await readFile(path.join(ROOT, "ait-python", "pyproject.toml"), "utf8");
-  if (
-    !runnerManifest.includes('path = "../ait-core/rust/crates/ait-core"') ||
-    runnerManifest.includes(".ait-external/")
-  ) {
-    fail("ait-runner does not use the exported sibling ait-core path");
-  }
+  const { validateRunnerDependencySource } = await import(new URL("./ci/release_runner_dependency.mjs", import.meta.url));
+  validateRunnerDependencySource(path.join(ROOT, "ait-runner"), path.join(ROOT, "ait-core"));
   if (
     !pythonManifest.includes('manifest-path = "../ait-core/rust/crates/ait-py/Cargo.toml"') ||
     pythonManifest.includes(".ait-external/")
@@ -2168,7 +2196,9 @@ async function publicGitComponentReceipt(
     fail(`${repository} version or Snapshot differs from the family manifest`);
   }
   const { definition, manifestSha256, repositoryRoot } = await publicAdapter(repository, version);
-  const components = selectedPublicComponents(definition, target);
+  const retired = new Set(["ait-agent", "ait-agent-worker"]);
+  const components = selectedPublicComponents(definition, target).filter(component =>
+    !retired.has(component.id) || familyComponents.some(row => row.id === component.id));
   exactSet(
     components.map((component) => component.id),
     familyComponents
@@ -2569,8 +2599,7 @@ async function build({ family, mapping }, skipTests) {
     "build", "--locked", "--release",
     "--manifest-path", path.join(ROOT, "ait-core", "rust", "Cargo.toml"),
     "--target-dir", coreTarget,
-    "-p", "ait-cli", "--bin", "ait-cli", "--bin", "ait-agent",
-    "-p", "ait-agent-worker", "--bin", "ait-agent-worker",
+    "-p", "ait-cli", "--bin", "ait-cli",
   ]);
   run("cargo", [
     "build", "--locked", "--release",
@@ -2588,17 +2617,10 @@ async function build({ family, mapping }, skipTests) {
   const binOutput = path.join(OUTPUT_ROOT, target, "bin");
   const built = {
     ait: path.join(binOutput, executableName("ait")),
-    "ait-agent": path.join(binOutput, executableName("ait-agent")),
-    "ait-agent-worker": path.join(binOutput, executableName("ait-agent-worker")),
     "ait-server": path.join(binOutput, executableName("ait-server")),
     "ait-runner": path.join(binOutput, executableName("ait-runner")),
   };
   await copyExecutable(path.join(coreTarget, "release", `ait-cli${suffix}`), built.ait);
-  await copyExecutable(path.join(coreTarget, "release", `ait-agent${suffix}`), built["ait-agent"]);
-  await copyExecutable(
-    path.join(coreTarget, "release", `ait-agent-worker${suffix}`),
-    built["ait-agent-worker"],
-  );
   await copyExecutable(path.join(serverTarget, "release", `ait-server${suffix}`), built["ait-server"]);
   await copyExecutable(path.join(runnerTarget, "release", `ait-runner${suffix}`), built["ait-runner"]);
 

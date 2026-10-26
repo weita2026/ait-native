@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { verifyPreReview } from './release_winget_pre_review_verify.mjs';
+import { enterDerivedOperation } from './release_operation_owner.mjs';
 
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
@@ -73,6 +74,7 @@ function findPull(upstream, owner, branch) {
 }
 
 const { mode, options } = parseCli(process.argv.slice(2));
+await enterDerivedOperation();
 const version = options["--version"];
 if (!/^\d+\.\d+\.\d+$/.test(version)) fail("WinGet version must be stable SemVer", 64);
 const manifests = options["--manifests"];

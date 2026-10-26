@@ -1,0 +1,50 @@
+name: AIT source quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  locked-rust:
+    name: Locked Core and Runner / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - name: Check out the tested source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust with quality components
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain=$(node -p 'JSON.parse(require("fs").readFileSync("ci/native_bootstrap_matrix.json", "utf8")).rust_toolchain')
+          rustup toolchain install "${toolchain}" --profile minimal --component rustfmt,clippy
+          rustup default "${toolchain}"
+      - name: Core and Runner gates (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ait-core/ci/run.sh patchset
+          bash ait-runner/ci/run.sh all
+      - name: Core and Runner gates (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./ait-core/ci/run.ps1 patchset
+          & ./ait-runner/ci/run.ps1 all

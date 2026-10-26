@@ -38,9 +38,11 @@ expect_failure() {
 node --check "${tool}"
 node --check "${phase_runner}"
 test "$(grep -c 'CHECKSUM_ASSET_NAME.test(match\[2\])' "${phase_runner}")" = 2
-node --input-type=module - "${phase_runner}" <<'NODE'
+node --input-type=module - "${phase_runner}" "${temporary_root}" <<'NODE'
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import path from "node:path";
 import vm from "node:vm";
 
 const source = readFileSync(process.argv[2], "utf8");
@@ -66,6 +68,158 @@ assert.deepEqual(aptArgs("1.1.1"), ["ait-native=1.1.1", "ait-runner=1.1.1"]);
 assert.deepEqual(aptArgs("1.1.0"), ["ait-runner=1.1.0"]);
 assert.deepEqual(aptArgs("1.1.3", "/frozen"), ["/frozen/ait-native_1.1.3_arm64.deb", "/frozen/ait-runner_1.1.3_arm64.deb"]);
 assert.deepEqual(aptArgs("1.1.1", null, "product"), ["ait-native=1.1.1"]);
+
+// Exercise current and historical installed-package consumers. These fixtures
+// test package/entrypoint guards, not the pending real extension or API gates.
+const versionSource = source.slice(source.indexOf("function requiresRelease120("), source.indexOf("\nexport function requiresChatRetirement"));
+const aliases = source.match(/^export function requires(?:ChatRetirement|LanguageCli)\(version\).+$/gm)
+  .map(line => line.replace(/^export /, "")).join("\n");
+const pythonSource = source.slice(source.indexOf("function pythonContext("), source.indexOf("\nfunction npmPackageRoot("));
+const pyRoot = path.join(process.argv[3], "python-language-cli"), pySite = path.join(pyRoot, "site");
+const pyScripts = path.join(pyRoot, "bin"), pyModule = path.join(pySite, "ait_python");
+const pyMetadata = path.join(pySite, "ait_native-1.2.0.dist-info");
+for (const dir of [pyScripts, pyModule, pyMetadata]) mkdirSync(dir, { recursive: true });
+writeFileSync(path.join(pyModule, "__init__.py"), "");
+writeFileSync(path.join(pyModule, "cli.py"), "def main(): pass\n");
+writeFileSync(path.join(pyScripts, "ait"), "#!/usr/bin/env python3\n");
+writeFileSync(path.join(pyMetadata, "METADATA"), "Metadata-Version: 2.1\nName: ait-native\nVersion: 1.2.0\n");
+const entrypoint = path.join(pyMetadata, "entry_points.txt"), record = path.join(pyMetadata, "RECORD");
+const ownedFiles = "ait_python/__init__.py,,\nait_python/cli.py,,\n../bin/ait,,\n";
+writeFileSync(entrypoint, "[console_scripts]\nait = ait_python.cli:main\n"); writeFileSync(record, ownedFiles);
+const pythonCalls = [];
+const pythonVm = vm.createContext({ path, existsSync, process: { platform: "linux" }, CHAT_RETIREMENT_MESSAGE: "retired",
+  RETIRED_CHAT_COMMANDS: ["ait-agent", "ait-agent-worker"],
+  venvPaths: () => ({ python: "python3", scripts: pyScripts }), pipInstall() {},
+  requireRegularFile(file) { if (!existsSync(file) || !statSync(file).isFile()) throw new Error("missing installed file"); },
+  commandSpec: file => ({ command: file }), fail(message) { throw new Error(message); }, validateRetiredBindingMetadata() {},
+});
+vm.runInContext(versionSource + "\n" + aliases + "\n" + pythonSource + "\nthis.pythonContext = pythonContext;", pythonVm);
+function pythonPackage(version) {
+  return pythonVm.pythonContext({ run(command, args, options) {
+    pythonCalls.push(options.label);
+    if (options.label === "PyPI language CLI entrypoint") {
+      const result = spawnSync(command, Array.from(args), { encoding: "utf8",
+        env: { ...process.env, PYTHONPATH: pySite, PYTHONNOUSERSITE: "1" } });
+      assert.equal(result.status, 0, result.stderr); return result;
+    }
+    return { stdout: JSON.stringify({ runtime_authority: "rust", python_binding: "pyo3", process_transport_allowed: false, version }) };
+  } }, pyRoot, version);
+}
+const pythonCurrent = pythonPackage("1.2.0"); assert.equal(pythonCurrent.server, undefined); pythonCurrent.binding();
+assert(pythonCalls.includes("PyPI language CLI entrypoint"));
+for (const invalid of ["missing-entrypoint", "wrong-module", "unowned-module", "unowned-launcher"]) {
+  writeFileSync(entrypoint, invalid === "missing-entrypoint" ? "[console_scripts]\n" :
+    "[console_scripts]\nait = " + (invalid === "wrong-module" ? "outside_package" : "ait_python.cli") + ":main\n");
+  writeFileSync(record, ownedFiles.replace(invalid === "unowned-module" ? "ait_python/cli.py,,\n" :
+    invalid === "unowned-launcher" ? "../bin/ait,,\n" : "not-present", ""));
+  assert.throws(() => pythonPackage("1.2.0").binding(), invalid);
+}
+writeFileSync(entrypoint, "[console_scripts]\nait = ait_python.cli:main\n"); writeFileSync(record, ownedFiles);
+writeFileSync(path.join(pyScripts, "ait-server"), "historical native bytes");
+assert.throws(() => pythonPackage("1.2.0"), /standalone native command/);
+assert(pythonPackage("1.1.4").server, "historical PyPI still requires its original native Server");
+rmSync(path.join(pyScripts, "ait-server"));
+assert.throws(() => pythonPackage("1.1.4"), /missing installed file/);
+
+const nodeSource = source.slice(source.indexOf("function nodeContext("), source.indexOf("\nfunction brewEnvironment("));
+const npmRoot = path.join(process.argv[3], "node-language-cli"), npmPackage = path.join(npmRoot, "package");
+const npmPlatform = path.join(npmRoot, "platform");
+const npmEntry = path.join(npmPackage, "bin/ait.mjs"), npmMetadata = path.join(npmPackage, "package.json");
+const npmShim = path.join(npmRoot, "bin/ait");
+mkdirSync(path.dirname(npmEntry), { recursive: true }); mkdirSync(path.join(npmPackage, "src")); mkdirSync(path.dirname(npmShim), { recursive: true });
+mkdirSync(npmPlatform); writeFileSync(path.join(npmPlatform, "ait.node"), "loadable binding fixture");
+writeFileSync(npmEntry, "// JavaScript frontend fixture\n"); writeFileSync(path.join(npmPackage, "src/index.js"), "");
+writeFileSync(npmMetadata, JSON.stringify({ bin: { ait: "bin/ait.mjs" } })); symlinkSync(npmEntry, npmShim);
+const nodeVm = vm.createContext({ path, process: { platform: "linux" }, existsSync, lstatSync, readdirSync, realpathSync, readFileSync, JSON,
+  CHAT_RETIREMENT_MESSAGE: "retired", npmInstall() {},
+  npmPackageRoot: (prefix, name) => prefix === npmRoot ? name === "@wa120/ait-native" ? npmPackage : npmPlatform : path.join(prefix, "lib/node_modules", name),
+  npmTargetSuffix: () => "linux-x64-gnu",
+  requireRegularFile(file) { if (!existsSync(file) || !statSync(file).isFile()) throw new Error("missing installed file"); },
+  requireCommand: name => name, commandSpec: (command, argsPrefix = []) => ({ command, argsPrefix }),
+  fail(message) { throw new Error(message); }, validateRetiredBindingMetadata() {},
+});
+vm.runInContext(versionSource + "\n" + aliases + "\n" + nodeSource + "\nthis.nodeContext = nodeContext;", nodeVm);
+function nodePackage(version, prefix = npmRoot) {
+  const calls = [];
+  const installed = nodeVm.nodeContext({ run(command, args, options) {
+    calls.push({ args: Array.from(args), label: options.label });
+    return { stdout: options.label === "npm direct Node-API addon" ? JSON.stringify({ runtime_authority: "rust",
+      node_binding: "napi", process_transport_allowed: false, version }) : `ait ${version}\n` };
+  } }, prefix, version, {});
+  installed.binding(); return calls;
+}
+const nodeCurrent = nodePackage("1.2.0");
+assert.deepEqual(nodeCurrent.at(-1).args, [npmEntry, "--version"]);
+assert.equal(nodeCurrent.some(call => call.args.some(arg => arg.includes(".runCli("))), false);
+assert(nodePackage("1.1.4").some(call => call.args.some(arg => arg.includes(".runCli("))), "historical probe remains unchanged");
+for (const installedRoot of [npmPackage, npmPlatform]) {
+  const nested = path.join(installedRoot, "native", "bin"); mkdirSync(nested, { recursive: true });
+  for (const command of ["ait", "ait-cli.exe", "ait-server", "ait-runner.exe", "ait-agent", "AIT-AGENT-WORKER.EXE"]) {
+    const payload = path.join(nested, command); writeFileSync(payload, "standalone command fixture");
+    assert.throws(() => nodePackage("1.2.0"), /standalone command payload/);
+    nodePackage("1.1.4"); rmSync(payload);
+  }
+  const dangling = path.join(nested, "ait.exe"); symlinkSync(path.join(npmRoot, "absent"), dangling);
+  assert.throws(() => nodePackage("1.2.0"), /standalone command payload/); rmSync(dangling);
+}
+rmSync(npmPlatform, { recursive: true });
+assert.throws(() => nodePackage("1.2.0"), /selected language package/);
+const npmNestedPlatform = path.join(npmPackage, "node_modules/@wa120/ait-native-linux-x64-gnu");
+mkdirSync(npmNestedPlatform, { recursive: true });
+writeFileSync(path.join(npmNestedPlatform, "ait.node"), "loadable binding fixture");
+nodePackage("1.2.0");
+writeFileSync(path.join(npmNestedPlatform, "ait.exe"), "standalone command fixture");
+assert.throws(() => nodePackage("1.2.0"), /standalone command payload/);
+rmSync(path.join(npmPackage, "node_modules"), { recursive: true });
+mkdirSync(npmPlatform); writeFileSync(path.join(npmPlatform, "ait.node"), "loadable binding fixture");
+nodePackage("1.2.0");
+vm.runInContext('process.platform = "win32";', nodeVm);
+writeFileSync(path.join(npmRoot, "ait.cmd"), "node /node_modules/@wa120/ait-native/bin/ait.mjs\n");
+writeFileSync(path.join(npmRoot, "ait.exe"), "package-manager shim fixture");
+nodePackage("1.2.0");
+vm.runInContext('process.platform = "linux";', nodeVm);
+
+// Exercise npm's real global-install dependency layout, rather than teaching
+// the guard only a synthetic sibling layout. All packages/cache/prefixes stay
+// under this test's disposable directory and installation is strictly offline.
+const installRoot = path.join(process.argv[3], "actual-npm-install");
+const platformSource = path.join(installRoot, "platform"), wrapperSource = path.join(installRoot, "wrapper");
+const packedRoot = path.join(installRoot, "packed"), npmCache = path.join(installRoot, "cache");
+for (const directory of [platformSource, wrapperSource, packedRoot]) mkdirSync(directory, { recursive: true });
+function fixtureNpm(args, cwd = installRoot) {
+  const result = spawnSync("npm", [...args, "--cache", npmCache], { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr); return result.stdout;
+}
+const platformName = "@wa120/ait-native-linux-x64-gnu";
+writeFileSync(path.join(platformSource, "package.json"), JSON.stringify({ name: platformName, version: "1.2.0", files: ["ait.node"] }));
+writeFileSync(path.join(platformSource, "ait.node"), "loadable binding fixture");
+const platformTar = path.join(packedRoot, JSON.parse(fixtureNpm(["pack", "--ignore-scripts", "--json", "--pack-destination", packedRoot], platformSource))[0].filename);
+mkdirSync(path.join(wrapperSource, "bin")); mkdirSync(path.join(wrapperSource, "src"));
+writeFileSync(path.join(wrapperSource, "bin/ait.mjs"), "#!/usr/bin/env node\n");
+writeFileSync(path.join(wrapperSource, "src/index.js"), "");
+writeFileSync(path.join(wrapperSource, "package.json"), JSON.stringify({ name: "@wa120/ait-native", version: "1.2.0", files: ["bin", "src"],
+  bin: { ait: "bin/ait.mjs" }, optionalDependencies: { [platformName]: "file:" + platformTar } }));
+const wrapperTar = path.join(packedRoot, JSON.parse(fixtureNpm(["pack", "--ignore-scripts", "--json", "--pack-destination", packedRoot], wrapperSource))[0].filename);
+for (const sibling of [false, true]) {
+  const prefix = path.join(installRoot, sibling ? "sibling-prefix" : "wrapper-prefix");
+  fixtureNpm(["install", "--global", "--ignore-scripts", "--offline", "--no-audit", "--no-fund", "--prefix", prefix,
+    ...(sibling ? [platformTar] : []), wrapperTar]);
+  const modules = path.join(prefix, "lib/node_modules");
+  const globalPlatform = path.join(modules, platformName);
+  const nestedPlatform = path.join(modules, "@wa120/ait-native/node_modules", platformName);
+  if (sibling) assert(existsSync(globalPlatform), "the explicitly installed platform must be present");
+  assert(existsSync(globalPlatform) || existsSync(nestedPlatform), "npm must install the selected platform dependency");
+  nodePackage("1.2.0", prefix);
+  for (const installed of [nestedPlatform, globalPlatform].filter(directory => existsSync(directory))) {
+    const command = path.join(installed, "ait.exe"); writeFileSync(command, "standalone command fixture");
+    assert.throws(() => nodePackage("1.2.0", prefix), /standalone command payload/); rmSync(command);
+  }
+}
+writeFileSync(npmMetadata, "{}"); assert.throws(() => nodePackage("1.2.0"), /declared ait JavaScript entrypoint/);
+writeFileSync(npmMetadata, JSON.stringify({ bin: { ait: "bin/ait.mjs" } }));
+rmSync(npmShim); assert.throws(() => nodePackage("1.2.0"), /shim does not resolve/);
+symlinkSync(path.join(npmPackage, "src/index.js"), npmShim); assert.throws(() => nodePackage("1.2.0"), /shim does not resolve/);
+console.log("Language CLI installed-package guards and historical boundary: pass");
 
 const declaration = source.match(/^const CHECKSUM_ASSET_NAME = \/(.*)\/;$/m);
 assert.ok(declaration, "clean-host checksum asset-name rule is missing");
@@ -227,11 +381,13 @@ jq --arg version "${family_version}" '.version = $version' \
   "${repo_root}/ci/native_bootstrap_matrix.json" >"${active_platforms}"
 
 active_matrix_revision=$(jq -er '
+  . as $family |
   [.distributions[] |
     select(.role == "product" and
       (.channel == "homebrew" or .channel == "apt" or .channel == "winget")) |
     (.components | index("ait-runner") != null)] |
-  if all then "distribution-target-runner-bundle-32-2026-08-26.1"
+  if all and ([$family.components[].id] | index("ait-agent") == null and index("ait-agent-worker") == null) then "distribution-target-120-32-2026-10-24.1"
+  elif all then "distribution-target-runner-bundle-32-2026-08-26.1"
   elif any then error("active native product bundles are inconsistent")
   else "distribution-target-32-2026-08-17.2"
   end
@@ -262,6 +418,17 @@ jq -e --arg matrix_revision "${active_matrix_revision}" '
     "ubuntu-22.04-arm", "windows-11-arm", "windows-2025"
   ] | sort)
 ' "${matrix}" >/dev/null
+
+jq -e '
+  all(.rows[] | select(.channel == "pypi");
+    .components == ["ait-python"] and .binding == "python" and .service == null and .lifecycle == "product")
+' "${matrix}" >/dev/null
+wrong_python_payload=${temporary_root}/wrong-python-native-payload.json
+jq '(.distributions[] | select(.channel == "pypi")).components = ["ait", "ait-server", "ait-python"]' \
+  "${active_family}" >"${wrong_python_payload}"
+expect_failure python-native-payload node "${tool}" matrix \
+  --family "${wrong_python_payload}" --platforms "${active_platforms}" \
+  --output "${temporary_root}/wrong-python-matrix.json"
 
 published_legacy_platforms=${temporary_root}/published-legacy-platforms.json
 jq '.version = "1.1.0"' \

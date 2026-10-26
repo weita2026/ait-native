@@ -1,9 +1,11 @@
+mod control;
 pub mod environment_contract;
 pub mod error;
 pub mod executor;
 pub mod materialize;
 pub mod protocol;
 pub mod server;
+pub mod workflow_package;
 
 pub use ait_core::server_operational::{
     RepositoryIndex, WorkerJobIndex, WorkerJobKey, WorkerLeaseProof,

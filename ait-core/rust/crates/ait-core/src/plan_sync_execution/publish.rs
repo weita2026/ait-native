@@ -77,6 +77,18 @@ where
     I: PlanSyncWorkflowIdentitySource + ?Sized,
     C: PlanSyncRemotePublisher + ?Sized,
 {
+    let mut publication_request = request.clone();
+    publication_request.current_actor_revision_ids = results
+        .iter()
+        .filter(|row| {
+            matches!(
+                text_field(row, "action").as_deref(),
+                Some("created" | "updated")
+            )
+        })
+        .filter_map(|row| text_field(row, "plan_revision_id"))
+        .collect();
+    let request = &publication_request;
     let mut published = Vec::new();
     let mut seen = BTreeSet::new();
     for row in results {
@@ -511,6 +523,7 @@ where
     let seed_revision = local_revisions
         .first()
         .ok_or_else(|| format!("Local plan {local_plan_id} has no revisions to publish"))?;
+    require_current_publication_author(request, seed_revision)?;
     let seed_artifact_body = read_exact_local_plan_revision_artifact_body(
         local_blob_store,
         local_artifact_body_source,
@@ -736,10 +749,10 @@ where
         );
     }
     if !value_get(&response, "task").is_some_and(JsonValue::is_object)
-        || !value_get(&response, "change").is_some_and(JsonValue::is_object)
+        || value_get(&response, "change").is_some_and(|change| !change.is_null())
     {
         return Err(
-            "Atomic task-start response must include Task and Change projections.".to_string(),
+            "Atomic task-start v2 response requires a Task and no implicit Change.".to_string(),
         );
     }
     Ok(AtomicTaskStartOutcome {
@@ -960,7 +973,7 @@ where
                 } else {
                     let Some(mode) = divergent_retry_mode else {
                         return Err(format!(
-                            "Remote plan {remote_plan_id} for local {plan_id} has advanced to {}; retry the shared publish with `--rebase` or the legacy `--reconcile` retry path.",
+                            "Remote plan {remote_plan_id} for local {plan_id} has advanced to {}; retry normal Plan sync to align the current head before this exact-history operation.",
                             actual_remote_head.unwrap_or_default()
                         ));
                     };
@@ -1006,6 +1019,7 @@ where
 
     let unpublished_revision_count = unpublished_revisions.len();
     for (revision_offset, revision) in unpublished_revisions.into_iter().enumerate() {
+        require_current_publication_author(request, &revision)?;
         let expected_head_revision_id = remote_plan.as_ref().and_then(remote_head_revision_id);
         let revision_artifact_body = read_exact_local_plan_revision_artifact_body(
             local_blob_store,
@@ -1563,5 +1577,112 @@ mod tests {
             error,
             "Missing-remote Plan replay has no local head revision."
         );
+    }
+}
+
+fn require_current_publication_author(
+    request: &SyncRequest,
+    revision: &JsonValue,
+) -> Result<(), String> {
+    let id = text_field(revision, "plan_revision_id")
+        .ok_or("Publication requires an exact Plan revision identity.")?;
+    if request.current_actor_revision_ids.contains(&id) {
+        return Ok(());
+    }
+    // The owner assigns unresolved unpublished revisions to the configured
+    // default user in every repository. Existing Remote Actor registration
+    // resolves that user; Local bins do not gain an inferred historical author.
+    if text_field(revision, "publication_state").as_deref() == Some("local_draft")
+        && value_get(revision, "actor_key_index").is_none_or(JsonValue::is_null)
+        && text_field(revision, "created_by").is_none()
+        && text_field(revision, "published_plan_revision_id").is_none()
+    {
+        return Ok(());
+    }
+    Err(format!("Unresolved offline Plan authorship for {id}: Local Plan layout 1 stores no Actor; reuse an exact Remote revision or resolve the publication case without attributing it to the uploader."))
+}
+
+#[cfg(test)]
+mod actor_authorship_tests {
+    use super::*;
+
+    fn publication_request() -> SyncRequest {
+        super::super::request_runtime::parse_request_map(
+            json!({
+                "root_path":"/repo", "repo_name":"ait-runner",
+                "remote_repo_name":"ait-runner", "remote_name":"origin",
+                "plan_storage":{"write_layout":1},
+                "target":"docs/sprints/hash-ready-finish-runner-20261020.md"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+        .unwrap()
+    }
+
+    fn unpublished_revision(id: &str) -> JsonValue {
+        json!({
+            "plan_id":"PR-60", "plan_revision_id":id,
+            "artifact_path":"docs/sprints/hash-ready-finish-runner-20261020.md",
+            "artifact_selector":"ait-runner/hash-ready-finish-runner-20261020",
+            "publication_state":"local_draft", "actor_key_index":null,
+            "created_by":null, "published_plan_revision_id":null
+        })
+    }
+
+    #[test]
+    fn default_actor_attribution_admits_unknown_unpublished_history_without_overriding_authors() {
+        let request = publication_request();
+        for id in [
+            "plan-revision:0",
+            "plan-revision:146",
+            "plan-revision:147",
+            "plan-revision:148",
+        ] {
+            require_current_publication_author(&request, &unpublished_revision(id)).unwrap();
+        }
+        for (field, value) in [
+            ("publication_state", json!("published")),
+            ("published_plan_revision_id", json!("plan-revision:146")),
+            ("actor_key_index", json!(0)),
+            ("created_by", json!("Known original author")),
+        ] {
+            let mut revision = unpublished_revision("plan-revision:146");
+            revision[field] = value;
+            assert!(
+                require_current_publication_author(&request, &revision).is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn offline_local_indexes_never_become_remote_authorship() {
+        let mut request = super::super::request_runtime::parse_request_map(
+            json!({
+                "root_path":"/repo", "repo_name":"repo", "target":"docs/card.md",
+                "local":true, "plan_storage":{"write_layout":1}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+        .unwrap();
+        // Two users can each own this same Local physical index. Its number,
+        // current config and projected uploader cannot recover the old author.
+        let historical = json!({"plan_revision_id":"plan-revision:0", "actor_key_index":0});
+        assert!(require_current_publication_author(&request, &historical)
+            .unwrap_err()
+            .contains("Unresolved offline Plan authorship"));
+        request
+            .current_actor_revision_ids
+            .insert("plan-revision:1".into());
+        assert!(require_current_publication_author(&request, &historical).is_err());
+        require_current_publication_author(
+            &request,
+            &json!({"plan_revision_id":"plan-revision:1"}),
+        )
+        .unwrap();
     }
 }

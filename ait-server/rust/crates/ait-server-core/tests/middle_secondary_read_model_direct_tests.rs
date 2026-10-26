@@ -342,7 +342,7 @@ fn reviewer_inbox_filters_and_projects_current_review_payload() {
     assert_eq!(item["task"]["task_id"], json!("T-1"));
     assert_eq!(item["current_patchset"]["patchset_id"], json!("P-2"));
     assert_eq!(item["current_patchset"]["patchset_number"], json!(2));
-    assert_eq!(item["selected_patchset"]["patchset_id"], json!("P-1"));
+    assert!(item.get("selected_patchset").is_none());
     assert_eq!(item["patchsets"].as_array().expect("patchsets").len(), 2);
     assert_eq!(item["review_state"]["approvals"], json!(1));
     assert_eq!(item["requested_groups"], json!(["core"]));
@@ -388,4 +388,31 @@ fn reviewer_inbox_handles_missing_optional_rows_and_rejects_bad_payloads() {
     assert_eq!(item["policy_state"]["decision"], json!("pending"));
     assert_eq!(item["freshness"]["state"], json!("stale"));
     assert_eq!(item["attestation"]["completeness"], json!("missing"));
+}
+
+#[test]
+fn task_owned_reviewer_inbox_filters_exact_candidate_without_an_initial_change() {
+    let mut payload = json!({
+        "tasks":[{"task_id":"RT-0001","repo_name":"repo","status":"active",
+            "current_patchset_id":"RT-0001/P-02"}],
+        "changes":[],
+        "patchsets":[
+            {"task_id":"RT-0001","repo_name":"repo","patchset_id":"RT-0001/P-01","patchset_number":1},
+            {"task_id":"RT-0001","repo_name":"repo","patchset_id":"RT-0001/P-02","patchset_number":2}
+        ],
+        "reviews":[{"patchset_id":"RT-0001/P-01","action":"approve"}],
+        "review_requests":[{"patchset_id":"RT-0001/P-02","reviewer_group":"owners"}]
+    });
+    let value = reviewer_inbox(payload.clone());
+    assert_eq!(value["count"], 1);
+    assert!(value["items"][0]["change_id"].is_null());
+    assert_eq!(value["items"][0]["task"]["task_id"], "RT-0001");
+    assert_eq!(
+        value["items"][0]["current_patchset"]["patchset_id"],
+        "RT-0001/P-02"
+    );
+    assert_eq!(value["items"][0]["review_state"]["approvals"], 0);
+    assert_eq!(value["items"][0]["requested_groups"], json!(["owners"]));
+    payload["tasks"][0]["current_patchset_id"] = JsonValue::Null;
+    assert_eq!(reviewer_inbox(payload)["count"], 0);
 }

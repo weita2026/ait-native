@@ -126,22 +126,21 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
                 "Stable smoke",
                 "--intent",
                 "Verify the remote workflow",
+                "--remote",
+                "origin",
                 "--json",
                 "--full",
             ],
         )?;
         let task_id = string_field(&started, "task_id").ok_or("Task start omitted task_id")?;
-        let change_id =
-            string_field(&started["change"], "change_id").ok_or("Task start omitted Change")?;
-        let change_ref = format!("{task_id}/{change_id}");
+        if !started["change"].is_null() {
+            return Err("initial remote Task unexpectedly created a Change".into());
+        }
         let worktree_path = string_field(&started["worktree"], "path")
             .map(PathBuf::from)
             .ok_or("Task start omitted worktree path")?;
         let root = worktree_path.as_path();
-        let change_url = format!(
-            "/v1/native/repository-authorities/7/changes/{}",
-            change_ref.replace('/', "%2F")
-        );
+        let change_url = format!("/v1/native/repository-authorities/7/changes/{}", task_id);
 
         write_file(
             &root.join("src/lib.rs"),
@@ -156,10 +155,29 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
                 "--message",
                 "reviewable snapshot",
                 "--json",
+                "--full",
             ],
         )?;
         let snapshot_id = string_field(&snapshot, "snapshot_id")
             .ok_or_else(|| "snapshot create did not return snapshot_id".to_string())?;
+        let capture = SnapshotCaptureBinding::from_value(&snapshot["capture_binding"])?;
+        if capture.repository_index != 7
+            || capture.snapshot_id != snapshot_id
+            || capture.owner.task_id != task_id
+            || !capture.owner.change_id.is_empty()
+            || remote
+                .state
+                .lock()
+                .map_err(|_| "fake remote state lock poisoned")?
+                .snapshot_capture_bindings
+                .get(&snapshot_id)
+                != Some(&capture)
+        {
+            return Err(
+                "Snapshot capture did not retain its exact remote Task/Change ownership"
+                    .to_string(),
+            );
+        }
 
         let patchset = json_output(
             root,
@@ -174,8 +192,8 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
         )?;
         let patchset_id = string_field(&patchset["patchset"], "patchset_id")
             .ok_or_else(|| "patchset publish smoke did not return patchset_id".to_string())?;
-        if patchset_id != "RP-2" {
-            return Err("patchset publish smoke did not return RP-2".to_string());
+        if patchset_id != format!("{task_id}/P-01") {
+            return Err("patchset publish smoke did not retain its exact Task owner".to_string());
         }
         if string_field(&patchset, "revision_snapshot_id").as_deref() != Some(snapshot_id.as_str())
         {
@@ -185,7 +203,8 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
         }
 
         let selected = json_output(root, &["patchset", "select", &patchset_id, "--json"])?;
-        if string_field(&selected, "selected_patchset_id").as_deref() != Some(patchset_id.as_str())
+        if string_field(&selected, "current_patchset_id").as_deref() != Some(patchset_id.as_str())
+            || selected["selection_changed"] != false
         {
             return Err("patchset select smoke did not select the revision Snapshot".to_string());
         }
@@ -230,7 +249,9 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
                 "--patchset",
                 &patchset_id,
                 "--message",
-                "Reviewed files: src/lib.rs; Findings: none; Risks: low; Tests: cargo test; Recommendation: finish",
+                "1. Reviewed files\nThe fixture src/lib.rs.\n2. Findings\nNo defects found.\n3. Risks\nDisposable fixture only.\n4. Tests\nThe fixture CI passed.\n5. Recommendation\nFinish this candidate.",
+                "--reviewer",
+                "Fixture Bot",
                 "--json",
             ],
         )?;
@@ -257,7 +278,12 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             return Err("policy eval smoke did not pass".to_string());
         }
 
-        let task_land = json_output(root, &["task", "finish", &task_id, "--json", "--full"])?;
+        let task_land = json_output(
+            root,
+            &[
+                "task", "finish", &task_id, "--remote", "origin", "--json", "--full",
+            ],
+        )?;
         if string_field(&task_land, "apply_status").as_deref() != Some("done") {
             return Err("task finish smoke did not complete the Task closeout".to_string());
         }
@@ -279,7 +305,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
         if !logged.iter().any(|row| {
             row.method == "PUT"
                 && is_attestation_request(row.url.as_str())
-                && body_mentions_pass_tests(&row.body)
+                && body_records_manual_pass_verification(&row.body)
         }) {
             return Err("stable smoke did not write the patchset attestation".to_string());
         }
@@ -316,6 +342,7 @@ impl PatchsetSmokeSuite for StableSmokeSuite {
             "snapshot_id": snapshot_id,
             "request_count": logged.len(),
             "checks": [
+                "snapshot_capture_binding",
                 "snapshot_publish",
                 "patchset_ci_status",
                 "review_flow",

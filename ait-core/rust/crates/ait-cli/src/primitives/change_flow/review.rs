@@ -10,7 +10,7 @@ pub fn review_team_approve(
 ) -> Result<JsonValue, String> {
     if !repo.team_review_enabled() {
         return Err(
-            "`ait review team ...` is only available when `workflow_mode=team_remote`.".to_string(),
+            "`ait review team ...` is only available when Agent Teams is enabled.".to_string(),
         );
     }
     let resolved_reviewer = repo.reviewer_identity(reviewer).ok_or_else(|| {
@@ -103,7 +103,7 @@ pub(in crate::primitives) fn review_request_flow_with_task_and_closeout_remotes<
     repo_name: &str,
 ) -> Result<JsonValue, String>
 where
-    T: TaskWorkflowRemoteChangeReader + ?Sized,
+    T: TaskWorkflowRemoteChangeReader + TaskWorkflowRemoteTaskReader + ?Sized,
     C: TaskWorkflowPatchsetReader
         + TaskWorkflowPatchsetLister
         + TaskWorkflowReviewRequester
@@ -260,6 +260,17 @@ pub fn review_code_submit(
     message: &str,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
+    review_code_submit_with_reviewer(repo, change_id, patchset_id, message, None, remote_name)
+}
+
+pub fn review_code_submit_with_reviewer(
+    repo: &RepoRuntime,
+    change_id: &str,
+    patchset_id: &str,
+    message: &str,
+    reviewer: Option<&str>,
+    remote_name: Option<&str>,
+) -> Result<JsonValue, String> {
     let patchset_id = super::patchset::exact_patchset_id(patchset_id)?;
     let missing = missing_code_review_summary_sections(message);
     if !missing.is_empty() {
@@ -268,17 +279,12 @@ pub fn review_code_submit(
             missing.join(", ")
         ));
     }
-    let code_reviewer = repo.ai_code_review_reviewer_identity().ok_or_else(|| {
-        "No AI code review app identity is available from the executing app basename.".to_string()
-    })?;
+    let code_reviewer = crate::reviewer_identity::ActingReviewer::resolve(repo, reviewer)?;
     let task_review_required = super::super::workflow::workflow_task_review_required(repo);
     let automatic_task_reviewer = if task_review_required {
         None
     } else {
-        Some(repo.task_review_reviewer_identity().ok_or_else(|| {
-            "Automatic Task approval requires `ait config` `user_name` before AI code review can be recorded."
-                .to_string()
-        })?)
+        Some(code_reviewer.name.as_str())
     };
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
@@ -286,8 +292,8 @@ pub fn review_code_submit(
         &mut closeout_remote,
         change_id,
         &patchset_id,
-        &code_reviewer,
-        automatic_task_reviewer.as_deref(),
+        &code_reviewer.name,
+        automatic_task_reviewer,
         message,
         &repo_name,
     )
@@ -309,8 +315,9 @@ where
         + ?Sized,
 {
     let patchset_id = super::patchset::exact_patchset_id(patchset_id)?;
-    let code_reviewer = normalized_text(Some(code_reviewer))
-        .ok_or_else(|| "AI code review requires a non-empty app identity.".to_string())?;
+    let code_reviewer = normalized_text(Some(code_reviewer)).ok_or_else(|| {
+        "AI code review requires the acting Reviewer's non-empty name.".to_string()
+    })?;
     let missing = missing_code_review_summary_sections(message);
     if !missing.is_empty() {
         return Err(format!(
@@ -321,27 +328,37 @@ where
     let automatic_task_reviewer = automatic_task_reviewer
         .map(|reviewer| {
             normalized_text(Some(reviewer)).ok_or_else(|| {
-                "Automatic Task approval requires a non-empty configured user_name.".to_string()
+                "Automatic Task approval requires the acting Reviewer's non-empty name.".to_string()
             })
         })
         .transpose()?;
+    if automatic_task_reviewer
+        .as_ref()
+        .is_some_and(|reviewer| reviewer != &code_reviewer)
+    {
+        return Err(
+            "Automatic Task approval must use the same acting Reviewer as the code review".into(),
+        );
+    }
     let resolved_patchset_id = resolve_patchset_id(closeout_remote, &patchset_id, Some(repo_name))?;
-    let mut code_review = review_record_with_closeout_remote(
+    let mut code_review = review_record_as_actor_with_closeout_remote(
         closeout_remote,
         change_id,
         &resolved_patchset_id,
         &code_reviewer,
+        crate::reviewer_identity::ActingReviewer::ACTOR_KIND,
         "code_review_summary",
         Some(message),
         false,
         repo_name,
     )?;
     let task_review = if let Some(task_reviewer) = automatic_task_reviewer.as_deref() {
-        let result = review_record_with_closeout_remote(
+        let result = review_record_as_actor_with_closeout_remote(
             closeout_remote,
             change_id,
             &resolved_patchset_id,
             task_reviewer,
+            crate::reviewer_identity::ActingReviewer::ACTOR_KIND,
             "task_approve",
             Some(AUTOMATIC_TASK_APPROVAL_COMMENT),
             false,
@@ -356,6 +373,7 @@ where
             "mode": "automatic",
             "status": "recorded",
             "reviewer": task_reviewer,
+            "reviewer_kind":"bot",
             "result": result,
             "policy_refresh": policy_refresh,
         })
@@ -456,6 +474,7 @@ pub(in crate::primitives) fn review_record_flow_with_task_and_closeout_remotes<T
 ) -> Result<JsonValue, String>
 where
     T: TaskWorkflowRemoteChangeReader
+        + TaskWorkflowRemoteTaskReader
         + TaskWorkflowRemoteChangeDetailReader
         + TaskWorkflowRemoteChangeLister
         + ?Sized,
@@ -512,4 +531,34 @@ where
             false,
         )
         .map_err(|err| err.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::primitives) fn review_record_as_actor_with_closeout_remote<R>(
+    closeout_remote: &mut R,
+    change_id: &str,
+    patchset_id: &str,
+    reviewer: &str,
+    reviewer_kind: &str,
+    action: &str,
+    comment: Option<&str>,
+    blocking: bool,
+    repo_name: &str,
+) -> Result<JsonValue, String>
+where
+    R: TaskWorkflowReviewRecorder + ?Sized,
+{
+    closeout_remote
+        .record_review_as_actor(
+            change_id,
+            patchset_id,
+            reviewer,
+            reviewer_kind,
+            action,
+            comment,
+            blocking,
+            Some(repo_name),
+            false,
+        )
+        .map_err(|error| error.to_string())
 }

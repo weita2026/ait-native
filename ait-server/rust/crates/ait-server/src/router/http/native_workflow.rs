@@ -31,6 +31,22 @@ mod tasks;
 
 use tasks::{run_workflow_call, run_workflow_mutation};
 
+fn workflow_owner_ref(
+    workflow: &dyn ServerWorkflowStore,
+    reference: &str,
+) -> Result<String, String> {
+    let (value, field) = if reference.contains("/C-") || reference.starts_with("C-") {
+        (workflow.get_change(None, reference)?, "change_ref")
+    } else {
+        (workflow.get_task(None, reference)?, "task_id")
+    };
+    value
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("Resolved workflow owner is missing {field}"))
+}
+
 fn repository_authority_workflow_store(
     workflow: &dyn ServerWorkflowStore,
     repository_index: &str,

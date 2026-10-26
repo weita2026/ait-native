@@ -1,0 +1,13 @@
+{
+  "name": "ait-plane-shooter-benchmark-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "node scripts/serve.mjs",
+    "test": "node scripts/self-test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

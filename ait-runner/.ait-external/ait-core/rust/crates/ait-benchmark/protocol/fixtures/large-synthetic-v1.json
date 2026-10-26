@@ -1,0 +1,22 @@
+{
+  "contract": "ait-vcs-benchmark-fixture/v1",
+  "fixture_id": "vcs-large-synthetic-v1",
+  "revision": "2026-07-19.1",
+  "scale": "large",
+  "seed": 659920,
+  "file_count": 100000,
+  "total_bytes": 10737418240,
+  "history_nodes": 100000,
+  "max_depth": 14,
+  "binary_percent": 25,
+  "ignored_percent": 10,
+  "features": [
+    "small_text",
+    "large_binary",
+    "deep_directories",
+    "ignored_files",
+    "renames",
+    "branches",
+    "merge_history"
+  ]
+}

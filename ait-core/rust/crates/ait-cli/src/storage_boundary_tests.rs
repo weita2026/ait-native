@@ -199,7 +199,6 @@ fn schema_registry_includes_the_protected_snapshot_ownership_authority() {
             SNAPSHOT_BIN,
             SNAPSHOT_PAYLOAD_BIN,
             "snapshot_link.bin",
-            "snapshot_link_payload.bin",
             "task_snapshot_index.bin",
             "change_snapshot_index.bin",
             OBJECT_PACK_BIN,
@@ -209,6 +208,14 @@ fn schema_registry_includes_the_protected_snapshot_ownership_authority() {
             LINE_BIN,
             LINE_NAME_PAYLOAD_BIN,
             STASH_BIN,
+            "tag.bin",
+            "tag_payload.bin",
+            "agents.bin",
+            "agents_payload.bin",
+            "agent_roles.bin",
+            "agent_teams.bin",
+            "agent_teams_payload.bin",
+            "agent_team_membership.bin",
         ]),
         REPOSITORY_BINARY_DB_BIN_PATHS.iter().copied().collect()
     );
@@ -220,6 +227,7 @@ fn schema_registry_includes_the_protected_snapshot_ownership_authority() {
             TREE_ID_IDX,
             TREE_PACK_ID_IDX,
             LINE_NAME_IDX,
+            "tag_name.idx",
         ]),
         REPOSITORY_BINARY_DB_INDEX_PATHS.iter().copied().collect()
     );

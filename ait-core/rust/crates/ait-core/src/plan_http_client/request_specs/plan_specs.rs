@@ -144,6 +144,7 @@ pub fn build_get_plan_revision_request_spec(
 #[allow(clippy::too_many_arguments)]
 pub fn build_create_plan_request_spec(
     config: &PlanHttpClientConfig,
+    actor_key_index: u32,
     repo_name: &str,
     title: &str,
     artifact_path: &str,
@@ -157,7 +158,9 @@ pub fn build_create_plan_request_spec(
     artifact_body: Option<&str>,
     packed_artifact: Option<&Value>,
 ) -> PlanHttpClientResult<PlanHttpRequestSpec> {
+    super::super::actor_registration::validate_actor_key_index(actor_key_index)?;
     let mut body = Map::new();
+    body.insert("actor_key_index".into(), Value::from(actor_key_index));
     body.insert("title".to_string(), Value::String(title.to_string()));
     body.insert(
         "artifact_path".to_string(),
@@ -192,6 +195,7 @@ pub fn build_create_plan_request_spec(
 #[allow(clippy::too_many_arguments)]
 pub fn build_revise_plan_request_spec(
     config: &PlanHttpClientConfig,
+    actor_key_index: u32,
     plan_id: &str,
     artifact_path: &str,
     artifact_selector: Option<&str>,
@@ -204,7 +208,9 @@ pub fn build_revise_plan_request_spec(
     expected_head_revision_id: Option<&str>,
     packed_artifact: Option<&Value>,
 ) -> PlanHttpClientResult<PlanHttpRequestSpec> {
+    super::super::actor_registration::validate_actor_key_index(actor_key_index)?;
     let mut body = Map::new();
+    body.insert("actor_key_index".into(), Value::from(actor_key_index));
     body.insert(
         "artifact_path".to_string(),
         Value::String(artifact_path.to_string()),
@@ -242,10 +248,13 @@ pub fn build_revise_plan_request_spec(
 
 pub fn build_update_plan_status_request_spec(
     config: &PlanHttpClientConfig,
+    actor_key_index: u32,
     plan_id: &str,
     status: &str,
 ) -> PlanHttpClientResult<PlanHttpRequestSpec> {
+    super::super::actor_registration::validate_actor_key_index(actor_key_index)?;
     let mut body = Map::new();
+    body.insert("actor_key_index".into(), Value::from(actor_key_index));
     body.insert("status".to_string(), Value::String(status.to_string()));
     plan_http_transport::build_request_spec(
         config,
@@ -258,11 +267,14 @@ pub fn build_update_plan_status_request_spec(
 
 pub fn build_put_plan_revision_artifacts_request_spec(
     config: &PlanHttpClientConfig,
+    actor_key_index: u32,
     plan_id: &str,
     plan_revision_id: &str,
     artifacts: &[Value],
 ) -> PlanHttpClientResult<PlanHttpRequestSpec> {
+    super::super::actor_registration::validate_actor_key_index(actor_key_index)?;
     let mut body = Map::new();
+    body.insert("actor_key_index".into(), Value::from(actor_key_index));
     body.insert("artifacts".to_string(), Value::Array(artifacts.to_vec()));
     plan_http_transport::build_request_spec(
         config,

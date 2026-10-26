@@ -1,4 +1,4 @@
-# ait-native
+# AIT 1.2.0
 
 [English](README.md) · **[简体中文](README_CN.md)** · [繁體中文](README_ZH.md)
 
@@ -37,12 +37,16 @@ AIT 是以本地工作为主的 CLI，适合将代码修改交给 agent、并对
 请从全新的示例文件夹开始。你需要自己的 coding agent，以及执行此小示例所需的 Node.js 22+；
 Node.js 并非 AIT 对仓库的通用要求。
 
-**1. 安装 AIT。**
+**1. 安装 AIT 1.2.0。**
+
+从 [v1.2.0 发行](https://github.com/weita2026/ait-native/releases/tag/v1.2.0) 或[安装指南](https://ait-native.dev/zh-cn/local-quickstart/)
+选择适用平台的原生软件包，然后检查安装版本：
 
 ```sh
-python -m pip install ait-native==1.1.4
 ait --version
 ```
+
+版本应为 1.2.0。Python 与 JavaScript CLI 前端可通过下方的语言软件包安装。
 
 其他软件包渠道请参阅[安装指南](https://ait-native.dev/zh-cn/local-quickstart/)。
 
@@ -73,8 +77,8 @@ ait config set --user-name "your-name"
 > 保持 taskTitles 正常工作，加入针对性的测试。不要修改 checks/、移除现有测试或新增依赖包。
 > 完成 Task 前，执行现有测试及 node checks/first-task.mjs。
 
-Agent 会记录 sprint 项目，在返回的 Task worktree 中实现修改并执行检查。
-生成的指引区块会提供该仓库适用的确切命令与完成要求。
+Agent 根据生成的路由，在需要时记录 sprint 项目，在返回的 Task worktree 中实现修改并执行检查。
+生成的区块提供已安装版本适用的确切命令与完成要求。
 
 若工具不会自动加载仓库指引，请先设置其指引文件集成，或请它读取生成的文件后再试。
 详见[快速上手排错](https://ait-native.dev/zh-cn/local-quickstart/#first-task)。
@@ -223,21 +227,36 @@ AIT 不限定仓库使用哪种语言，也不尝试检测项目类型；构建�
 Coding agent 负责实现及选定的检查；AIT 管理任务生命周期，并执行适用的工作流条件。
 
 `ait init` 建立本地 `.ait` 权威数据，并在 `AGENTS.md` 与 `CLAUDE.md` 生成受管理的工作流区块。
-该生成的区块是有效命令的依据；本地工作不需要执行中的 `ait-server`。
+该生成的区块是有效命令的依据；本地仓库初始化不需要执行中的 `ait-server`。
 
-AIT 有两种工作流默认模式：`solo_local` 将工作与 Task finish 保留在本地；
-`solo_remote` 加入明确选定的服务器与经审查的完成流程。
-Agent 根据生成的指示执行 `ait task start`、以 `ait snapshot create` 保存中途检查点、
-以 `ait plan sync` 保存 Markdown 沿革，并使用适用的 `ait task finish` 或 `ait workflow finish` 收尾。
+在 AIT 1.2.0 中，Agent Teams、sprint 绑定与 Local/Remote 范围各自独立。
+全新 `ait init` 默认启用 Agent Teams；已有仓库保留原设置，仍需受支持的 agent host 准备可用对话。
+`ait team contacts --json` 提供绑定与原生可用性；`ait team session ensure` 准备已有成员，
+不等于派发工作，也不提供桌面执行状态。准备 Reviewer 对话需要 server registration。
+
+Agent Teams 与配置参考：
+[Agent Teams 联系信息与 session](https://ait-native.dev/zh-cn/development/1.2.0/agent-teams/) ·
+[初始化与配置](https://ait-native.dev/zh-cn/development/1.2.0/config/)。
+
+依生成指示执行 `ait task start`、`ait snapshot create` 检查点、`ait plan sync` Markdown 沿革，
+以及适用的 `ait task finish` 或 `ait workflow finish`。团队所需的独立审查与 finish 由指派的 Reviewer 负责。
+Remote `ait workflow ready` 只读检查 readiness；加 `--apply` 才准备 candidate，后续 CI 与 guarded finish
+保留实际返回的确切 identity。Server 在 formal acceptance 前重启后，可经明确的 ready apply
+以相同 sealed 内容和 mode 重新准备新 Job、CI 及所需审查。已接受的 formal retry 复用原 acceptance。
 
 - [Git 导入、导出与退出路径](https://ait-native.dev/technical/cli/reference/git/)
 - [功能工作流](https://ait-native.dev/technical/workflows/feature/)与[回归修复](https://ait-native.dev/technical/workflows/regression/)
 - [组件](https://ait-native.dev/zh-cn/components/)与[发行状态](https://ait-native.dev/zh-cn/proof/)
 
-当前公开版本：**v1.1.4**。如需该版本的确切源代码，请使用不可变的发行标签；
-`ait-monorepo-source.json` 记录组件 Snapshot 映射。两次发行之间，`main` 的文档可能继续更新。
+发行源码：**v1.1.4**。`ait-monorepo-source.json` 记录导出的组件 Snapshot。
+软件包渠道可用性请参阅[发行状态](https://ait-native.dev/zh-cn/proof/)。
 
-核对日期 2026-10-07：稳定版 1.1.4 已通过 GitHub、PyPI、npm、Homebrew、APT 与 GHCR 发布，稳定别名也已回读。[WinGet 1.1.4 PR 448064](https://github.com/microsoft/winget-pkgs/pull/448064) 已合并，并通过新的公共源查询与 Windows x64 实际安装验证。[安装证据](https://github.com/weita2026/ait-native/actions/runs/37589427613)。Windows 用户可先使用[已核对的 1.1.4 发行归档](https://github.com/weita2026/ait-native/releases/tag/v1.1.4)。此时间点之后的变化请查看[发布状态](https://ait-native.dev/zh-cn/proof/)。
+<details>
+<summary>1.1.4 历史发行验证（2026-10-07）</summary>
+
+核对日期 2026-10-07：稳定版 1.1.4 已通过 GitHub、PyPI、npm、Homebrew、APT 与 GHCR 发布，稳定别名也已回读。[WinGet 1.1.4 PR 448064](https://github.com/microsoft/winget-pkgs/pull/448064) 已合并，并通过新的公共源查询与 Windows x64 实际安装验证。[安装证据](https://github.com/weita2026/ait-native/actions/runs/37589427613)。[已核对的 1.1.4 发行归档](https://github.com/weita2026/ait-native/releases/tag/v1.1.4) 保留该历史发行。此时间点之后的变化请查看[发布状态](https://ait-native.dev/zh-cn/proof/)。
+
+</details>
 
 官网技术参考与 PDF 保留归档的 1.1.1 源码及命令回执。安装请使用[当前快速上手](https://ait-native.dev/zh-cn/local-quickstart/)，工作流命令以已安装版本生成的 AGENTS.md 为准。录制演示与 benchmark 实验保留原版本及日期。
 
@@ -246,10 +265,12 @@ Agent 根据生成的指示执行 `ait task start`、以 `ait snapshot create` �
 <details>
 <summary>软件包内容与历史版本差异</summary>
 
-| 渠道 | 安装内容 |
+AIT 1.2.0 的软件包内容：
+
+| 渠道 | 声明内容 |
 | --- | --- |
-| PyPI `ait-native` | `ait`、默认不启动的 `ait-server`，以及直接 `ait-python` 绑定。 |
-| npm `@wa120/ait-native` | `ait` 及直接在进程内运作的 Node-API 绑定；不安装 `ait-server`。 |
+| PyPI `ait-native` | Python `ait` 前端与 PyO3 绑定；不含独立的原生 CLI、Server 或 Runner 可执行文件。 |
+| npm `@wa120/ait-native` | JavaScript `ait` 前端与 Node-API 绑定；不含独立的原生 CLI、Server 或 Runner 可执行文件。 |
 | Homebrew 与 WinGet | 1.1.4 产品组合包含原生 `ait`、`ait-server` 与 `ait-runner`。安装时不启动任何后台进程；渠道可用性请查阅发行状态。 |
 | APT | 在 1.1.4，`ait-native` 拥有全部三个命令；`ait-runner` 是仅声明依赖关系的过渡别名。软件包内的服务仍仅适用服务器。 |
 | OCI | 分开提供 `ait-server` 与 `ait-runner` 镜像。 |
@@ -261,12 +282,32 @@ Agent 根据生成的指示执行 `ait task start`、以 `ait snapshot create` �
 
 </details>
 
+## 安装 Python 或 JavaScript CLI
+
+选择其中一种软件包安装 `ait` 命令，再以 `ait --version` 确认版本：
+
+```sh
+python -m pip install ait-native==1.2.0
+npm install --global @wa120/ait-native@1.2.0
+```
+
+Python `ait` 前端在 Python 解析命令并调用带类型的 PyO3 操作；
+npm `ait` 前端在 JavaScript 解析命令并调用带类型的 Node-API 操作。
+两者均不将参数转交 Rust CLI parser 或另一个可执行文件。
+独立 CLI、Server 与 Runner 请使用原生发行渠道。
+
+## 迁移到 1.2.0
+
+新公共发行组合排除独立聊天命令 `ait-agent` 与 `ait-agent-worker`；Agent Teams 及核心 Python/Node
+绑定保留。旧聊天绑定符号仍可导入，调用时返回明确的退役错误。保留设置、仓库数据及手动安装文件；
+软件包升级依据对应渠道记录的文件所有权，不按 PATH 中的命令名称删除文件。
+
 ## 从 0.x 升级
 
 1.x 没有 `ait install` 命令。请通过软件包管理工具升级，并以 `ait --version` 确认版本。
 保留现有 `.ait` 权威数据，迁移前先查看确切版本的转换指示。
 建立新的权威数据与升级现有历史，是不同的操作。
-请参阅[转换契约](ait-core/docs/distribution.md#public-0x-to-10-transition)
+请参阅[转换契约](docs/distribution.md#public-0x-to-10-transition)
 与[Git 退出参考](https://ait-native.dev/technical/cli/reference/git/)。
 
 ## 构建这份源代码
@@ -287,12 +328,12 @@ Agent 根据生成的指示执行 `ait task start`、以 `ait snapshot create` �
 ```
 
 构建会在 `dist/source-build/` 生成本地原生命令、直接 PyO3 Python wheel、
-可移植的 JS/TS 软件包，以及当前主机适用的直接 Node-API addon。
+可移植的 JS/TS 软件包，以及当前主机适用的 Node-API addon。
 这些源码构建产物及其凭据明确标示为不可发布；受保护的发行 CI 只会提升另外通过准入的家族产物。
 
-在 Node.js，`import { NativeRuntime, AgentClient } from "@wa120/ait-native"`
+在 Node.js，`import { NativeRuntime } from "@wa120/ait-native"`
 会在当前进程加载软件包自有的 `native/ait_napi.node`。
-npm 的 `ait` 命令通过 `NativeRuntime.runCli()` 调用同一个 Rust 绑定，不会寻找或启动子可执行文件。
+npm 的 `ait` JavaScript 前端调用带类型的绑定操作，不会寻找或启动子可执行文件。
 
 </details>
 

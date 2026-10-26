@@ -13,9 +13,6 @@
   "engines": {
     "node": ">=20"
   },
-  "bin": {
-    "ait": "bin/ait.mjs"
-  },
   "exports": {
     ".": {
       "types": "./src/index.d.ts",
@@ -41,7 +38,10 @@
   },
   "scripts": {
     "native:build": "node scripts/native-build.mjs build",
-    "test": "node --test test/runtime.test.js test/agent.test.js test/cli.test.js test/package.test.js test/payload-package.test.js test/release-adapter.test.js",
-    "check": "node --check bin/ait.mjs && node --check src/runtime.js && node --check src/agent.js && node --check src/index.js && node --check scripts/native-build.mjs && node --check scripts/npm-command.mjs && node --check scripts/fixture-payloads.mjs && node --check scripts/installed-smoke.mjs && node --check release/npm-payload-package.mjs && node --check release/release-adapter.mjs"
+    "test": "node scripts/test-runner.mjs",
+    "check": "node --check bin/ait.mjs && node --check src/terminal.js && node --check src/terminal-help.js && node --check src/runtime.js && node --check src/agent.js && node --check src/index.js && node --check scripts/native-build.mjs && node --check scripts/npm-command.mjs && node --check scripts/fixture-payloads.mjs && node --check scripts/installed-smoke.mjs && node --check scripts/package-inventory.mjs && node --check release/npm-payload-package.mjs && node --check release/release-adapter.mjs && node --check scripts/test-runner.mjs"
+  },
+  "bin": {
+    "ait": "bin/ait.mjs"
   }
 }

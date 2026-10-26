@@ -61,6 +61,8 @@ test("release adapter declares the portable envelope and six native addons", asy
     "ait-external.toml",
     "ait-external.lock",
     "bin/ait.mjs",
+    "src/terminal.js",
+    "src/terminal-help.js",
     "ci/generate_notice.sh",
     "lib/npm-payload-contract.json",
     "src/runtime.js",
@@ -70,6 +72,7 @@ test("release adapter declares the portable envelope and six native addons", asy
     "scripts/native-build.mjs",
     "scripts/npm-command.mjs",
     "scripts/fixture-payloads.mjs",
+    "scripts/package-inventory.mjs",
   ]) {
     assert.equal(component.dependency_files.includes(dependency), true);
   }
@@ -125,26 +128,13 @@ test("release tools are registry-inert and package direct addon fixtures", async
     path.join(ROOT, "release", "npm-readme.txt"),
     "utf8",
   );
-  assert.match(npmReadme, /AIT turns an ordinary coding request/);
-  assert.match(npmReadme, /individual developers and maintainers/);
+  assert.match(npmReadme, /direct in-process Node-API binding/);
   assert.match(npmReadme, /npm install --global @wa120\/ait-native@@AIT_NPM_VERSION@/);
   assert.equal(npmReadme.match(/@AIT_NPM_VERSION@/g)?.length, 1);
-  assert.match(npmReadme, /ait init/);
-  assert.match(npmReadme, /What initialization provides/);
+  assert.match(npmReadme, /taskWorkflowConfigShow/);
   assert.match(npmReadme, /https:\/\/ait-native\.dev\//);
-  assert.match(npmReadme, /Upgrading from 0\.x/);
-  assert.match(npmReadme, /There is no `ait install` command in 1\.0\./);
-  assert.match(npmReadme, /ait workflow ready <task-id> --apply/);
-  assert.match(npmReadme, /ait workflow finish <task-id> --apply/);
-  assert.doesNotMatch(npmReadme, /\b(?:land|lands|landed|landing|Task Land)\b/);
-  assert.doesNotMatch(
-    npmReadme,
-    /90 seconds|task-DAG positioning|Jira-like|parallel AI execution|compact task DAG/,
-  );
-  assert.match(npmReadme, /direct in-process Node-API binding/);
-  assert.match(npmReadme, /does not launch an `ait` executable/);
-  assert.match(npmReadme, /`ait-server`\s+is distributed separately/);
-  assert.match(npmReadme, /does not use\s+install hooks, downloads/);
+  assert.match(npmReadme, /JavaScript CLI/);
+  assert.doesNotMatch(npmReadme, /runCli|entry_with_args/);
   assert.match(packager, /ait\.node\.napi-platform-addon\/v2/);
   assert.match(packager, /ait-node built addon/);
   assert.match(packager, /libc: \[payload\.libc\]/);

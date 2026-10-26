@@ -5,6 +5,8 @@ pub(super) const WORKSPACE_IGNORE_FILE: &str = ".aitignore";
 pub(super) const WORKTREE_CARGO_CONFIG_RELATIVE_PATH: &str = ".cargo/config.toml";
 pub(super) const SHARED_CARGO_TARGET_DIRNAME: &str = "cargo-target";
 pub(super) const SHARED_CARGO_BUILD_DIRNAME: &str = "cargo-build";
+pub(super) const SSD_CARGO_BUILD_DIRNAME: &str = "cargo-build-ssd";
+pub(super) const DEFAULT_CARGO_RAM_HEADROOM: u64 = 4 * 1024 * 1024 * 1024;
 const CARGO_WORKSPACE_PATH_HASH_TEMPLATE: &str = "{workspace-path-hash}";
 pub(super) const CANONICAL_CARGO_BUILD_DIRNAME: &str = "canonical";
 pub(super) const MANAGED_WORKTREE_CARGO_TARGET_DIRNAME: &str = "task-workspaces";
@@ -109,9 +111,6 @@ pub(super) fn upgrade_copied_main_seed_cargo_config_text(
         .and_then(JsonValue::as_str)
         .and_then(|value| normalized_text(Some(value)))
         .unwrap_or_else(|| "main".to_string());
-    let copied_seed_build_dir = shared_cargo_build_root(workspace_root)
-        .join(MANAGED_WORKTREE_CARGO_BUILD_DIRNAME)
-        .join(format!("{default_line}-seed"));
     let copied_seed_target_dir = shared_cargo_target_root(workspace_root)
         .join(MANAGED_WORKTREE_CARGO_TARGET_DIRNAME)
         .join(format!("{default_line}-seed"));
@@ -122,18 +121,24 @@ pub(super) fn upgrade_copied_main_seed_cargo_config_text(
             &format!("\"{}\"", copied_seed_target_dir.display()),
         )
     );
-    let copied_seed_build_line = format!(
-        "build-dir = {}",
-        encode_string_or(
-            &copied_seed_build_dir.to_string_lossy(),
-            &format!("\"{}\"", copied_seed_build_dir.display()),
-        )
-    );
+    let copied_seed_build_lines = cargo_projection_build_roots(workspace_root)
+        .into_iter()
+        .map(|root| {
+            root.join(MANAGED_WORKTREE_CARGO_BUILD_DIRNAME)
+                .join(format!("{default_line}-seed"))
+        })
+        .map(|path| {
+            format!(
+                "build-dir = {}",
+                encode_string_or(&path.to_string_lossy(), "\"\"")
+            )
+        })
+        .collect::<Vec<_>>();
     upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
         workspace_root,
         contents,
         &[copied_seed_target_line],
-        &[copied_seed_build_line],
+        &copied_seed_build_lines,
     )
 }
 
@@ -170,7 +175,6 @@ pub(super) fn upgrade_copied_task_worktree_cargo_config_text(
         return None;
     }
     let target_root = shared_cargo_target_root(workspace_root);
-    let build_root = shared_cargo_build_root(workspace_root);
     let target_name = contents.lines().find_map(|line| {
         managed_task_projection_name(
             line,
@@ -179,14 +183,21 @@ pub(super) fn upgrade_copied_task_worktree_cargo_config_text(
             MANAGED_WORKTREE_CARGO_TARGET_DIRNAME,
         )
     })?;
-    let build_name = contents.lines().find_map(|line| {
-        managed_task_projection_name(
-            line,
-            "build-dir",
-            &build_root,
-            MANAGED_WORKTREE_CARGO_BUILD_DIRNAME,
-        )
-    })?;
+    let (build_root, build_name) = cargo_projection_build_roots(workspace_root)
+        .into_iter()
+        .find_map(|root| {
+            contents
+                .lines()
+                .find_map(|line| {
+                    managed_task_projection_name(
+                        line,
+                        "build-dir",
+                        &root,
+                        MANAGED_WORKTREE_CARGO_BUILD_DIRNAME,
+                    )
+                })
+                .map(|name| (root, name))
+        })?;
     if target_name != build_name {
         return None;
     }
@@ -340,6 +351,16 @@ fn upgrade_generated_worktree_cargo_config_text_with_additional_build_lines(
         "build-dir = \"rust/target\"".to_string(),
         "build-dir = \"target\"".to_string(),
     ];
+    for root in cargo_projection_build_roots(workspace_root) {
+        let leaf = managed_worktree_name(workspace_root).map_or_else(
+            || root.join(CANONICAL_CARGO_BUILD_DIRNAME),
+            |name| root.join(MANAGED_WORKTREE_CARGO_BUILD_DIRNAME).join(name),
+        );
+        build_lines.push(format!(
+            "build-dir = {}",
+            encode_string_or(&leaf.to_string_lossy(), "\"\"")
+        ));
+    }
     build_lines.extend(additional_build_lines.iter().cloned());
     let body = &lines[2..build_section_end];
     if body
@@ -408,10 +429,234 @@ fn shared_cargo_target_root(workspace_root: &Path) -> PathBuf {
 }
 
 fn shared_cargo_build_root(workspace_root: &Path) -> PathBuf {
+    let selected = cargo_build_location(workspace_root);
+    if selected.fallback_reason.is_some() {
+        selected.path
+    } else {
+        registered_primary_cargo_build_root(workspace_root)
+    }
+}
+
+fn cargo_projection_build_roots(workspace_root: &Path) -> [PathBuf; 3] {
+    let ssd = ssd_cargo_build_root(workspace_root);
+    let logical = ssd.with_file_name(SHARED_CARGO_BUILD_DIRNAME);
+    [primary_cargo_build_root(workspace_root), logical, ssd]
+}
+
+fn registered_primary_cargo_build_root(workspace_root: &Path) -> PathBuf {
+    let ait = workspace_root.join(APP_DIR);
+    let shared = fs::canonicalize(&ait)
+        .unwrap_or(ait)
+        .join(SHARED_CARGO_BUILD_DIRNAME);
+    fs::canonicalize(&shared).unwrap_or(shared)
+}
+
+pub(super) fn primary_cargo_build_root(workspace_root: &Path) -> PathBuf {
     let ait_dir = workspace_root.join(".ait");
     let shared_ait_dir = fs::canonicalize(&ait_dir).unwrap_or(ait_dir);
     let build_root = lexical_normalize(&shared_ait_dir.join(SHARED_CARGO_BUILD_DIRNAME));
-    fs::canonicalize(&build_root).unwrap_or(build_root)
+    if let Ok(path) = fs::canonicalize(&build_root) {
+        return path;
+    }
+    if let Ok(target) = fs::read_link(&build_root) {
+        return resolve_path_strict_false(&if target.is_absolute() {
+            target
+        } else {
+            shared_ait_dir.join(target)
+        });
+    }
+    cargo_memory_root(workspace_root).map_or(build_root, |root| {
+        let config = read_json_value(&shared_ait_dir.join("config.json"));
+        let name = config["repo_name"]
+            .as_str()
+            .and_then(|value| normalized_text(Some(value)))
+            .or_else(|| {
+                shared_ait_dir
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|value| value.to_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "repo".into());
+        repository_ram_cargo_build_dir(&root, &name)
+    })
+}
+
+pub(super) fn cargo_memory_root(workspace_root: &Path) -> Option<PathBuf> {
+    let ait = workspace_root.join(APP_DIR);
+    let ait = fs::canonicalize(&ait).unwrap_or(ait);
+    let config = read_json_value(&ait.join("config.json"));
+    let text = config["task_worktree"]["memory_root"]["root"].as_str()?;
+    let path = expanduser_path(&normalized_text(Some(text))?);
+    let repo = ait.parent()?;
+    Some(resolve_path_strict_false(&if path.is_absolute() {
+        path
+    } else {
+        repo.join(path)
+    }))
+}
+
+pub(super) fn ssd_cargo_build_root(workspace_root: &Path) -> PathBuf {
+    let ait = workspace_root.join(APP_DIR);
+    fs::canonicalize(&ait)
+        .unwrap_or(ait)
+        .join(SSD_CARGO_BUILD_DIRNAME)
+}
+
+pub(super) fn validate_ssd_cargo_build_root(workspace_root: &Path) -> Result<PathBuf, String> {
+    let path = ssd_cargo_build_root(workspace_root);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(format!(
+                "Cargo SSD fallback must be a physical repository cache directory: {}",
+                path.display()
+            ));
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.to_string()),
+        _ => {}
+    }
+    let resolved = resolve_path_strict_false(&path);
+    if cargo_memory_root(workspace_root).is_some_and(|ram| resolved.starts_with(ram)) {
+        return Err(format!(
+            "Cargo SSD fallback is inside the configured RAM root: {}",
+            path.display()
+        ));
+    }
+    for namespace in [
+        CANONICAL_CARGO_BUILD_DIRNAME,
+        MANAGED_WORKTREE_CARGO_BUILD_DIRNAME,
+    ] {
+        let child = path.join(namespace);
+        match fs::symlink_metadata(&child) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(format!(
+                    "Cargo SSD cache namespace is not a physical directory: {}",
+                    child.display()
+                ))
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error.to_string())
+            }
+            _ => {}
+        }
+    }
+    Ok(path)
+}
+
+pub(super) struct CargoBuildLocation {
+    pub path: PathBuf,
+    pub fallback_reason: Option<&'static str>,
+}
+
+pub(super) fn cargo_build_location(workspace_root: &Path) -> CargoBuildLocation {
+    let floor = cargo_ram_headroom(std::env::var("AIT_CARGO_BUILD_MAX_BYTES").ok().as_deref());
+    cargo_build_location_with_space(workspace_root, floor, |path| {
+        if let Some(root) = cargo_memory_root(workspace_root) {
+            if !cargo_memory_mount_available(workspace_root, &root) {
+                return None;
+            }
+        }
+        fs2::available_space(path).ok()
+    })
+}
+
+fn cargo_memory_mount_available(workspace_root: &Path, root: &Path) -> bool {
+    let config = read_json_value(&workspace_root.join(".ait/config.json"));
+    let kind = config["task_worktree"]["memory_root"]["kind"]
+        .as_str()
+        .unwrap_or("");
+    #[cfg(unix)]
+    if kind == "macos_ram_volume" && root.starts_with("/Volumes") {
+        use std::os::unix::fs::MetadataExt;
+        return root
+            .parent()
+            .and_then(|parent| fs::metadata(root).ok().zip(fs::metadata(parent).ok()))
+            .is_some_and(|(mounted, parent)| mounted.dev() != parent.dev());
+    }
+    #[cfg(target_os = "linux")]
+    if kind.starts_with("linux_") {
+        return matches!(
+            crate::task_worktree_layout::linux_mount_fstype_for_path(root).as_deref(),
+            Some("tmpfs" | "ramfs")
+        );
+    }
+    let _ = kind;
+    root.is_dir()
+}
+
+pub(super) fn cargo_ram_headroom(value: Option<&str>) -> u64 {
+    value
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0)
+        .max(DEFAULT_CARGO_RAM_HEADROOM)
+}
+
+pub(super) fn cargo_build_location_with_space(
+    workspace_root: &Path,
+    floor: u64,
+    available: impl FnOnce(&Path) -> Option<u64>,
+) -> CargoBuildLocation {
+    let primary = primary_cargo_build_root(workspace_root);
+    let memory = cargo_memory_root(workspace_root);
+    let shared_link = fs::symlink_metadata(workspace_root.join(".ait/cargo-build"))
+        .is_ok_and(|metadata| metadata.file_type().is_symlink());
+    // A physical SSD directory is retained. A shared link is measured on its
+    // actual filesystem even if it points outside the current RAM setting.
+    if !shared_link
+        && memory
+            .as_ref()
+            .is_none_or(|root| !primary.starts_with(root))
+    {
+        return CargoBuildLocation {
+            path: primary,
+            fallback_reason: None,
+        };
+    }
+    let reason = if memory.as_ref().is_some_and(|root| !root.is_dir())
+        || (shared_link && !primary.is_dir() && memory.is_none())
+    {
+        Some("configured RAM mount is unavailable")
+    } else {
+        let mut probe = primary.as_path();
+        while !probe.is_dir() && memory.as_ref().is_some_and(|root| probe.starts_with(root)) {
+            let Some(parent) = probe.parent() else {
+                break;
+            };
+            probe = parent;
+        }
+        match available(probe) {
+            Some(bytes) if bytes >= floor => None,
+            Some(_) => Some("available RAM storage is below required build headroom"),
+            None => Some("RAM filesystem capacity is unavailable"),
+        }
+    };
+    CargoBuildLocation {
+        path: if reason.is_some() {
+            ssd_cargo_build_root(workspace_root)
+        } else {
+            primary
+        },
+        fallback_reason: reason,
+    }
+}
+
+pub(super) fn task_worktree_cargo_build_dirs(
+    workspace_root: &Path,
+    name: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let selected = shared_cargo_build_root(workspace_root);
+    let primary = registered_primary_cargo_build_root(workspace_root);
+    let ssd = ssd_cargo_build_root(workspace_root);
+    if fs::symlink_metadata(&ssd).is_ok() || selected == ssd {
+        validate_ssd_cargo_build_root(workspace_root)?;
+    }
+    let mut roots = vec![selected, primary, ssd];
+    let mut seen = BTreeSet::new();
+    roots.retain(|root| seen.insert(root.clone()));
+    Ok(roots
+        .into_iter()
+        .map(|root| root.join(MANAGED_WORKTREE_CARGO_BUILD_DIRNAME).join(name))
+        .collect())
 }
 
 fn managed_worktree_name(workspace_root: &Path) -> Option<String> {
@@ -430,6 +675,18 @@ pub(super) fn registered_worktree_cargo_target_dir(
             .join(MANAGED_WORKTREE_CARGO_TARGET_DIRNAME)
             .join(name)
     })
+}
+
+pub(super) fn task_worktree_cargo_dirs(repo: &RepoRuntime, name: &str) -> (PathBuf, PathBuf) {
+    let root = repo.authoritative_repo_root();
+    (
+        shared_cargo_build_root(&root)
+            .join(MANAGED_WORKTREE_CARGO_BUILD_DIRNAME)
+            .join(name),
+        shared_cargo_target_root(&root)
+            .join(MANAGED_WORKTREE_CARGO_TARGET_DIRNAME)
+            .join(name),
+    )
 }
 
 pub(super) fn worktree_cargo_target_dir(workspace_root: &Path) -> PathBuf {

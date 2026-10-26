@@ -21,6 +21,103 @@ pub struct RepoCommandRequest {
     pub args: JsonMap<String, JsonValue>,
 }
 
+/// Operation-specific repository query used by language bindings and native jobs.
+#[derive(Clone, Debug, Default)]
+pub struct RepositoryJobsRequest {
+    pub remote_name: Option<String>,
+    pub worker_job_index: Option<u32>,
+    pub state: Option<String>,
+    pub limit: Option<u32>,
+}
+
+pub fn inspect_repository(
+    repo: &RepoRuntime,
+    remote_name: Option<&str>,
+) -> Result<JsonValue, String> {
+    let (remote, name) = remote_context(repo, remote_name)?;
+    let mut client = PlanHttpClientManager::new(http_config(repo, &remote))
+        .map_err(|error| error.to_string())?;
+    repo_show(&mut client, &name)
+}
+
+pub fn repository_jobs(
+    repo: &RepoRuntime,
+    request: &RepositoryJobsRequest,
+) -> Result<JsonValue, String> {
+    validate_jobs_query(
+        request.worker_job_index,
+        request.state.as_deref(),
+        request.limit,
+    )?;
+    let (remote, _) = remote_context(repo, request.remote_name.as_deref())?;
+    let mut client = PlanHttpClientManager::new(http_config(repo, &remote))
+        .map_err(|error| error.to_string())?;
+    read_repository_jobs(repo, &mut client, request)
+}
+
+pub fn repository_ci_capabilities(
+    repo: &RepoRuntime,
+    remote_name: Option<&str>,
+) -> Result<JsonValue, String> {
+    let (remote, name) = remote_context(repo, remote_name)?;
+    let mut client = PlanHttpClientManager::new(http_config(repo, &remote))
+        .map_err(|error| error.to_string())?;
+    repo_ci_capabilities(&mut client, &remote, &name)
+}
+
+fn presentation_request(remote_name: Option<&str>) -> RepoCommandRequest {
+    RepoCommandRequest {
+        command: String::new(),
+        remote_name: remote_name.map(str::to_string),
+        json_output: false,
+        args: JsonMap::new(),
+    }
+}
+
+pub fn format_repository_show(payload: &JsonValue, remote_name: Option<&str>) -> String {
+    repo_show_text(payload, Some(&presentation_request(remote_name)))
+}
+
+pub fn format_repository_ci_capabilities(payload: &JsonValue, remote_name: Option<&str>) -> String {
+    repo_ci_capabilities_text(payload, Some(&presentation_request(remote_name)))
+}
+
+pub fn format_repository_jobs(
+    payload: &JsonValue,
+    options: &RepositoryJobsRequest,
+) -> Result<String, String> {
+    validate_jobs_query(
+        options.worker_job_index,
+        options.state.as_deref(),
+        options.limit,
+    )?;
+    let mut request = presentation_request(options.remote_name.as_deref());
+    if let Some(index) = options.worker_job_index {
+        request.args.insert("worker_job_index".into(), json!(index));
+    } else {
+        request.args.insert("state".into(), json!(options.state));
+        request.args.insert(
+            "limit".into(),
+            json!(options.limit.unwrap_or(WORKER_JOB_LIST_LIMIT_DEFAULT)),
+        );
+    }
+    Ok(repo_jobs_text("ait repo jobs", payload, Some(&request)))
+}
+
+pub fn format_repository_retire(payload: &JsonValue) -> String {
+    repository_mutation_text("repo retirement", payload)
+}
+
+pub fn format_repository_restore(payload: &JsonValue) -> String {
+    repository_mutation_text("repo restore", payload)
+}
+
+fn repository_mutation_text(title: &str, payload: &JsonValue) -> String {
+    let mut output = vec![title.to_string()];
+    append_scalar_payload(&mut output, "", payload);
+    output.join("\n")
+}
+
 pub fn repo_command(repo: &RepoRuntime, request: &RepoCommandRequest) -> Result<JsonValue, String> {
     let command = normalize_required_text(&request.command, "repo command")?;
     validate_repo_command_request(&command, request)?;
@@ -101,9 +198,7 @@ fn repo_text(command: &str, payload: &JsonValue, request: Option<&RepoCommandReq
                 "restore" => "repo restore",
                 _ => "repo",
             };
-            let mut output = vec![title.to_string()];
-            append_scalar_payload(&mut output, "", payload);
-            output.join("\n")
+            repository_mutation_text(title, payload)
         }
     }
 }
@@ -904,8 +999,25 @@ fn repo_jobs(
     client: &mut PlanHttpClientManager,
     request: &RepoCommandRequest,
 ) -> Result<JsonValue, String> {
+    read_repository_jobs(
+        repo,
+        client,
+        &RepositoryJobsRequest {
+            remote_name: request.remote_name.clone(),
+            worker_job_index: optional_u32_arg(request, "worker_job_index")?,
+            state: optional_string_arg(request, "state")?,
+            limit: optional_u32_arg(request, "limit")?,
+        },
+    )
+}
+
+fn read_repository_jobs(
+    repo: &RepoRuntime,
+    client: &mut PlanHttpClientManager,
+    request: &RepositoryJobsRequest,
+) -> Result<JsonValue, String> {
     let repository_index = repo.require_repository_index()?;
-    if let Some(worker_job_index) = optional_u32_arg(request, "worker_job_index")? {
+    if let Some(worker_job_index) = request.worker_job_index {
         return client
             .get_worker_job(WorkerJobKey::new(
                 repository_index,
@@ -913,15 +1025,33 @@ fn repo_jobs(
             ))
             .map_err(|err| err.to_string());
     }
-    let limit = u32_arg(request, "limit", WORKER_JOB_LIST_LIMIT_DEFAULT)?;
+    let limit = request.limit.unwrap_or(WORKER_JOB_LIST_LIMIT_DEFAULT);
     validate_worker_job_list_limit(limit)?;
     client
         .list_worker_jobs(
             repository_index,
-            worker_job_state_kind(optional_string_arg(request, "state")?.as_deref())?,
+            worker_job_state_kind(request.state.as_deref())?,
             limit,
         )
         .map_err(|err| err.to_string())
+}
+
+fn validate_jobs_query(
+    index: Option<u32>,
+    state: Option<&str>,
+    limit: Option<u32>,
+) -> Result<(), String> {
+    let state = normalize_optional_text(state);
+    if index.is_some() && (state.is_some() || limit.is_some()) {
+        return Err(
+            "repo jobs `worker_job_index` cannot be combined with `state` or `limit`.".into(),
+        );
+    }
+    if index.is_none() {
+        worker_job_state_kind(state.as_deref())?;
+        validate_worker_job_list_limit(limit.unwrap_or(WORKER_JOB_LIST_LIMIT_DEFAULT))?;
+    }
+    Ok(())
 }
 
 fn worker_job_state_kind(state: Option<&str>) -> Result<Option<u8>, String> {
@@ -959,16 +1089,7 @@ fn validate_repo_command_request(
             let worker_job_index = optional_u32_arg(request, "worker_job_index")?;
             let state = optional_string_arg(request, "state")?;
             let limit = optional_u32_arg(request, "limit")?;
-            if worker_job_index.is_some() && (state.is_some() || limit.is_some()) {
-                return Err(
-                    "repo jobs `worker_job_index` cannot be combined with `state` or `limit`."
-                        .to_string(),
-                );
-            }
-            if worker_job_index.is_none() {
-                worker_job_state_kind(state.as_deref())?;
-                validate_worker_job_list_limit(limit.unwrap_or(WORKER_JOB_LIST_LIMIT_DEFAULT))?;
-            }
+            validate_jobs_query(worker_job_index, state.as_deref(), limit)?;
         }
         _ => {}
     }
@@ -1034,10 +1155,6 @@ fn http_config(repo: &RepoRuntime, remote_row: &RemoteRow) -> PlanHttpClientConf
         headers: repo.auth_headers(),
         ..PlanHttpClientConfig::default()
     }
-}
-
-fn u32_arg(request: &RepoCommandRequest, key: &str, default: u32) -> Result<u32, String> {
-    optional_u32_arg(request, key).map(|value| value.unwrap_or(default))
 }
 
 fn optional_u32_arg(request: &RepoCommandRequest, key: &str) -> Result<Option<u32>, String> {

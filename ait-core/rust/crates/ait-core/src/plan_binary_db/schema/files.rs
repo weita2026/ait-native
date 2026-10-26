@@ -1,4 +1,7 @@
 pub const PLAN_LAYOUT_ID: u32 = 1;
+pub const REMOTE_PLAN_LAYOUT_ID: u32 = 2;
+pub const REMOTE_PLAN_RECORD_SIZE: u32 = 52;
+pub const REMOTE_PLAN_REVISION_RECORD_SIZE: u32 = 60;
 
 pub const PLAN_BIN: &str = "plan.bin";
 pub const PLAN_PAYLOAD_BIN: &str = "plan_payload.bin";
@@ -11,6 +14,8 @@ pub const PLAN_RECORD_SIZE: u32 = 48;
 pub const PLAN_REVISION_RECORD_SIZE: u32 = 56;
 pub const PLAN_ITEM_RECORD_SIZE: u32 = 16;
 
+#[cfg(test)]
 pub(crate) const PLAN_RECORD_SIZE_USIZE: usize = PLAN_RECORD_SIZE as usize;
+#[cfg(test)]
 pub(crate) const PLAN_REVISION_RECORD_SIZE_USIZE: usize = PLAN_REVISION_RECORD_SIZE as usize;
 pub(crate) const PLAN_ITEM_RECORD_SIZE_USIZE: usize = PLAN_ITEM_RECORD_SIZE as usize;

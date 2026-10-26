@@ -4,3 +4,6 @@
 **/.ait-external/
 **/.ait-runtime/
 **/.ait-worktree-links/
+!/ait-runner/.ait-external/
+!/ait-runner/.ait-external/ait-core/
+!/ait-runner/.ait-external/ait-core/**

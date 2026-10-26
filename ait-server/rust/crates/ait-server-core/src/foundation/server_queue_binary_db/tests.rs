@@ -4,7 +4,7 @@ use crate::foundation::remote_binary_db::{
     FilesystemServerRemoteBinaryDb, RepoId, RepoName, StoreGeneration, StorePath,
 };
 use crate::foundation::server_binary_db_schema_registry::{
-    SERVER_BINARY_DB_BIN_SCHEMAS, SERVER_BINARY_DB_INDEX_SCHEMAS, SERVER_BINARY_DB_LAYOUT_ID,
+    SERVER_BINARY_DB_BIN_SCHEMAS, SERVER_BINARY_DB_INDEX_SCHEMAS,
 };
 use crate::foundation::server_content_binary_db::{
     ServerBinaryDbLineStore, SERVER_CONTENT_BINARY_LAYOUT_ID,
@@ -29,27 +29,34 @@ fn make_temporary_root(label: &str) -> StorePath {
 fn make_db(label: &str) -> FilesystemServerRemoteBinaryDb {
     let root = make_temporary_root(label);
     fs::create_dir_all(root.as_path()).expect("create current Binary DB fixture root");
-    for path in SERVER_BINARY_DB_BIN_SCHEMAS
+    for (path, layout_id) in SERVER_BINARY_DB_BIN_SCHEMAS
         .iter()
-        .map(|schema| schema.path)
+        .map(|schema| (schema.path, schema.layout_id))
         .chain(
             SERVER_BINARY_DB_INDEX_SCHEMAS
                 .iter()
-                .map(|schema| schema.path),
+                .map(|schema| (schema.path, schema.layout_id)),
         )
     {
-        fs::write(
-            root.as_path().join(path),
-            SERVER_BINARY_DB_LAYOUT_ID.to_le_bytes(),
-        )
-        .unwrap_or_else(|error| panic!("initialize {path}: {error}"));
+        fs::write(root.as_path().join(path), layout_id.to_le_bytes())
+            .unwrap_or_else(|error| panic!("initialize {path}: {error}"));
     }
-    FilesystemServerRemoteBinaryDb::test_fixture(
+    let db = FilesystemServerRemoteBinaryDb::test_fixture(
         RepoId::new("repo-id"),
         RepoName::new("repo"),
         root,
         StoreGeneration::new(1),
-    )
+    );
+    BinaryDbServerWorkflowV0Store::new_frozen(db.clone())
+        .resolve_user_actor(
+            &crate::foundation::workflow_binary_v0_adapter::UserActorIdentity::new(
+                "fixture",
+                "fixture@example.test",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    db
 }
 
 fn wait_for_queue_summary(
@@ -124,7 +131,7 @@ fn warm_queue_reads_do_not_rebuild_without_a_mutation_or_refresh_error() {
     store
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "Stable warm queue",
                 "intent": "Do not rescan unchanged workflow rows"
@@ -161,7 +168,7 @@ fn server_workflow_binary_db_projects_queue_rows_without_worker_storage() {
     store
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "Queue projection",
                 "intent": "Read workflow rows through Binary DB"
@@ -171,7 +178,7 @@ fn server_workflow_binary_db_projects_queue_rows_without_worker_storage() {
     store
         .create_change(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "change_id": "C-01",
                 "task_id": "T-0001",
                 "title": "Queue change",
@@ -251,7 +258,7 @@ fn warm_queue_projection_does_not_wait_for_an_active_workflow_writer() {
     store
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "Cached queue projection",
                 "intent": "Serve the last complete projection while a writer is active"
@@ -297,7 +304,7 @@ fn mutation_projection_refresh_waits_for_a_quiet_burst_and_yields_to_writers() {
     store
         .create_task(
             "repo",
-            &json!({
+            &json!({"actor_key_index":0,
                 "task_id": "T-0001",
                 "title": "Mutation debounce",
                 "intent": "Keep projection readers out of a closeout writer burst"

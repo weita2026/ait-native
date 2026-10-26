@@ -361,7 +361,7 @@ fn record_append_read_and_count() -> StoreResult<()> {
     assert_eq!(db.record_count(file.clone())?, 2);
     assert_eq!(db.read_record(file.clone(), 0)?, record_a);
     assert_eq!(db.read_record(file.clone(), 1)?, record_b);
-    assert_eq!(db.layout_id(file.clone())?, 1);
+    assert_eq!(db.layout_id(file.clone())?, 2);
     Ok(())
 }
 
@@ -394,7 +394,7 @@ fn write_capability_is_transaction_owned_and_family_scoped() -> StoreResult<()> 
     fs::create_dir_all(&root).expect("failed to create authority root");
     let workflow_file = task_file_id();
     let workflow_record = vec![7_u8; workflow_file.record_size() as usize];
-    let plan_file = BinaryFileId::new("plan.bin", 1, 36, BinaryDbFileFamily::Plan);
+    let plan_file = BinaryFileId::new("plan.bin", 2, 36, BinaryDbFileFamily::Plan);
     let plan_record = vec![3_u8; plan_file.record_size() as usize];
     let content_payload =
         BinaryPayloadFileId::new("snapshot_payload.bin", 1, BinaryDbFileFamily::Content);
@@ -482,7 +482,12 @@ fn write_capability_is_transaction_owned_and_family_scoped() -> StoreResult<()> 
         ),
         ("blob.bin", BinaryDbFileFamily::Content),
     ] {
-        general.append_record(BinaryFileId::new(path, 1, 1, family), &[1])?;
+        let layout = if path == "plan_revision.bin" {
+            2
+        } else {
+            crate::foundation::workflow_binary_v0::workflow_record_layout(path)
+        };
+        general.append_record(BinaryFileId::new(path, layout, 1, family), &[1])?;
     }
     general.commit()?;
     assert!(!general.write_context().is_active());
@@ -911,6 +916,32 @@ fn write_txn_abort_truncates_existing_files_to_original_lengths() -> StoreResult
     assert_eq!(db.record_count(record_file.clone())?, 1);
     assert_eq!(db.read_record(record_file.clone(), 0)?, first_record);
     assert_eq!(db.lookup_index(index_file.clone(), b"task")?, vec![0]);
+    Ok(())
+}
+
+#[test]
+fn capture_abort_restores_sorted_index_prefix_and_existing_candidates() -> StoreResult<()> {
+    let (db, root, _ctx) = make_db();
+    fs::create_dir_all(&root).unwrap();
+    let index =
+        crate::foundation::server_content_binary_db::ServerBinarySnapshotCodec::<1>::id_index();
+    let mut committed = BinaryDbWriteTxn::begin(&db, BinaryDbCommandScope::ServerSnapshotCapture)?;
+    committed.append_index_candidate(index.clone(), &[9; 8], 0)?;
+    committed.commit()?;
+    drop(committed);
+    let path = db.resolve_index_path(&index)?;
+    let before = fs::read(&path).unwrap();
+    {
+        let mut failed = BinaryDbWriteTxn::begin(&db, BinaryDbCommandScope::ServerSnapshotCapture)?;
+        failed.append_index_candidate(index.clone(), &[1; 8], 1)?;
+        failed.append_index_candidate(index.clone(), &[5; 8], 2)?;
+        assert_ne!(fs::read(&path).unwrap(), before);
+        failed.abort()?;
+    }
+    assert_eq!(fs::read(path).unwrap(), before);
+    assert_eq!(db.lookup_index(index.clone(), &[9; 8])?, vec![0]);
+    assert!(db.lookup_index(index.clone(), &[1; 8])?.is_empty());
+    assert!(db.lookup_index(index, &[5; 8])?.is_empty());
     Ok(())
 }
 

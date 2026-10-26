@@ -142,19 +142,19 @@ pub(crate) fn initialize_repository_authority(
     repository_index: u32,
     repository_name: &str,
 ) -> Result<(), String> {
-    for relative in SERVER_BINARY_DB_BIN_SCHEMAS
+    for (relative, layout_id) in SERVER_BINARY_DB_BIN_SCHEMAS
         .iter()
-        .map(|schema| schema.path)
+        .map(|schema| (schema.path, schema.layout_id))
         .chain(
             SERVER_BINARY_DB_INDEX_SCHEMAS
                 .iter()
-                .map(|schema| schema.path),
+                .map(|schema| (schema.path, schema.layout_id)),
         )
     {
         let path = authority_root.join(relative);
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => file
-                .write_all(&SERVER_BINARY_DB_LAYOUT_ID.to_le_bytes())
+                .write_all(&layout_id.to_le_bytes())
                 .and_then(|_| file.sync_all())
                 .map_err(|error| {
                     format!(

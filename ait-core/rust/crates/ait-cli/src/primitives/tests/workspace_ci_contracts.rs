@@ -8,6 +8,10 @@ use ait_core::external::materializer::{
     ExternalMaterializationOptions, ExternalMaterializer, FilesystemExternalMaterializer,
     FixtureExternalContentSource,
 };
+#[cfg(unix)]
+use std::os::unix::fs::symlink as symlink_dir;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_dir;
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -119,6 +123,7 @@ fn init_repo_with_markdown_revision(
         .expect("plan revision fixture count");
     tx.append_plan(
         ait_core::plan_binary_db::PlanRecord {
+            actor_index_plus1: 0,
             plan_meta: 0,
             reserved0: 0,
             payload_len: 0,
@@ -137,6 +142,7 @@ fn init_repo_with_markdown_revision(
     .expect("append plan fixture");
     tx.append_plan_revision_commit(
         ait_core::plan_binary_db::PlanRevisionRecord {
+            actor_index_plus1: 0,
             revision_meta: 0,
             reserved0: 0,
             payload_len: 0,
@@ -178,8 +184,7 @@ fn discover_markdown_guard_worktree(
 ) -> (PathBuf, RepoRuntime) {
     let worktree_root = repo_root.join(format!(".{worktree_name}-workspace"));
     fs::create_dir_all(&worktree_root).expect("worktree root");
-    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree_root.join(".ait"))
-        .expect("symlink shared .ait");
+    symlink_dir(repo_root.join(".ait"), worktree_root.join(".ait")).expect("symlink shared .ait");
     fs::write(
         worktree_root.join(WORKTREE_CONFIG_NAME),
         json!({
@@ -368,7 +373,7 @@ fn markdown_drift_blocks_requested_mutating_workflow_surfaces() {
             None,
             None,
             Some("ai_with_human_review"),
-            Some("gpt-5"),
+            None,
             None,
             None,
         )
@@ -422,14 +427,21 @@ fn markdown_drift_blocks_ready_but_not_remote_land_actions() {
             None,
             None,
             Some("ai_with_human_review"),
-            Some("gpt-5"),
+            None,
             None,
         )
         .expect_err("workflow ready attestation should block"),
     );
-    let error =
-        workflow_land_apply_action(&repo, "evaluate_policy", &state, "RCC-GUARD", None, None)
-            .expect_err("fixture has no remote, but land must pass the Markdown boundary first");
+    let error = workflow_land_apply_action(
+        &repo,
+        "evaluate_policy",
+        &state,
+        "RCC-GUARD",
+        None,
+        None,
+        None,
+    )
+    .expect_err("fixture has no remote, but land must pass the Markdown boundary first");
     assert!(
         !error.contains("authored Markdown drift"),
         "remote land policy evaluation must not read local Plan state: {error}"
@@ -458,8 +470,15 @@ fn remote_land_action_does_not_wait_for_plan_writer_lock() {
     });
     let (sender, receiver) = mpsc::channel();
     let handle = std::thread::spawn(move || {
-        let result =
-            workflow_land_apply_action(&repo, "evaluate_policy", &state, "RCC-GUARD", None, None);
+        let result = workflow_land_apply_action(
+            &repo,
+            "evaluate_policy",
+            &state,
+            "RCC-GUARD",
+            None,
+            None,
+            None,
+        );
         sender.send(result).expect("send land result");
     });
 
@@ -489,8 +508,7 @@ fn workspace_delta_uses_worktree_ignore_hash_without_persisted_bin_cache() {
     .expect("config");
     fs::write(worktree_root.join(".aitignore"), "target/\n").expect("aitignore");
     fs::write(worktree_root.join("src/lib.rs"), "pub fn fixture() {}\n").expect("source");
-    std::os::unix::fs::symlink(repo_root.join(".ait"), worktree_root.join(".ait"))
-        .expect("symlink .ait");
+    symlink_dir(repo_root.join(".ait"), worktree_root.join(".ait")).expect("symlink .ait");
     fs::write(
         worktree_root.join(WORKTREE_CONFIG_NAME),
         format!(
@@ -546,6 +564,8 @@ fn snapshot_cache_accelerates_status_and_incremental_snapshot_without_becoming_a
     .expect("init repo");
     fs::write(repo_root.join("alpha.txt"), "alpha\n").expect("alpha");
     fs::write(repo_root.join("bravo.txt"), "bravo\n").expect("bravo");
+    // Fresh init also contributes the comment-only .aitignore source file.
+    let expected_file_count = 3;
 
     let baseline = create_local_snapshot(
         repo_root.to_string_lossy().as_ref(),
@@ -597,7 +617,7 @@ fn snapshot_cache_accelerates_status_and_incremental_snapshot_without_becoming_a
     );
     assert_eq!(
         repaired["phase_timings_ms"]["hashing_cache"]["rehashed_paths"],
-        json!(2)
+        json!(expected_file_count)
     );
     assert_eq!(
         repaired["phase_timings_ms"]["hashing_cache"]["state_write"],
@@ -626,7 +646,7 @@ fn snapshot_cache_accelerates_status_and_incremental_snapshot_without_becoming_a
     assert_eq!(dirty["modified_paths"], json!(["bravo.txt"]));
     assert_eq!(
         dirty["phase_timings_ms"]["hashing_cache"]["rehashed_paths"],
-        json!(2)
+        json!(expected_file_count)
     );
     assert_eq!(
         dirty["phase_timings_ms"]["hashing_cache"]["state_write"],
@@ -653,7 +673,7 @@ fn snapshot_cache_accelerates_status_and_incremental_snapshot_without_becoming_a
     );
     assert_eq!(
         incremental["phase_timings_ms"]["hashing_cache"]["rehashed_paths"],
-        json!(2)
+        json!(expected_file_count)
     );
     assert_eq!(
         incremental["phase_timings_ms"]["hashing_cache"]["reused_paths"],
@@ -1014,11 +1034,11 @@ fn workflow_review_hints_distinguish_required_and_automatic_task_review_owners()
         0,
         true,
     );
-    assert_eq!(automatic["auto_review_reviewer"], json!("Alice Example"));
+    assert_eq!(automatic["auto_review_reviewer"], JsonValue::Null);
     assert_eq!(automatic["manual_review_command"], JsonValue::Null);
     assert_eq!(
         automatic["review_command"],
-        json!("ait workflow finish RCT-9 --apply --remote mirror")
+        json!("ait workflow finish RCT-9 --apply --reviewer \"<Reviewer name>\" --remote mirror")
     );
     assert_ne!(
         automatic["review_command"],

@@ -19,6 +19,24 @@ pub struct HttpTaskRemote {
 }
 
 impl HttpTaskRemote {
+    #[cfg(test)]
+    pub(crate) fn with_resolved_test_actor(mut self, actor: u32) -> Self {
+        self.manager.actor_context = self
+            .manager
+            .config
+            .repository_index
+            .map(|index| (index, actor));
+        self
+    }
+    pub fn set_actor_registration(
+        &mut self,
+        repo_name: &str,
+        identity: Result<crate::plan_http_client::RemoteActorIdentity, String>,
+        namespace: Option<&str>,
+    ) {
+        self.manager
+            .set_actor_registration(repo_name, identity, namespace);
+    }
     pub fn new(config: TaskWorkflowHttpClientConfig) -> TaskWorkflowHttpClientResult<Self> {
         Ok(Self {
             manager: TaskWorkflowHttpClientManager::new(config)?,
@@ -537,7 +555,18 @@ impl TaskWorkflowRemoteTaskReader for HttpTaskRemote {
         task_id: &str,
         repo_name: Option<&str>,
     ) -> TaskWorkflowHttpClientResult<Value> {
-        self.manager.get_task(task_id, repo_name)
+        let task = self.manager.get_task(task_id, repo_name)?;
+        crate::land_json::LandJson::stateless()
+            .task_successful_receipt(
+                &task,
+                task_id,
+                self.manager
+                    .config
+                    .repository_index
+                    .map(|index| index.get()),
+            )
+            .map_err(PlanHttpClientError::Invalid)?;
+        Ok(task)
     }
 }
 

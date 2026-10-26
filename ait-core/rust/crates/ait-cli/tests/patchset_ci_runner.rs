@@ -1,3 +1,5 @@
+#[path = "support/native_home.rs"]
+mod native_home;
 use ait_cli::patchset_ci_smoke::{
     run_package_smoke, run_preflight, run_stable_smoke, run_tg1_required,
 };
@@ -20,7 +22,9 @@ const PACKAGE_SMOKE_CONCURRENT_WORKERS: usize = 4;
 const PACKAGE_SMOKE_REPETITIONS_PER_WORKER: usize = 3;
 
 fn cargo_bin() -> Command {
-    Command::cargo_bin("ait-cli").unwrap()
+    let mut c = Command::cargo_bin("ait-cli").unwrap();
+    c.env("CODEX_HOME", native_home::path());
+    c
 }
 
 fn ait_cli_executable() -> PathBuf {
@@ -444,6 +448,18 @@ fn repo_patch_ci_manifest_uses_sharded_runner_without_command_bundle() {
             "server_source_ownership",
             "--test",
             "patchset_ci_runner",
+            "--test",
+            "workflow_recovery_cli",
+            "--test",
+            "snapshot_task_binding_cli",
+            "--test",
+            "workflow_friction_cli",
+            "--test",
+            "plan_cli",
+            "--test",
+            "workflow_package_frozen_candidate_cli",
+            "--test",
+            "workflow_package_accepted_retry_cli",
             "--no-run",
             "--message-format=json",
         ],
@@ -509,6 +525,18 @@ fn expected_native_ci_test_invocations() -> Vec<Vec<String>> {
             "server_source_ownership",
             "--test",
             "patchset_ci_runner",
+            "--test",
+            "workflow_recovery_cli",
+            "--test",
+            "snapshot_task_binding_cli",
+            "--test",
+            "workflow_friction_cli",
+            "--test",
+            "plan_cli",
+            "--test",
+            "workflow_package_frozen_candidate_cli",
+            "--test",
+            "workflow_package_accepted_retry_cli",
             "--no-run",
         ],
         vec![
@@ -551,6 +579,18 @@ fn expected_native_ci_test_invocations() -> Vec<Vec<String>> {
             "server_source_ownership",
             "--test",
             "patchset_ci_runner",
+            "--test",
+            "workflow_recovery_cli",
+            "--test",
+            "snapshot_task_binding_cli",
+            "--test",
+            "workflow_friction_cli",
+            "--test",
+            "plan_cli",
+            "--test",
+            "workflow_package_frozen_candidate_cli",
+            "--test",
+            "workflow_package_accepted_retry_cli",
         ],
         vec![
             "test",

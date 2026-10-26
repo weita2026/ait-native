@@ -49,8 +49,15 @@ import { NativeRuntime } from "@wa120/ait-native";
 
 const ait = new NativeRuntime();
 console.log(ait.bindingInfo());
-const status = ait.runCli(["status"]);
+console.log(ait.taskWorkflowConfigShow("/path/to/repository"));
 ```
+
+Chat integrations are retired in AIT 1.2.0. The old `AgentClient`,
+`AgentCapabilities`, runtime methods and native symbols remain available for
+compatibility. Chat calls throw an error containing
+`Chat integrations are retired in AIT 1.2.0` through the existing native error
+channel. Binding metadata advertises only `ait-core`; loading it does not probe
+chat capabilities. Core CLI and Agent Teams remain available in process.
 
 ## Upgrading from 0.x
 
@@ -64,10 +71,16 @@ selected release notes explicitly admit that migration.
 
 ## Package boundary
 
-The package installs one `ait` command backed by the same addon. `ait-server`
+The package installs one `ait` JavaScript CLI backed by the same addon.
+JavaScript parses terminal arguments and calls named N-API functions. It does
+not forward arguments to Rust CLI parsing or dispatch. `ait-server`
 is distributed separately and is not part of npm. Runtime code does not use
 install hooks, downloads, project-language detection, or `child_process`
 transport.
+
+The source authority for the language CLI boundary is
+`ait-core/docs/product.md#language-cli-binding-contract`. Existing command
+syntax, text/JSON output, errors and exit codes remain part of that contract.
 
 The complete product, platform, source, and licensing contract is published
 at <https://github.com/weita2026/ait-native/blob/main/docs/distribution.md>.

@@ -35,7 +35,7 @@ fn cloned_public_patchset_field(payload: &JsonValue, field: &str) -> JsonValue {
         .unwrap_or(JsonValue::Null)
 }
 
-fn compact_status_payload(payload: &JsonValue) -> JsonValue {
+pub(crate) fn compact_status_payload(payload: &JsonValue) -> JsonValue {
     let changed_count = payload
         .get("workspace_changed_count")
         .and_then(JsonValue::as_i64)
@@ -128,7 +128,7 @@ fn shell_quote_text(text: &str) -> String {
     }
 }
 
-fn compact_task_start_payload(payload: &JsonValue) -> JsonValue {
+pub(crate) fn compact_task_start_payload(payload: &JsonValue) -> JsonValue {
     let worktree = payload.get("worktree").unwrap_or(&JsonValue::Null);
     let edit_root = worktree.get("path").and_then(JsonValue::as_str);
     let edit_root_source = if worktree.get("root_source").and_then(JsonValue::as_str)
@@ -167,13 +167,14 @@ fn compact_task_start_payload(payload: &JsonValue) -> JsonValue {
     })
 }
 
-fn compact_snapshot_create_payload(payload: &JsonValue) -> JsonValue {
+pub(crate) fn compact_snapshot_create_payload(payload: &JsonValue) -> JsonValue {
     json!({
         "contract": AGENT_ACTION_JSON_CONTRACT,
         "command": "snapshot.create",
         "ok": true,
         "snapshot_id": cloned_field(payload, "snapshot_id"),
         "task_id": cloned_field(payload, "task_id"),
+        "change_id": cloned_field(payload, "change_id"),
         "line_name": cloned_field(payload, "line_name"),
         "parent_snapshot_id": cloned_field(payload, "parent_snapshot_id"),
         "message": cloned_field(payload, "message"),
@@ -192,7 +193,7 @@ fn compact_nested_status(payload: &JsonValue, field: &str) -> JsonValue {
         .unwrap_or(JsonValue::Null)
 }
 
-fn compact_task_finish_payload(payload: &JsonValue) -> JsonValue {
+pub(crate) fn compact_task_finish_payload(payload: &JsonValue) -> JsonValue {
     let task_id = string_field(
         payload
             .get("task_id")
@@ -253,6 +254,12 @@ fn compact_task_finish_payload(payload: &JsonValue) -> JsonValue {
         "next_action": recovery,
         "evidence": compact_evidence_for_id("ait task audit", Some(task_id.as_str())),
     });
+    if let Some(handoff) = payload.get("team_handoff") {
+        summary["team_handoff"] = handoff.clone();
+    }
+    if let Some(log) = payload.get("team_finish_log") {
+        summary["team_finish_log"] = log.clone();
+    }
     let mut issues = json!({});
     for field in [
         "bound_worktree_cleanup",
@@ -348,16 +355,33 @@ fn print_bounded_evidence(
     limit: usize,
     all_command: &str,
 ) {
+    println!(
+        "{}",
+        bounded_evidence_text(rows, columns, show_all, limit, all_command)
+    );
+}
+
+fn bounded_evidence_text(
+    rows: &[JsonValue],
+    columns: &[&str],
+    show_all: bool,
+    limit: usize,
+    all_command: &str,
+) -> String {
     let shown = if show_all || rows.len() <= limit {
         rows
     } else {
         &rows[..limit]
     };
-    print_list(shown, columns);
+    let mut output = crate::render::list_text(shown, columns);
     if shown.len() < rows.len() {
-        println!("shown: {}/{}", shown.len(), rows.len());
-        println!("more: {all_command}");
+        output.push_str(&format!(
+            "\nshown: {}/{}\nmore: {all_command}",
+            shown.len(),
+            rows.len()
+        ));
     }
+    output
 }
 
 fn bounded_ordered_json_payload(payload: &JsonValue, show_all: bool, limit: usize) -> JsonValue {
@@ -406,37 +430,42 @@ fn row_agent_priority(row: &JsonValue) -> i64 {
     0
 }
 
-fn print_agent_list(
+fn agent_list_text(
     rows: &[JsonValue],
     columns: &[&str],
     show_all: bool,
     terminal_statuses: &[&str],
     matching_label: Option<&str>,
     all_command: &str,
-) {
+) -> String {
     let (matching, matching_count, total_count) =
         select_agent_list_rows(rows, show_all, terminal_statuses);
-    print_list(&matching, columns);
+    let mut output = crate::render::list_text(&matching, columns);
 
     if show_all || (matching.len() == total_count && matching_count == total_count) {
-        return;
+        return output;
     }
     match matching_label {
         Some(label) if matching_count < total_count => {
             if matching.len() < matching_count {
-                println!(
-                    "shown: {}/{} {label} ({} total)",
+                output.push_str(&format!(
+                    "\nshown: {}/{} {label} ({} total)",
                     matching.len(),
                     matching_count,
                     total_count
-                );
+                ));
             } else {
-                println!("shown: {} {label} ({} total)", matching.len(), total_count);
+                output.push_str(&format!(
+                    "\nshown: {} {label} ({} total)",
+                    matching.len(),
+                    total_count
+                ));
             }
         }
-        _ => println!("shown: {}/{}", matching.len(), total_count),
+        _ => output.push_str(&format!("\nshown: {}/{}", matching.len(), total_count)),
     }
-    println!("more: {all_command}");
+    output.push_str(&format!("\nmore: {all_command}"));
+    output
 }
 
 fn select_agent_list_rows(
@@ -488,7 +517,7 @@ fn scoped_all_command(base: &str, local: bool, remote: Option<&str>) -> String {
     command
 }
 
-fn compact_review_show_payload(payload: &JsonValue) -> JsonValue {
+pub(crate) fn compact_review_show_payload(payload: &JsonValue) -> JsonValue {
     let Some(obj) = payload.as_object() else {
         return payload.clone();
     };
@@ -554,7 +583,7 @@ fn compact_review_show_payload(payload: &JsonValue) -> JsonValue {
     JsonValue::Object(compact)
 }
 
-fn compact_policy_show_payload(payload: &JsonValue) -> JsonValue {
+pub(crate) fn compact_policy_show_payload(payload: &JsonValue) -> JsonValue {
     let Some(obj) = payload.as_object() else {
         return payload.clone();
     };
@@ -603,6 +632,21 @@ fn compact_policy_show_payload(payload: &JsonValue) -> JsonValue {
     JsonValue::Object(compact)
 }
 
+pub(crate) fn result_text(
+    title: &str,
+    payload: &JsonValue,
+    fields: &[&str],
+) -> Result<String, String> {
+    let obj = payload
+        .as_object()
+        .ok_or_else(|| format!("{title} payload must decode to an object."))?;
+    let rows = fields
+        .iter()
+        .map(|field| (*field, string_field(obj.get(*field))))
+        .collect::<Vec<_>>();
+    Ok(crate::render::key_values_text(title, &rows))
+}
+
 fn emit_result(
     title: &str,
     payload: &JsonValue,
@@ -612,14 +656,7 @@ fn emit_result(
     if json_output {
         return print_json(payload);
     }
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| format!("{title} payload must decode to an object."))?;
-    let rows = fields
-        .iter()
-        .map(|field| (*field, string_field(obj.get(*field))))
-        .collect::<Vec<_>>();
-    print_key_values(title, &rows);
+    println!("{}", result_text(title, payload, fields)?);
     Ok(())
 }
 
@@ -627,25 +664,11 @@ fn emit_auth_bindings_result(payload: &JsonValue, json_output: bool) -> Result<(
     if json_output {
         return print_json(payload);
     }
-    let rows = payload
-        .as_array()
-        .ok_or_else(|| "auth bindings payload must decode to a list.".to_string())?;
-    print_list(rows, &["actor_identity", "role", "created_at"]);
+    println!("{}", crate::binding_output::format_auth_bindings(payload)?);
     Ok(())
 }
 
-fn emit_status_result(
-    payload: &JsonValue,
-    json_output: bool,
-    full_output: bool,
-) -> Result<(), String> {
-    if json_output {
-        return if full_output {
-            print_json(payload)
-        } else {
-            print_json(&compact_status_payload(payload))
-        };
-    }
+pub(crate) fn status_result_text(payload: &JsonValue) -> Result<String, String> {
     let obj = payload
         .as_object()
         .ok_or_else(|| "status payload must decode to an object.".to_string())?;
@@ -737,23 +760,42 @@ fn emit_status_result(
             rows.push(("reconciliation", findings.join(", ")));
         }
     }
-    print_key_values("ait status", &rows);
+    let mut lines = vec![crate::render::key_values_text("ait status", &rows)];
     if changed_count > 0 {
         let sample = json_string_array(obj.get("workspace_changed_paths_sample"));
         if !sample.is_empty() {
-            println!("changed: {}", sample.join(", "));
+            lines.push(format!("changed: {}", sample.join(", ")));
         }
         if sample.len() < changed_count as usize {
-            println!("shown: {}/{} changed paths", sample.len(), changed_count);
+            lines.push(format!(
+                "shown: {}/{} changed paths",
+                sample.len(),
+                changed_count
+            ));
         }
-        println!("next: ait diff");
+        lines.push("next: ait diff".into());
     } else if !reconciliation_next.is_empty() {
-        println!("next: {reconciliation_next}");
+        lines.push(format!("next: {reconciliation_next}"));
     }
 
-    Ok(())
+    Ok(lines.join("\n"))
 }
 
+fn emit_status_result(
+    payload: &JsonValue,
+    json_output: bool,
+    full_output: bool,
+) -> Result<(), String> {
+    if json_output {
+        return if full_output {
+            print_json(payload)
+        } else {
+            print_json(&compact_status_payload(payload))
+        };
+    }
+    println!("{}", status_result_text(payload)?);
+    Ok(())
+}
 fn status_reconciliation_next(
     reconciliation: &JsonValue,
     safe: i64,
@@ -778,10 +820,15 @@ fn emit_remote_list_result(payload: &JsonValue, json_output: bool) -> Result<(),
     if json_output {
         return print_json(payload);
     }
+    println!("{}", remote_list_text(payload)?);
+    Ok(())
+}
+
+pub(crate) fn remote_list_text(payload: &JsonValue) -> Result<String, String> {
     let rows = payload
         .as_array()
         .ok_or_else(|| "remote list payload must decode to a list.".to_string())?;
-    print_list(
+    Ok(crate::render::list_text(
         rows,
         &[
             "name",
@@ -790,8 +837,7 @@ fn emit_remote_list_result(payload: &JsonValue, json_output: bool) -> Result<(),
             "is_default_push",
             "is_default_pull",
         ],
-    );
-    Ok(())
+    ))
 }
 
 fn emit_remote_add_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
@@ -802,7 +848,7 @@ fn emit_remote_add_result(payload: &JsonValue, json_output: bool) -> Result<(), 
     Ok(())
 }
 
-fn render_remote_add_text(payload: &JsonValue) -> Result<String, String> {
+pub(crate) fn render_remote_add_text(payload: &JsonValue) -> Result<String, String> {
     let obj = payload
         .as_object()
         .ok_or_else(|| "remote add payload must decode to an object.".to_string())?;
@@ -885,6 +931,11 @@ fn emit_queue_summary_result(payload: &JsonValue, json_output: bool) -> Result<(
     if json_output {
         return print_json(payload);
     }
+    println!("{}", queue_summary_text(payload)?);
+    Ok(())
+}
+
+pub(crate) fn queue_summary_text(payload: &JsonValue) -> Result<String, String> {
     let obj = payload
         .as_object()
         .ok_or_else(|| "queue summary payload must decode to an object.".to_string())?;
@@ -896,7 +947,7 @@ fn emit_queue_summary_result(payload: &JsonValue, json_output: bool) -> Result<(
         .get("remote")
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "queue summary payload is missing remote.".to_string())?;
-    print_key_values(
+    let mut output = crate::render::key_values_text(
         "ait-cli queue summary",
         &[
             ("repo", string_field(obj.get("repo_name"))),
@@ -936,10 +987,7 @@ fn emit_queue_summary_result(payload: &JsonValue, json_output: bool) -> Result<(
                 "stale worktrees",
                 string_field(summary.get("stale_worktree_count")),
             ),
-            (
-                "stale tasks",
-                string_field(summary.get("stale_task_count")),
-            ),
+            ("stale tasks", string_field(summary.get("stale_task_count"))),
         ],
     );
     let stale = summary
@@ -947,18 +995,16 @@ fn emit_queue_summary_result(payload: &JsonValue, json_output: bool) -> Result<(
         .and_then(JsonValue::as_i64)
         .unwrap_or(0);
     if stale > 0 {
-        println!(
-            "stale: {stale} active local Task(s) without an update for 30+ days; review with `ait task list --all --local`, then `ait task abandon <task-id> --local` each one that is done."
-        );
+        output.push_str(&format!(
+            "\nstale: {stale} active local Task(s) without an update for 30+ days; review with `ait task list --all --local`, then `ait task abandon <task-id> --local` each one that is done."
+        ));
     }
     if let Some(error) = remote.get("error").and_then(JsonValue::as_str) {
         if !error.trim().is_empty() {
-            println!();
-            println!("remote summary unavailable");
-            println!("- {error}");
+            output.push_str(&format!("\n\nremote summary unavailable\n- {error}"));
         }
     }
-    Ok(())
+    Ok(output)
 }
 
 fn emit_task_audit_result(
@@ -969,11 +1015,23 @@ fn emit_task_audit_result(
     if json_output {
         return print_json(payload);
     }
+    println!("{}", task_audit_result_text(task_id, payload)?);
+    Ok(())
+}
+
+pub(crate) fn task_audit_result_text(task_id: &str, payload: &JsonValue) -> Result<String, String> {
     let change_rows = payload.get("changes").and_then(JsonValue::as_array);
-    let active = change_rows.map_or(0, |rows| rows.iter().filter(|row| {
-        let change = row.get("change").unwrap_or(row);
-        !matches!(string_field(change.get("status")).as_str(), "landed" | "archived" | "superseded" | "canceled" | "abandoned")
-    }).count());
+    let active = change_rows.map_or(0, |rows| {
+        rows.iter()
+            .filter(|row| {
+                let change = row.get("change").unwrap_or(row);
+                !matches!(
+                    string_field(change.get("status")).as_str(),
+                    "landed" | "archived" | "superseded" | "canceled" | "abandoned"
+                )
+            })
+            .count()
+    });
     let display = if active <= 1 {
         task_workflow_display_payload(payload, task_id)
     } else {
@@ -1033,7 +1091,7 @@ fn emit_task_audit_result(
             rows.push(("closeout", closeout_status));
         }
     }
-    print_key_values(&format!("ait task audit {task_id}"), &rows);
+    let mut output = crate::render::key_values_text(&format!("ait task audit {task_id}"), &rows);
     if let Some(action) = action {
         let label = string_field(action.get("label"));
         let detail = string_field(action.get("detail"));
@@ -1045,7 +1103,7 @@ fn emit_task_audit_result(
                 (true, true) => String::new(),
             };
             if !rendered.is_empty() {
-                println!("action: {rendered}");
+                output.push_str(&format!("\naction: {rendered}"));
             }
         }
     }
@@ -1057,19 +1115,19 @@ fn emit_task_audit_result(
         let command = string_field(recovery.get("command"));
         if !detail.is_empty() || !command.is_empty() {
             if !detail.is_empty() {
-                println!("recovery: {detail}");
+                output.push_str(&format!("\nrecovery: {detail}"));
             }
             if !command.is_empty() {
-                println!("next: {command}");
+                output.push_str(&format!("\nnext: {command}"));
             }
         }
     }
     if active > 1 {
-        println!();
-        println!("multiple internal work records: no public selector is available");
-        println!("evidence: ait task audit {task_id} --json");
+        output.push('\n');
+        output.push_str("\nmultiple internal work records: no public selector is available");
+        output.push_str(&format!("\nevidence: ait task audit {task_id} --json"));
     }
-    Ok(())
+    Ok(output)
 }
 
 fn task_audit_reason_label(action_code: &str) -> Option<&'static str> {
@@ -1081,28 +1139,20 @@ fn task_audit_reason_label(action_code: &str) -> Option<&'static str> {
     }
 }
 
-fn emit_review_record_result(
-    title: &str,
-    payload: JsonValue,
-    json_output: bool,
-) -> Result<(), String> {
-    emit_result(
-        title,
-        &payload,
-        json_output,
-        &["patchset_id", "reviewer", "action"],
-    )
-}
-
 fn emit_review_code_submit_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
     if json_output {
         return print_json(payload);
     }
+    println!("{}", review_code_submit_text(payload)?);
+    Ok(())
+}
+
+pub(crate) fn review_code_submit_text(payload: &JsonValue) -> Result<String, String> {
     let task_review = payload
         .get("task_review")
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "review code submit payload is missing task_review.".to_string())?;
-    print_key_values(
+    Ok(crate::render::key_values_text(
         "ait-cli review code submit",
         &[
             ("patchset_id", string_field(payload.get("patchset_id"))),
@@ -1115,30 +1165,37 @@ fn emit_review_code_submit_result(payload: &JsonValue, json_output: bool) -> Res
             ),
             ("task_reviewer", string_field(task_review.get("reviewer"))),
         ],
-    );
-    Ok(())
+    ))
 }
 
 fn emit_review_code_template_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
     if json_output {
         return print_json(payload);
     }
+    println!("{}", review_code_template_text(payload)?);
+    Ok(())
+}
+
+pub(crate) fn review_code_template_text(payload: &JsonValue) -> Result<String, String> {
     let obj = payload
         .as_object()
         .ok_or_else(|| "review code template payload must decode to an object.".to_string())?;
-    println!("{}", string_field(obj.get("template")));
-    Ok(())
+    Ok(string_field(obj.get("template")))
 }
 
 fn emit_review_show_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
     if json_output {
-        let compact = compact_review_show_payload(payload);
-        return print_json(&compact);
+        return print_json(&compact_review_show_payload(payload));
     }
+    println!("{}", review_show_text(payload)?);
+    Ok(())
+}
+
+pub(crate) fn review_show_text(payload: &JsonValue) -> Result<String, String> {
     let obj = payload
         .as_object()
         .ok_or_else(|| "review show payload must decode to an object.".to_string())?;
-    print_key_values(
+    let mut output = crate::render::key_values_text(
         "ait-cli review show",
         &[
             (
@@ -1159,33 +1216,44 @@ fn emit_review_show_result(payload: &JsonValue, json_output: bool) -> Result<(),
             ),
         ],
     );
-    if let Some(rows) = obj.get("review_requests").and_then(JsonValue::as_array) {
-        if !rows.is_empty() {
-            println!();
-            print_list(rows, &["patchset_id", "reviewer_group", "note"]);
-        }
+    if let Some(rows) = obj
+        .get("review_requests")
+        .and_then(JsonValue::as_array)
+        .filter(|rows| !rows.is_empty())
+    {
+        output.push_str("\n\n");
+        output.push_str(&crate::render::list_text(
+            rows,
+            &["patchset_id", "reviewer_group", "note"],
+        ));
     }
-    if let Some(rows) = obj.get("reviews").and_then(JsonValue::as_array) {
-        if !rows.is_empty() {
-            println!();
-            print_list(
-                rows,
-                &["reviewer", "patchset_id", "action", "blocking", "comment"],
-            );
-        }
+    if let Some(rows) = obj
+        .get("reviews")
+        .and_then(JsonValue::as_array)
+        .filter(|rows| !rows.is_empty())
+    {
+        output.push_str("\n\n");
+        output.push_str(&crate::render::list_text(
+            rows,
+            &["reviewer", "patchset_id", "action", "blocking", "comment"],
+        ));
     }
-    Ok(())
+    Ok(output)
 }
 
 fn emit_policy_show_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
     if json_output {
-        let compact = compact_policy_show_payload(payload);
-        return print_json(&compact);
+        return print_json(&compact_policy_show_payload(payload));
     }
+    println!("{}", policy_show_text(payload)?);
+    Ok(())
+}
+
+pub(crate) fn policy_show_text(payload: &JsonValue) -> Result<String, String> {
     let obj = payload
         .as_object()
         .ok_or_else(|| "policy show payload must decode to an object.".to_string())?;
-    print_key_values(
+    let mut output = crate::render::key_values_text(
         "ait-cli policy show",
         &[
             ("policy_id", string_field(obj.get("policy_id"))),
@@ -1194,26 +1262,24 @@ fn emit_policy_show_result(payload: &JsonValue, json_output: bool) -> Result<(),
             ("evaluated_at", string_field(obj.get("evaluated_at"))),
         ],
     );
-    if let Some(rows) = obj.get("checks").and_then(JsonValue::as_array) {
-        if !rows.is_empty() {
-            println!();
-            print_list(rows, &["name", "status", "message"]);
-        }
+    if let Some(rows) = obj
+        .get("checks")
+        .and_then(JsonValue::as_array)
+        .filter(|rows| !rows.is_empty())
+    {
+        output.push_str("\n\n");
+        output.push_str(&crate::render::list_text(
+            rows,
+            &["name", "status", "message"],
+        ));
     }
-    Ok(())
+    Ok(output)
 }
 
-fn touch_worktree_payload(repo: &RepoRuntime, name: Option<&str>) -> Result<JsonValue, String> {
-    let payload = worktree_get(repo, name, true)?;
-    let touched = worktree_touch_usage(repo, name)?;
-    if touched.is_null() {
-        Ok(payload)
-    } else {
-        Ok(touched)
-    }
-}
-
-fn required_object_string_field(payload: &JsonValue, key: &str) -> Result<String, String> {
+pub(crate) fn required_object_string_field(
+    payload: &JsonValue,
+    key: &str,
+) -> Result<String, String> {
     let value = payload
         .as_object()
         .and_then(|obj| obj.get(key))
@@ -1226,7 +1292,7 @@ fn required_object_string_field(payload: &JsonValue, key: &str) -> Result<String
     }
 }
 
-fn worktree_open_path_text(payload: &JsonValue) -> Result<String, String> {
+pub(crate) fn worktree_open_path_text(payload: &JsonValue) -> Result<String, String> {
     let open_path = string_field(payload.get("open_path"));
     if !open_path.is_empty() {
         return Ok(open_path);
@@ -1238,7 +1304,7 @@ fn worktree_open_path_text(payload: &JsonValue) -> Result<String, String> {
     required_object_string_field(payload, "path")
 }
 
-fn task_start_progress_line(payload: &JsonValue) -> Option<String> {
+pub(crate) fn task_start_progress_line(payload: &JsonValue) -> Option<String> {
     let phase = payload.get("phase").and_then(JsonValue::as_str)?.trim();
     let open_path = payload
         .get("open_path")
@@ -1339,6 +1405,37 @@ fn task_start_progress_line(payload: &JsonValue) -> Option<String> {
     }
 }
 
+pub(crate) fn task_start_result_text(payload: &JsonValue) -> Result<String, String> {
+    let obj = payload
+        .as_object()
+        .ok_or_else(|| "task start payload must decode to an object.".to_string())?;
+    let title = string_field(
+        obj.get("title")
+            .or_else(|| obj.get("task").and_then(|task| task.get("title"))),
+    );
+    let cd_command = string_field(obj.get("cd_command"));
+    let mut lines = vec![crate::render::key_values_text(
+        "ait task start",
+        &[
+            ("task", string_field(obj.get("task_id"))),
+            ("title", title),
+            ("next", cd_command),
+        ],
+    )];
+    for line in plan_backed_markdown_text_lines(payload) {
+        lines.push(line);
+    }
+    if let Some(error) = obj
+        .get("automatic_reconciliation")
+        .and_then(|value| value.get("error"))
+        .and_then(JsonValue::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("warning: reconciliation: {error}"));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn emit_task_start_result(
     payload: &JsonValue,
     json_output: bool,
@@ -1351,33 +1448,9 @@ fn emit_task_start_result(
             print_json(&compact_task_start_payload(payload))
         };
     }
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "task start payload must decode to an object.".to_string())?;
-    let title = string_field(obj.get("title").or_else(|| obj.get("task").and_then(|task| task.get("title"))));
-    let cd_command = string_field(obj.get("cd_command"));
-    print_key_values(
-        "ait task start",
-        &[
-            ("task", string_field(obj.get("task_id"))),
-            ("title", title),
-            ("next", cd_command),
-        ],
-    );
-    for line in plan_backed_markdown_text_lines(payload) {
-        println!("{line}");
-    }
-    if let Some(error) = obj
-        .get("automatic_reconciliation")
-        .and_then(|value| value.get("error"))
-        .and_then(JsonValue::as_str)
-        .filter(|value| !value.trim().is_empty())
-    {
-        println!("warning: reconciliation: {error}");
-    }
+    println!("{}", task_start_result_text(payload)?);
     Ok(())
 }
-
 fn emit_snapshot_create_result(
     payload: &JsonValue,
     json_output: bool,
@@ -1417,11 +1490,14 @@ fn emit_task_finish_result(
             print_json(&compact_task_finish_payload(payload))
         };
     }
-    println!("{}", render_task_finish_text(&task_workflow_display_payload(payload, requested))?);
+    println!(
+        "{}",
+        render_task_finish_text(&task_workflow_display_payload(payload, requested))?
+    );
     Ok(())
 }
 
-fn worktree_path_payload(payload: &JsonValue) -> Result<JsonValue, String> {
+pub(crate) fn worktree_path_payload(payload: &JsonValue) -> Result<JsonValue, String> {
     let obj = payload
         .as_object()
         .ok_or_else(|| "worktree payload must decode to an object.".to_string())?;
@@ -1451,6 +1527,12 @@ fn emit_worktree_status_result(
     if json_output {
         return print_json(payload);
     }
+    println!("{}", worktree_status_text(payload, verbose)?);
+    Ok(())
+}
+
+pub(crate) fn worktree_status_text(payload: &JsonValue, verbose: bool) -> Result<String, String> {
+    let mut output = Vec::new();
     let obj = payload
         .as_object()
         .ok_or_else(|| "worktree status payload must decode to an object.".to_string())?;
@@ -1486,24 +1568,24 @@ fn emit_worktree_status_result(
             ("baseline line", string_field(obj.get("baseline_line_name"))),
         ]);
     }
-    print_key_values("ait worktree status", &rows);
+    output.push(crate::render::key_values_text("ait worktree status", &rows));
 
     if changed_count > 0 {
         let changed_paths = json_string_array(obj.get("changed_paths"));
         for path in changed_paths.iter().take(DEFAULT_AGENT_TEXT_LIST_LIMIT) {
-            println!("changed: {path}");
+            output.push(format!("changed: {path}"));
         }
         if changed_paths.len() > DEFAULT_AGENT_TEXT_LIST_LIMIT {
-            println!(
+            output.push(format!(
                 "shown: {}/{} changed paths",
                 DEFAULT_AGENT_TEXT_LIST_LIMIT,
                 changed_paths.len()
-            );
-            println!("more: ait worktree status --json");
+            ));
+            output.push("more: ait worktree status --json".to_string());
         }
-        println!("next: ait diff");
+        output.push("next: ait diff".to_string());
     }
-    Ok(())
+    Ok(output.join("\n"))
 }
 
 fn emit_line_list_result(
@@ -1516,6 +1598,19 @@ fn emit_line_list_result(
     if json_output {
         return print_json(payload);
     }
+    println!(
+        "{}",
+        line_list_text(payload, show_all, remote, current_line)?
+    );
+    Ok(())
+}
+
+pub(crate) fn line_list_text(
+    payload: &JsonValue,
+    show_all: bool,
+    remote: Option<&str>,
+    current_line: &str,
+) -> Result<String, String> {
     let rows = payload
         .as_array()
         .ok_or_else(|| "line list payload must decode to an array.".to_string())?;
@@ -1535,15 +1630,14 @@ fn emit_line_list_result(
         }
     }
     let all_command = scoped_all_command("ait line list", false, remote);
-    print_agent_list(
+    Ok(agent_list_text(
         &rows,
         &["line_name", "status", "head_snapshot_id"],
         show_all,
         &[],
         None,
         &all_command,
-    );
-    Ok(())
+    ))
 }
 
 fn emit_line_cleanup_result(
@@ -1558,10 +1652,33 @@ fn emit_line_cleanup_result(
     if json_output {
         return print_json(payload);
     }
+    println!(
+        "{}",
+        line_cleanup_text(
+            payload,
+            show_all,
+            include_protected,
+            idle_for,
+            cleanup_kind,
+            limit
+        )?
+    );
+    Ok(())
+}
+
+pub(crate) fn line_cleanup_text(
+    payload: &JsonValue,
+    show_all: bool,
+    include_protected: bool,
+    idle_for: &str,
+    cleanup_kind: Option<&str>,
+    limit: Option<usize>,
+) -> Result<String, String> {
+    let mut blocks = Vec::new();
     let obj = payload
         .as_object()
         .ok_or_else(|| "line cleanup payload must decode to an object.".to_string())?;
-    print_key_values(
+    blocks.push(crate::render::key_values_text(
         "ait-cli line cleanup",
         &[
             ("mode", string_field(obj.get("mode"))),
@@ -1573,7 +1690,7 @@ fn emit_line_cleanup_result(
             ("planned_count", string_field(obj.get("planned_count"))),
             ("archived_count", string_field(obj.get("archived_count"))),
         ],
-    );
+    ));
     let mut all_command = format!("ait line cleanup --idle-for {idle_for}");
     if let Some(kind) = cleanup_kind.filter(|value| !value.trim().is_empty()) {
         all_command.push_str(&format!(" --kind {kind}"));
@@ -1597,16 +1714,16 @@ fn emit_line_cleanup_result(
     };
     if let Some(rows) = obj.get(rows_key).and_then(JsonValue::as_array) {
         if !rows.is_empty() {
-            println!();
-            println!(
-                "{}",
+            blocks.push(String::new());
+            blocks.push(
                 if applied {
                     "archived lines"
                 } else {
                     "cleanup candidates"
                 }
+                .to_string(),
             );
-            print_bounded_evidence(
+            blocks.push(bounded_evidence_text(
                 rows,
                 if applied {
                     &["line_name", "status", "head_snapshot_id", "archived_at"]
@@ -1622,7 +1739,7 @@ fn emit_line_cleanup_result(
                 show_all,
                 DEFAULT_AGENT_TEXT_LIST_LIMIT,
                 &all_command,
-            );
+            ));
         }
     }
     if let Some(rows) = obj.get("protected").and_then(JsonValue::as_array) {
@@ -1650,9 +1767,12 @@ fn emit_line_cleanup_result(
                             .cmp(&string_field(right.get("protected_reason")))
                     })
             });
-            println!();
-            println!("protected reasons");
-            print_list(&reason_rows, &["count", "protected_reason"]);
+            blocks.push(String::new());
+            blocks.push("protected reasons".to_string());
+            blocks.push(crate::render::list_text(
+                &reason_rows,
+                &["count", "protected_reason"],
+            ));
 
             let mut protected_rows = rows.to_vec();
             protected_rows.sort_by(|left, right| {
@@ -1663,8 +1783,8 @@ fn emit_line_cleanup_result(
                             .cmp(&string_field(right.get("line_name")))
                     })
             });
-            println!();
-            println!("protected examples");
+            blocks.push(String::new());
+            blocks.push("protected examples".to_string());
             let columns = [
                 "line_name",
                 "lifecycle_kind",
@@ -1672,7 +1792,7 @@ fn emit_line_cleanup_result(
                 "protected_reason",
             ];
             if show_all {
-                print_list(&protected_rows, &columns);
+                blocks.push(crate::render::list_text(&protected_rows, &columns));
             } else {
                 let mut seen_reasons = std::collections::BTreeSet::new();
                 let examples = protected_rows
@@ -1685,14 +1805,14 @@ fn emit_line_cleanup_result(
                     })
                     .cloned()
                     .collect::<Vec<_>>();
-                print_list(&examples, &columns);
+                blocks.push(crate::render::list_text(&examples, &columns));
                 if examples.len() < protected_rows.len() {
-                    println!(
+                    blocks.push(format!(
                         "shown: {}/{} representative rows",
                         examples.len(),
                         protected_rows.len()
-                    );
-                    println!("more: {all_command}");
+                    ));
+                    blocks.push(format!("more: {all_command}"));
                 }
             }
         }
@@ -1711,9 +1831,9 @@ fn emit_line_cleanup_result(
             inspect_command.push_str(&format!(" --limit {limit}"));
         }
         inspect_command.push_str(" --all");
-        println!("protected detail: {inspect_command}");
+        blocks.push(format!("protected detail: {inspect_command}"));
     }
-    Ok(())
+    Ok(blocks.join("\n"))
 }
 
 fn cleanup_protected_priority(row: &JsonValue) -> u8 {
@@ -1736,10 +1856,16 @@ fn emit_worktree_list_result(payload: &JsonValue, json_output: bool) -> Result<(
     if json_output {
         return print_json(payload);
     }
+    println!("{}", worktree_list_text(payload)?);
+    Ok(())
+}
+
+pub(crate) fn worktree_list_text(payload: &JsonValue) -> Result<String, String> {
+    let mut output = Vec::new();
     let rows = payload
         .as_array()
         .ok_or_else(|| "worktree list payload must decode to an array.".to_string())?;
-    print_list(
+    output.push(crate::render::list_text(
         rows,
         &[
             "name",
@@ -1751,30 +1877,15 @@ fn emit_worktree_list_result(payload: &JsonValue, json_output: bool) -> Result<(
             "exists",
             "is_current",
         ],
-    );
-    Ok(())
+    ));
+    Ok(output.join("\n"))
 }
 
 fn emit_worktree_show_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
-    emit_result(
-        "ait-cli worktree show",
+    emit_worktree_operation_result(
         payload,
         json_output,
-        &[
-            "name",
-            "path",
-            "alias_path",
-            "current_line",
-            "registered_line_name",
-            "workspace_status",
-            "changed_count",
-            "bound_task_id",
-            "target_base_line",
-            "cleanup_policy",
-            "rebase_state",
-            "merge_state",
-            "merge_conflict_count",
-        ],
+        crate::binding_output::format_worktree_show,
     )
 }
 
@@ -1782,10 +1893,16 @@ fn emit_worktree_doctor_result(payload: &JsonValue, json_output: bool) -> Result
     if json_output {
         return print_json(payload);
     }
+    println!("{}", worktree_doctor_text(payload)?);
+    Ok(())
+}
+
+pub(crate) fn worktree_doctor_text(payload: &JsonValue) -> Result<String, String> {
+    let mut output = Vec::new();
     let obj = payload
         .as_object()
         .ok_or_else(|| "worktree doctor payload must decode to an object.".to_string())?;
-    print_key_values(
+    output.push(crate::render::key_values_text(
         "ait-cli worktree doctor",
         &[
             (
@@ -1816,7 +1933,7 @@ fn emit_worktree_doctor_result(payload: &JsonValue, json_output: bool) -> Result
                 string_field(obj.get("manual_review_candidate_count")),
             ),
         ],
-    );
+    ));
     for (label, key) in [
         ("cleanup_candidate_rows", "cleanup_candidate_rows"),
         ("manual_review_rows", "manual_review_rows"),
@@ -1824,9 +1941,9 @@ fn emit_worktree_doctor_result(payload: &JsonValue, json_output: bool) -> Result
     ] {
         if let Some(rows) = obj.get(key).and_then(JsonValue::as_array) {
             if !rows.is_empty() {
-                println!();
-                println!("{label}");
-                print_list(
+                output.push(String::new());
+                output.push(label.to_string());
+                output.push(crate::render::list_text(
                     rows,
                     &[
                         "name",
@@ -1836,7 +1953,7 @@ fn emit_worktree_doctor_result(payload: &JsonValue, json_output: bool) -> Result
                         "cleanup_class",
                         "cleanup_policy",
                     ],
-                );
+                ));
             }
         }
     }
@@ -1846,10 +1963,12 @@ fn emit_worktree_doctor_result(payload: &JsonValue, json_output: bool) -> Result
         .unwrap_or("metadata")
         == "metadata"
     {
-        println!();
-        println!("Run `ait worktree doctor --refresh` to verify live workspace status.");
+        output.push(String::new());
+        output.push(
+            "Run `ait worktree doctor --refresh` to verify live workspace status.".to_string(),
+        );
     }
-    Ok(())
+    Ok(output.join("\n"))
 }
 
 fn emit_worktree_cleanup_candidates_result(
@@ -1859,10 +1978,16 @@ fn emit_worktree_cleanup_candidates_result(
     if json_output {
         return print_json(payload);
     }
+    println!("{}", worktree_cleanup_candidates_text(payload)?);
+    Ok(())
+}
+
+pub(crate) fn worktree_cleanup_candidates_text(payload: &JsonValue) -> Result<String, String> {
+    let mut output = Vec::new();
     let obj = payload.as_object().ok_or_else(|| {
         "worktree cleanup-candidates payload must decode to an object.".to_string()
     })?;
-    print_key_values(
+    output.push(crate::render::key_values_text(
         "ait-cli worktree cleanup-candidates",
         &[
             ("older_than", string_field(obj.get("older_than"))),
@@ -1876,11 +2001,11 @@ fn emit_worktree_cleanup_candidates_result(
             ("protected_count", string_field(obj.get("protected_count"))),
             ("stale_count", string_field(obj.get("stale_count"))),
         ],
-    );
+    ));
     if let Some(rows) = obj.get("candidates").and_then(JsonValue::as_array) {
         if !rows.is_empty() {
-            println!();
-            print_list(
+            output.push(String::new());
+            output.push(crate::render::list_text(
                 rows,
                 &[
                     "name",
@@ -1889,16 +2014,19 @@ fn emit_worktree_cleanup_candidates_result(
                     "last_used_at",
                     "cleanup_reason",
                 ],
-            );
+            ));
         }
     }
     if let Some(rows) = obj.get("protected").and_then(JsonValue::as_array) {
         if !rows.is_empty() {
-            println!();
-            print_list(rows, &["name", "cleanup_policy", "protected_reason"]);
+            output.push(String::new());
+            output.push(crate::render::list_text(
+                rows,
+                &["name", "cleanup_policy", "protected_reason"],
+            ));
         }
     }
-    Ok(())
+    Ok(output.join("\n"))
 }
 
 fn emit_worktree_cleanup_rows(
@@ -1909,6 +2037,29 @@ fn emit_worktree_cleanup_rows(
     fallback_count_key: &str,
     fallback_rows_key: &str,
 ) -> Result<(), String> {
+    println!(
+        "{}",
+        worktree_cleanup_rows_text(
+            title,
+            payload,
+            count_key,
+            rows_key,
+            fallback_count_key,
+            fallback_rows_key
+        )?
+    );
+    Ok(())
+}
+
+pub(crate) fn worktree_cleanup_rows_text(
+    title: &str,
+    payload: &JsonValue,
+    count_key: &str,
+    rows_key: &str,
+    fallback_count_key: &str,
+    fallback_rows_key: &str,
+) -> Result<String, String> {
+    let mut output = Vec::new();
     let obj = payload
         .as_object()
         .ok_or_else(|| format!("{title} payload must decode to an object."))?;
@@ -1920,18 +2071,18 @@ fn emit_worktree_cleanup_rows(
     } else {
         string_field(obj.get(fallback_count_key))
     };
-    print_key_values(
+    output.push(crate::render::key_values_text(
         title,
         &[
             ("candidate_count", string_field(obj.get("candidate_count"))),
             ("row_count", row_count),
             ("dry_run", string_field(obj.get("dry_run"))),
         ],
-    );
+    ));
     if let Some(rows) = rows {
         if !rows.is_empty() {
-            println!();
-            print_list(
+            output.push(String::new());
+            output.push(crate::render::list_text(
                 rows,
                 &[
                     "name",
@@ -1941,10 +2092,10 @@ fn emit_worktree_cleanup_rows(
                     "cleanup_reason",
                     "deleted_path",
                 ],
-            );
+            ));
         }
     }
-    Ok(())
+    Ok(output.join("\n"))
 }
 
 fn emit_worktree_cleanup_report_result(
@@ -1968,11 +2119,17 @@ fn emit_worktree_sync_result(payload: &JsonValue, json_output: bool) -> Result<(
     if json_output {
         return print_json(payload);
     }
+    println!("{}", worktree_sync_text(payload)?);
+    Ok(())
+}
+
+pub(crate) fn worktree_sync_text(payload: &JsonValue) -> Result<String, String> {
+    let mut output = Vec::new();
     let obj = payload
         .as_object()
         .ok_or_else(|| "worktree sync payload must decode to an object.".to_string())?;
     if obj.get("requested_count").is_some() {
-        print_key_values(
+        output.push(crate::render::key_values_text(
             "ait-cli worktree sync",
             &[
                 ("requested_count", string_field(obj.get("requested_count"))),
@@ -1981,7 +2138,7 @@ fn emit_worktree_sync_result(payload: &JsonValue, json_output: bool) -> Result<(
                 ("error_count", string_field(obj.get("error_count"))),
                 ("ok", string_field(obj.get("ok"))),
             ],
-        );
+        ));
         for (label, key) in [
             ("synced_rows", "synced_rows"),
             ("skipped_rows", "skipped_rows"),
@@ -1989,21 +2146,20 @@ fn emit_worktree_sync_result(payload: &JsonValue, json_output: bool) -> Result<(
         ] {
             if let Some(rows) = obj.get(key).and_then(JsonValue::as_array) {
                 if !rows.is_empty() {
-                    println!();
-                    println!("{label}");
-                    print_list(
+                    output.push(String::new());
+                    output.push(label.to_string());
+                    output.push(crate::render::list_text(
                         rows,
                         &["name", "path", "current_line", "workspace_status", "error"],
-                    );
+                    ));
                 }
             }
         }
-        return Ok(());
+        return Ok(output.join("\n"));
     }
-    emit_result(
+    output.push(result_text(
         "ait-cli worktree sync",
         payload,
-        false,
         &[
             "name",
             "path",
@@ -2012,31 +2168,38 @@ fn emit_worktree_sync_result(payload: &JsonValue, json_output: bool) -> Result<(
             "status",
             "changed_count",
         ],
-    )
+    )?);
+    Ok(output.join("\n"))
 }
 
 fn emit_worktree_prune_result(payload: &JsonValue, json_output: bool) -> Result<(), String> {
     if json_output {
         return print_json(payload);
     }
+    println!("{}", worktree_prune_text(payload)?);
+    Ok(())
+}
+
+pub(crate) fn worktree_prune_text(payload: &JsonValue) -> Result<String, String> {
+    let mut output = Vec::new();
     let obj = payload
         .as_object()
         .ok_or_else(|| "worktree prune payload must decode to an object.".to_string())?;
-    print_key_values(
+    output.push(crate::render::key_values_text(
         "ait-cli worktree prune-stale",
         &[
             ("dry_run", string_field(obj.get("dry_run"))),
             ("pruned_count", string_field(obj.get("pruned_count"))),
         ],
-    );
+    ));
     if let Some(rows) = obj.get("pruned_rows").and_then(JsonValue::as_array) {
         if !rows.is_empty() {
-            println!();
-            print_list(
+            output.push(String::new());
+            output.push(crate::render::list_text(
                 rows,
                 &["name", "path", "current_line", "workspace_status", "exists"],
-            );
+            ));
         }
     }
-    Ok(())
+    Ok(output.join("\n"))
 }

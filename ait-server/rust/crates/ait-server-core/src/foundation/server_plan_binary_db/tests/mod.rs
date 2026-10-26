@@ -1,5 +1,6 @@
 use super::schema::{PLAN_ITEM_RECORD_SIZE, PLAN_RECORD_SIZE, PLAN_REVISION_RECORD_SIZE};
 use super::*;
+mod actor_plan;
 use crate::foundation::native_repositories::BinaryDbNativeRepositoryService;
 use crate::foundation::pack_substrate::{write_rebuilt_zstd_pack_archive, ObjectPackRewriteBlob};
 use crate::foundation::remote_binary_db::{
@@ -12,7 +13,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const UNSUPPORTED_TEST_LAYOUT: u32 = PLAN_LAYOUT_ID + 1;
+const UNSUPPORTED_TEST_LAYOUT: u32 = REMOTE_PLAN_LAYOUT_ID + 1;
 
 fn make_root(label: &str) -> StorePath {
     static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -28,17 +29,25 @@ fn make_root(label: &str) -> StorePath {
 }
 
 fn service(label: &str) -> BinaryDbServerPlanService<FilesystemServerRemoteBinaryDb> {
-    BinaryDbServerPlanService::new(FilesystemServerRemoteBinaryDb::test_fixture(
+    let db = FilesystemServerRemoteBinaryDb::test_fixture(
         RepoId::new("REPO-PLAN-BIN"),
         RepoName::new("repo-bin"),
         make_root(label),
         StoreGeneration::new(1),
-    ))
+    );
+    use crate::foundation::workflow_binary_v0_adapter::{
+        BinaryDbServerWorkflowV0Store, UserActorIdentity,
+    };
+    BinaryDbServerWorkflowV0Store::new_frozen(db.clone())
+        .resolve_user_actor(&UserActorIdentity::new("tester", "tester@example.test").unwrap())
+        .unwrap();
+    BinaryDbServerPlanService::new(db)
 }
 
 fn create_payload(title: &str, item_ref: &str) -> JsonValue {
     json!({
         "title": title,
+        "actor_key_index": 0,
         "status": "draft",
         "summary": "Initial summary",
         "artifact_path": "docs/sprints/demo.md",
@@ -56,7 +65,7 @@ fn create_payload(title: &str, item_ref: &str) -> JsonValue {
 }
 
 fn seed_packed_plan_content(
-    service: &BinaryDbServerPlanServiceV1<FilesystemServerRemoteBinaryDb>,
+    service: &BinaryDbServerPlanServiceV2<FilesystemServerRemoteBinaryDb>,
     label: &str,
     artifact_path: &str,
     body: &str,
@@ -152,7 +161,7 @@ fn seed_packed_plan_content(
 }
 
 fn overwrite_record_file_layout(
-    service: &BinaryDbServerPlanServiceV1<FilesystemServerRemoteBinaryDb>,
+    service: &BinaryDbServerPlanServiceV2<FilesystemServerRemoteBinaryDb>,
     file: BinaryFileId,
     layout: u32,
 ) {
@@ -174,7 +183,7 @@ fn overwrite_record_file_layout(
 }
 
 fn authority_data_files(
-    service: &BinaryDbServerPlanServiceV1<FilesystemServerRemoteBinaryDb>,
+    service: &BinaryDbServerPlanServiceV2<FilesystemServerRemoteBinaryDb>,
 ) -> BTreeMap<String, Vec<u8>> {
     fs::read_dir(service.db().authority_root().as_path())
         .expect("authority root should read")

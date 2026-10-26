@@ -18,6 +18,7 @@ import {
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PHASE_CONTRACT = "ait.release.clean-host.phase/v1";
 const MATRIX_CONTRACT = "ait.release.clean-host.matrix/v1";
@@ -37,7 +38,52 @@ const GITHUB_NATIVE_COMPONENTS = Object.freeze([
   "ait-server",
   "ait-runner",
 ]);
+const RETIRED_CHAT_COMMANDS = ["ait-agent", "ait-agent-worker"];
+const CHAT_RETIREMENT_MESSAGE = "Chat integrations are retired in AIT 1.2.0";
+
+function requiresRelease120(version) {
+  const parts = /^(\d+)\.(\d+)\.\d+(?:-rc\.\d+)?$/.exec(version);
+  if (!parts) throw new Error("binding qualification requires an exact release version");
+  return Number(parts[1]) > 1 || (Number(parts[1]) === 1 && Number(parts[2]) >= 2);
+}
+
+export function requiresChatRetirement(version) { return requiresRelease120(version); }
+export function requiresLanguageCli(version) { return requiresRelease120(version); }
+
+export function validateRetiredBindingMetadata(payload, version) {
+  // Apply the selected release's qualification contract. Historical records
+  // retain their original metadata and functioning old chat surfaces.
+  if (!requiresChatRetirement(version)) return;
+  if (payload.contract !== "ait.language.binding.v1" || !Array.isArray(payload.supported_surfaces) ||
+      !payload.supported_surfaces.includes("ait-core") ||
+      RETIRED_CHAT_COMMANDS.some(surface => payload.supported_surfaces.includes(surface))) {
+    throw new Error("current binding metadata must retain ait-core without advertising retired chat surfaces");
+  }
+}
+
+export function captureRetiredCommands(origin, suffix = "") {
+  return RETIRED_CHAT_COMMANDS.flatMap(name => {
+    const file = path.join(origin, name + suffix);
+    const stat = lstatSync(file, { throwIfNoEntry: false });
+    if (!stat) return [];
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("retired manual origin is not a regular file");
+    return [{ file, sha256: createHash("sha256").update(readFileSync(file)).digest("hex") }];
+  });
+}
+
+export function verifyManualUpgradeDisposition(priorOrigin, candidateOrigin, priorFiles, suffix = "") {
+  if (realpathSync(priorOrigin) === realpathSync(candidateOrigin)) throw new Error("manual side-by-side origins must be distinct");
+  if (captureRetiredCommands(candidateOrigin, suffix).length) throw new Error("new candidate contains a retired chat executable");
+  for (const row of priorFiles) {
+    if (path.dirname(row.file) !== priorOrigin || !existsSync(row.file) || lstatSync(row.file).isSymbolicLink() ||
+        createHash("sha256").update(readFileSync(row.file)).digest("hex") !== row.sha256) {
+      throw new Error("manual upgrade changed an unowned legacy executable");
+    }
+  }
+  return { scope: "side_by_side_manual_origins", prior_origin: priorOrigin, candidate_origin: candidateOrigin, retained_legacy_files: priorFiles };
+}
 const MATRIX_ROW_COUNTS = {
+  "distribution-target-120-32-2026-10-24.1": 32,
   "distribution-target-32-2026-08-17.2": 32,
   "distribution-target-runner-bundle-32-2026-08-26.1": 32,
 };
@@ -1082,7 +1128,7 @@ async function githubContext(config, row, version, root, recorder, candidateStag
   const githubNativeComponents = row.components.filter((component) =>
     GITHUB_NATIVE_COMPONENTS.includes(component),
   );
-  for (const required of ["ait", "ait-agent", "ait-server", "ait-runner"]) {
+  for (const required of ["ait", "ait-server", "ait-runner"]) {
     if (!githubNativeComponents.includes(required)) {
       fail(`GitHub native row is missing required prior-compatible component: ${required}`);
     }
@@ -1180,11 +1226,21 @@ function pythonContext(recorder, root, pythonVersion, upgrade = false, candidate
   const suffix = process.platform === "win32" ? ".exe" : "";
   const aitPath = path.join(paths.scripts, `ait${suffix}`);
   const serverPath = path.join(paths.scripts, `ait-server${suffix}`);
+  const nativeVersion = pythonVersion.replace(/rc([1-9]\d*)$/, "-rc.$1");
+  const languageCli = requiresLanguageCli(nativeVersion);
   requireRegularFile(aitPath, "PyPI ait command");
-  requireRegularFile(serverPath, "PyPI ait-server command");
+  if (languageCli) {
+    for (const name of ["ait-server", "ait-runner", ...RETIRED_CHAT_COMMANDS]) {
+      if (existsSync(path.join(paths.scripts, name + suffix))) {
+        fail(`PyPI language package exposed a standalone native command: ${name}`);
+      }
+    }
+  } else {
+    requireRegularFile(serverPath, "PyPI ait-server command");
+  }
   return {
     ait: commandSpec(aitPath),
-    server: commandSpec(serverPath),
+    ...(languageCli ? {} : { server: commandSpec(serverPath) }),
     origin: paths.scripts,
     binding() {
       const result = recorder.run(
@@ -1203,6 +1259,40 @@ function pythonContext(recorder, root, pythonVersion, upgrade = false, candidate
         payload.version !== pythonVersion.replace(/rc([1-9]\d*)$/, "-rc.$1")
       ) {
         fail("PyPI direct binding metadata is not Rust/PyO3 authority");
+      }
+      validateRetiredBindingMetadata(payload, nativeVersion);
+      if (languageCli) {
+        recorder.run(paths.python, ["-c", [
+          "from importlib.metadata import distribution",
+          "from importlib.util import find_spec",
+          "from pathlib import Path",
+          "from sys import argv",
+          "package = distribution('ait-native')",
+          "entries = [e for e in package.entry_points if e.group == 'console_scripts' and e.name == 'ait']",
+          "assert len(entries) == 1, 'Python language CLI requires one ait console entrypoint'",
+          "module, separator, function = entries[0].value.partition(':')",
+          "assert separator and function and (module == 'ait_python' or module.startswith('ait_python.'))",
+          "origin = Path(find_spec(module).origin).resolve()",
+          "owned = {Path(package.locate_file(p)).resolve() for p in package.files}",
+          "assert origin.suffix == '.py' and origin in owned, 'Python language CLI must load package-owned Python source'",
+          "assert Path(argv[1]).resolve() in owned, 'Python language launcher must be package-owned'",
+          "print('Python language CLI entrypoint is package-owned')",
+        ].join("\n"), aitPath], { label: "PyPI language CLI entrypoint" });
+      }
+      if (requiresChatRetirement(nativeVersion)) {
+        recorder.run(paths.python, ["-c", [
+          "from ait_python import NativeRuntime",
+          "runtime = NativeRuntime()",
+          `retired = ${JSON.stringify(CHAT_RETIREMENT_MESSAGE)}`,
+          "for name, args in [('agent_capabilities', ()), ('agent_management', ({},)), ('agent_worker_transaction', ({},))]:",
+          "    try:",
+          "        getattr(runtime, name)(*args)",
+          "    except Exception as error:",
+          "        if retired not in str(error): raise",
+          "    else:",
+          "        raise RuntimeError(name + ' did not report retirement')",
+          "print('PyPI retained chat facades report explicit retirement')",
+        ].join("\n")], { label: "PyPI explicit chat retirement errors" });
       }
     },
     uninstall() {
@@ -1293,6 +1383,42 @@ function nodeContext(recorder, prefix, version, row, candidateStage = null) {
   const index = path.join(packageRoot, "src", "index.js");
   requireRegularFile(entry, "npm in-process ait entrypoint");
   requireRegularFile(index, "npm direct API entrypoint");
+  if (requiresLanguageCli(version)) {
+    const metadata = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+    if (metadata.bin?.ait !== "bin/ait.mjs") fail("npm language CLI requires its declared ait JavaScript entrypoint");
+    const shim = process.platform === "win32" ? path.join(prefix, "ait.cmd") : path.join(prefix, "bin", "ait");
+    if (process.platform === "win32") {
+      requireRegularFile(shim, "npm language CLI shim");
+      if (!readFileSync(shim, "utf8").replaceAll("\\", "/").includes("/node_modules/@wa120/ait-native/bin/ait.mjs")) {
+        fail("npm language CLI shim does not reference its installed JavaScript entrypoint");
+      }
+    } else if (!existsSync(shim) || realpathSync(shim) !== realpathSync(entry)) {
+      fail("npm language CLI shim does not resolve to its installed JavaScript entrypoint");
+    }
+    // Inspect only the installed packages. npm's generated CLI shims live in
+    // the prefix and the declared JavaScript launcher remains bin/ait.mjs.
+    const visit = directory => {
+      for (const file of readdirSync(directory, { withFileTypes: true })) {
+        const payload = path.join(directory, file.name);
+        if (file.isDirectory()) visit(payload);
+        else if (/^ait(?:-cli|-server|-runner|-agent(?:-worker)?)?(?:\.exe)?$/i.test(file.name)) {
+          fail(`npm language package contains a standalone command payload: ${payload}`);
+        }
+      }
+    };
+    // Wrapper-only registry installs nest optional dependencies. Candidate
+    // installation may also install the platform tarball as a global sibling.
+    const platformRoots = [platformPackageRoot,
+      path.join(packageRoot, "node_modules", platformPackageName),
+    ].filter(directory => lstatSync(directory, { throwIfNoEntry: false }));
+    if (!platformRoots.length) fail("npm selected language package platform dependency is missing");
+    for (const installedRoot of [packageRoot, ...platformRoots]) {
+      if (!lstatSync(installedRoot, { throwIfNoEntry: false })?.isDirectory()) {
+        fail(`npm selected language package is missing or is not a directory: ${installedRoot}`);
+      }
+      visit(installedRoot);
+    }
+  }
   const node = requireCommand("node");
   return {
     ait: commandSpec(node, [entry]),
@@ -1315,7 +1441,20 @@ function nodeContext(recorder, prefix, version, row, candidateStage = null) {
       ) {
         fail("npm direct binding metadata is not exact Rust Node-API authority");
       }
-      const inProcess = recorder.run(
+      validateRetiredBindingMetadata(payload, version);
+      if (requiresChatRetirement(version)) {
+        const retirementProbe = "import {pathToFileURL} from 'node:url';" +
+          "const m=await import(pathToFileURL(process.argv[1]).href);const r=new m.NativeRuntime();" +
+          `const retired=${JSON.stringify(CHAT_RETIREMENT_MESSAGE)};` +
+          "for(const [name,args] of [['agentCapabilities',[]],['agentManagement',[{}]],['agentWorkerTransaction',[{}]]]){" +
+          "let rejected=false;try{r[name](...args);}catch(error){if(!String(error.message).includes(retired))throw error;rejected=true;}" +
+          "if(!rejected)throw new Error(name+' did not report retirement');}" +
+          "process.stdout.write('npm retained chat facades report explicit retirement\\n');";
+        recorder.run(node, ["--input-type=module", "-e", retirementProbe, index], { label: "npm explicit chat retirement errors" });
+      }
+      const inProcess = requiresLanguageCli(version) ? recorder.run(
+        node, [entry, "--version"], { label: "npm typed-binding language CLI" },
+      ) : recorder.run(
         node,
         [
           "--input-type=module",
@@ -1586,6 +1725,11 @@ function runnerBundleVersion(version) {
 
 function packageRowForVersion(row, version) {
   let components = row.components;
+  // The actual historical GitHub raw assets remain valid upgrade inputs.
+  // This says nothing about package ownership of manual downloads.
+  if (row.channel === "github" && row.role === "product" && /^(0\.|1\.[01]\.)/.test(version)) {
+    components = ["ait", "ait-agent", "ait-agent-worker", "ait-server", "ait-runner", "ait-python", "ait-node"];
+  }
   if (row.channel === "github" && row.role === "product" && version === "1.0.0-rc.6") {
     components = [
       "ait",
@@ -2514,6 +2658,7 @@ async function executeUpgrade({ options, config, status, row, checks, recorder, 
     candidate: false,
   });
   exactContextVersion(prior, priorRow, options["prior-version"], recorder);
+  const priorManualChat = row.channel === "github" ? captureRetiredCommands(prior.origin, row.executable_suffix) : [];
   exerciseBinding(prior, priorRow);
   mark(checks, "prior_exact_install");
   let priorState = null;
@@ -2546,6 +2691,9 @@ async function executeUpgrade({ options, config, status, row, checks, recorder, 
     candidate: true,
   });
   mark(checks, "candidate_upgrade");
+  if (row.channel === "github") {
+    recorder.observations.github_upgrade_disposition = verifyManualUpgradeDisposition(prior.origin, candidate.origin, priorManualChat, row.executable_suffix);
+  }
   assertInstalledOrigin(candidate, row);
   mark(checks, "installed_origin");
   exactContextVersion(candidate, row, config.release.version, recorder);
@@ -2635,7 +2783,9 @@ async function main() {
   await runPhase(options);
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.message}\n`);
-  process.exit(error.exitCode ?? 70);
-});
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(error.exitCode ?? 70);
+  });
+}

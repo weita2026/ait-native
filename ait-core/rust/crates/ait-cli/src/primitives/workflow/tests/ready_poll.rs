@@ -1,6 +1,76 @@
 use super::*;
 
 #[test]
+fn workflow_ready_resumed_one_shot_stops_on_exact_failed_ci_without_rerunning() {
+    let mut requested = BTreeMap::new();
+    workflow_ready_record_pending_ci_request(
+        &json!({
+            "patchset":{"patchset_id":"RT-1/P-02"},
+            "patchset_ci_status":{"ci_run_seq":2,"tests_status":"pending"},
+            "next_action":{"code":"waiting_for_ci"}
+        }),
+        &mut requested,
+    )
+    .unwrap();
+    let failed = json!({
+        "patchset":{"patchset_id":"RT-1/P-02"},
+        "patchset_ci_status":{"ci_run_seq":2,"ci_completed_at_s":10,"tests_status":"fail"},
+        "next_action":{"code":"run_patchset_ci"}
+    });
+    assert!(
+        workflow_ready_ci_pending_wait_state(&failed, "run_patchset_ci", &requested)
+            .unwrap()
+            .is_none()
+    );
+    // An unrelated Patchset's failure cannot satisfy this request.
+    let mut unrelated = failed;
+    unrelated["patchset"]["patchset_id"] = json!("RT-2/P-02");
+    assert!(!requested.contains_key("RT-2/P-02"));
+    assert!(
+        workflow_ready_ci_pending_wait_state(&unrelated, "run_patchset_ci", &requested)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn workflow_ready_starts_one_shot_runner_before_foreground_ci_wait() {
+    let trace = std::cell::RefCell::new(Vec::new());
+    let pending =
+        json!({"patchset":{"patchset_id":"RT-1/P-02"},"next_action":{"code":"waiting_for_ci"}});
+    let mut hook = Some(|state: &mut JsonValue| {
+        assert_eq!(state["patchset"]["patchset_id"], json!("RT-1/P-02"));
+        trace.borrow_mut().push("runner");
+        Ok(true)
+    });
+    let result = workflow_ready_ci_wait_with_hook(pending, &mut hook, |_| {
+        trace.borrow_mut().push("foreground_wait");
+        Ok(json!({"next_action":{"code":"record_attestation"}}))
+    })
+    .unwrap();
+    assert_eq!(*trace.borrow(), vec!["runner", "foreground_wait"]);
+    assert_eq!(result["next_action"]["code"], json!("record_attestation"));
+}
+
+#[test]
+fn workflow_ready_returns_pending_without_wait_when_runner_cannot_start() {
+    let mut hook = Some(|pending: &mut JsonValue| {
+        pending["runner_hint"] = json!({"detail":"worker metadata unavailable"});
+        Ok(false)
+    });
+    let pending = json!({"next_action":{"code":"waiting_for_ci"},"patchset_ci_status":{"tests_status":"pending"}});
+    let result = workflow_ready_ci_wait_with_hook(pending, &mut hook, |_| {
+        panic!("foreground wait must not prevent reporting unavailable runner startup")
+    })
+    .unwrap();
+    assert_eq!(result["next_action"]["code"], json!("waiting_for_ci"));
+    assert_eq!(
+        result["patchset_ci_status"]["tests_status"],
+        json!("pending")
+    );
+}
+
+#[test]
 fn workflow_ready_waits_after_its_exact_ci_request_instead_of_resubmitting() {
     let state = json!({
         "change": {"change_id": "RCC-1", "status": "review"},
@@ -8,7 +78,8 @@ fn workflow_ready_waits_after_its_exact_ci_request_instead_of_resubmitting() {
         "next_action": {
             "code": "run_patchset_ci",
             "command": "ait patchset rerun-ci RCP-1"
-        }
+        },
+        "suggested_commands": ["ait patchset rerun-ci RCP-1 --remote named", "ait workflow ready RT-1 --apply --remote named"]
     });
     let requested = BTreeMap::from([("RCP-1".to_string(), 0)]);
 
@@ -17,6 +88,15 @@ fn workflow_ready_waits_after_its_exact_ci_request_instead_of_resubmitting() {
         .expect("same-Patchset CI request must enter the pending wait");
 
     assert_eq!(pending["next_action"]["code"], json!("waiting_for_ci"));
+    assert_eq!(
+        pending["next_action"]["command"],
+        json!("ait patchset ci-status RCP-1")
+    );
+    assert_eq!(
+        pending["suggested_commands"][0],
+        json!("ait patchset ci-status RCP-1 --remote named")
+    );
+    assert!(!pending.to_string().contains("rerun-ci"));
     assert_eq!(state["next_action"]["code"], json!("run_patchset_ci"));
     assert!(
         workflow_ready_ci_pending_wait_state(&state, "run_patchset_ci", &BTreeMap::new())
@@ -203,20 +283,20 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
     .expect("init repo");
     let repo = RepoRuntime::discover_from_path(repo_tmp.path()).expect("repo runtime");
     let patchset = json!({
-        "patchset_id": "RCP-1",
-        "change_id": "RCC-1",
+        "patchset_id": "RCT-1/P-01",
+        "task_id":"RCT-1","change_id":"C-01","change_ref":"RCT-1/C-01",
         "base_snapshot_id": "SNP-BASE",
         "revision_snapshot_id": "SNP-REVISION",
     });
     let mut remote = FakeWorkflowCloseoutRemote {
-        patchsets: BTreeMap::from([("RCP-1".to_string(), patchset.clone())]),
+        patchsets: BTreeMap::from([("RCT-1/P-01".to_string(), patchset.clone())]),
         ci_statuses: BTreeMap::from([(
-            "RCP-1".to_string(),
+            "RCT-1/P-01".to_string(),
             json!({
-                "contract": "ait.server.patchset_ci.readiness.v1",
+                "contract": "ait.server.patchset_ci.readiness.v2",
                 "projection": "readiness",
-                "patchset_id": "RCP-1",
-                "change_id": "RCC-1",
+                "patchset_id": "RCT-1/P-01",
+                "task_id":"RCT-1","change_id":"C-01","change_ref":"RCT-1/C-01",
                 "repo_name": "fixture-ait",
                 "available": true,
                 "ci_run_seq": 1,
@@ -238,8 +318,7 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
     };
     let state = json!({
         "change": {
-            "change_id": "RCC-1",
-            "task_id": "RCT-1",
+            "task_id":"RCT-1","change_id":"C-01","change_ref":"RCT-1/C-01",
             "base_line": "main",
             "status": "active"
         },
@@ -272,7 +351,7 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
         &mut remote,
         "fixture-ait",
         &state,
-        "RCC-1",
+        "RCT-1/C-01",
         Some("mirror"),
         None,
     )
@@ -289,7 +368,7 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
     );
     assert_eq!(
         refreshed["next_action"]["command"],
-        json!("ait attest put RCP-1 --tests pass --remote mirror")
+        json!("ait workflow ready RCT-1 --apply --remote mirror")
     );
     assert_eq!(remote.requests.len(), 1);
     assert_eq!(remote.ci_status_requests.len(), 0);
@@ -320,7 +399,7 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
         &mut remote,
         "fixture-ait",
         &authoritative_state,
-        "RCC-1",
+        "RCT-1/C-01",
         Some("mirror"),
         Some("LCT-FINAL/C-01"),
     )
@@ -353,14 +432,15 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
 
     let mut finish_handoff_state = authoritative_refreshed.clone();
     finish_handoff_state["attestation"] = json!({
-        "attestation_id": "AT-RCP-1",
-        "patchset_id": "RCP-1",
+        "attestation_id": "AT-RCT-1/P-01",
+        "task_id":"RCT-1","change_id":"C-01","change_ref":"RCT-1/C-01","author_mode":"ai_with_human_review","verification_state":"pass","require_tests_pass":true,"require_lint_pass":false,"require_human_review":false,"revoked":false,"ci_backed":true,
+        "patchset_id": "RCT-1/P-01",
         "evaluation_summary": {"tests": "pass"}
     });
     let finish_handoff = workflow_project_ready_payload(
         &repo,
         &finish_handoff_state,
-        "RCC-1",
+        "RCT-1/C-01",
         Some("mirror"),
         true,
         Some("LCT-FINAL/C-01"),
@@ -373,15 +453,15 @@ fn workflow_ready_ci_poll_reuses_workspace_and_refreshes_only_remote_ci_state() 
     );
 
     remote.ci_statuses.insert(
-        "RCP-1".to_string(),
-        json!({"patchset_id": "RCP-1", "tests_status": "pass"}),
+        "RCT-1/P-01".to_string(),
+        json!({"patchset_id": "RCT-1/P-01", "tests_status": "pass"}),
     );
     let error = workflow_ready_ci_poll_payload_with_closeout_remote(
         &repo,
         &mut remote,
         "fixture-ait",
         &state,
-        "RCC-1",
+        "RCT-1/C-01",
         Some("mirror"),
         None,
     )
@@ -408,21 +488,21 @@ fn workflow_ready_ci_poll_rejects_partial_completed_local_authority() {
     let repo = RepoRuntime::discover_from_path(repo_tmp.path()).expect("repo runtime");
     let mut remote = FakeWorkflowCloseoutRemote {
         patchsets: BTreeMap::from([(
-            "RCP-1".to_string(),
+            "RCT-1/P-01".to_string(),
             json!({
-                "patchset_id": "RCP-1",
-                "change_id": "RCC-1",
+                "patchset_id": "RCT-1/P-01",
+                "task_id":"RCT-1","change_id":"C-01","change_ref":"RCT-1/C-01",
                 "base_snapshot_id": "SNP-BASE",
                 "revision_snapshot_id": "SNP-REVISION",
             }),
         )]),
         ci_statuses: BTreeMap::from([(
-            "RCP-1".to_string(),
+            "RCT-1/P-01".to_string(),
             json!({
-                "contract": "ait.server.patchset_ci.readiness.v1",
+                "contract": "ait.server.patchset_ci.readiness.v2",
                 "projection": "readiness",
-                "patchset_id": "RCP-1",
-                "change_id": "RCC-1",
+                "patchset_id": "RCT-1/P-01",
+                "task_id":"RCT-1","change_id":"C-01","change_ref":"RCT-1/C-01",
                 "repo_name": "fixture-ait",
                 "available": true,
                 "tests_status": "pass",
@@ -438,9 +518,9 @@ fn workflow_ready_ci_poll_rejects_partial_completed_local_authority() {
         ..Default::default()
     };
     let state = json!({
-        "change": {"change_id": "RCC-1", "base_line": "main", "status": "active"},
+        "change": {"task_id":"RCT-1","change_id":"C-01","change_ref":"RCT-1/C-01", "base_line": "main", "status": "active"},
         "task": {"task_id": "RCT-1", "status": "active"},
-        "patchset": {"patchset_id": "RCP-1"},
+        "patchset": {"patchset_id": "RCT-1/P-01","task_id":"RCT-1","change_id":"C-01","change_ref":"RCT-1/C-01","base_snapshot_id":"SNP-BASE","revision_snapshot_id":"SNP-REVISION"},
         "workspace": {"clean": false},
         "base_line": {"line_name": "main", "head_snapshot_id": "SNP-BASE"},
         "freshness": {"base_is_fresh": true},
@@ -454,7 +534,7 @@ fn workflow_ready_ci_poll_rejects_partial_completed_local_authority() {
         &mut remote,
         "fixture-ait",
         &state,
-        "RCC-1",
+        "RCT-1/C-01",
         None,
         None,
     )

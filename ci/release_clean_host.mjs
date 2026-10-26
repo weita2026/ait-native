@@ -172,6 +172,14 @@ const RUNNER_BUNDLE_DISTRIBUTION_AUTHORITY = LEGACY_DISTRIBUTION_AUTHORITY.map((
 });
 
 const MATRIX_AUTHORITIES = {
+  "distribution-target-120-32-2026-10-24.1": {
+    distributions: RUNNER_BUNDLE_DISTRIBUTION_AUTHORITY.map(row => row.channel === "pypi" ? {
+      ...row, components: ["ait-python"], service: null,
+    } : {
+      ...row, components: row.components.filter(id => !["ait-agent", "ait-agent-worker"].includes(id)),
+    }),
+    rowCount: 32,
+  },
   "distribution-target-32-2026-08-17.2": {
     distributions: LEGACY_DISTRIBUTION_AUTHORITY,
     rowCount: 32,

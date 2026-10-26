@@ -2,6 +2,12 @@
 set -euo pipefail
 set -E
 
+operation_owner=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/release_operation_owner.mjs
+if [[ $# -gt 0 ]]; then
+  if [[ -z ${AIT_RELEASE_OPERATION_TOKEN:-} ]]; then exec node "${operation_owner}" --shell "$0" "$@"; fi
+  node "${operation_owner}" --check "${AIT_RELEASE_OPERATION_ROOT:?}" || exit 75
+fi
+
 # Strict mode kills the script on the first failing command, and several
 # external commands fail without printing; name the dying command so no
 # publication or readback failure is ever silent. Errtrace carries the trap

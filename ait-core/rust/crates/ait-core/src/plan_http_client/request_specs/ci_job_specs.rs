@@ -231,21 +231,50 @@ pub fn build_list_reviews_request_spec(
     plan_http_transport::build_request_spec(config, Method::GET, &path, Vec::new(), None)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn build_record_review_as_actor_request_spec(
+    config: &PlanHttpClientConfig,
+    change_id: &str,
+    patchset_id: &str,
+    reviewer: &str,
+    reviewer_kind: &str,
+    action: &str,
+    comment: Option<&str>,
+    blocking: bool,
+) -> PlanHttpClientResult<PlanHttpRequestSpec> {
+    if !matches!(reviewer_kind, "user" | "bot") {
+        return Err(PlanHttpClientError::Invalid(
+            "Unsupported native Reviewer Actor kind".into(),
+        ));
+    }
+    let mut spec = build_record_review_request_spec(
+        config,
+        change_id,
+        patchset_id,
+        reviewer,
+        action,
+        comment,
+        blocking,
+    )?;
+    spec.body
+        .as_mut()
+        .and_then(Value::as_object_mut)
+        .expect("review request is an object")
+        .insert("reviewer_kind".into(), Value::String(reviewer_kind.into()));
+    Ok(spec)
+}
+
 pub fn build_put_attestation_request_spec(
     config: &PlanHttpClientConfig,
     patchset_id: &str,
     author_mode: &str,
-    evaluation_summary: &Value,
-    provenance_summary: &Value,
-    detail: &Value,
+    statement: &crate::attest_json::RemoteAttestationStatement,
 ) -> PlanHttpClientResult<PlanHttpRequestSpec> {
     AttestJson::stateless().build_put_attestation_request_spec(
         config,
         patchset_id,
         author_mode,
-        evaluation_summary,
-        provenance_summary,
-        detail,
+        statement,
     )
 }
 

@@ -28,6 +28,81 @@ fn new_db() -> (LocalBinaryDbFs, tempfile::TempDir, BinaryWriteContext) {
     )
 }
 
+#[test]
+fn fixed_record_commit_marker_is_written_after_dependencies_are_synced() {
+    let temp = tempdir().unwrap();
+    let files = TrackingBinaryDbFileIoStore::default();
+    let db = LocalBinaryDbFs::with_file_io_store(
+        files.clone(),
+        temp.path(),
+        temp.path(),
+        AuthorityId::new("marker-order"),
+        LocalStateScope::Repository,
+    );
+    let file = BinaryFileId::new("records/checkpoint.bin", 1, 44);
+    let mut seed = BinaryDbWriteTxn::begin(&db, BinaryDbCommandScope::General).unwrap();
+    seed.append_record(file.clone(), &[0; 44]).unwrap();
+    seed.commit().unwrap();
+    let start = files.events().len();
+    let mut write = BinaryDbWriteTxn::begin(&db, BinaryDbCommandScope::General).unwrap();
+    let mut body = [55; 44];
+    body[0] = 0;
+    write.overwrite_record(file.clone(), 0, &body).unwrap();
+    write.commit_with_record_marker(file.clone(), 0, 1).unwrap();
+    let events = files.events()[start..].to_vec();
+    let writes = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| **event == "overwrite_range")
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    assert_eq!(writes.len(), 2);
+    assert!(events[writes[0] + 1..writes[1]].contains(&"sync_file"));
+    assert!(events[writes[1] + 1..].contains(&"sync_file"));
+    body[0] = 1;
+    assert_eq!(db.read_record(file, 0).unwrap(), body);
+}
+
+#[test]
+fn uncertain_record_marker_commit_never_restores_before_images() {
+    struct FailMarkerSync(std::cell::Cell<usize>);
+    impl BinaryDbFsyncPolicy for FailMarkerSync {
+        fn sync_file(&self, path: &Path) -> StoreResult<()> {
+            let n = self.0.get() + 1;
+            self.0.set(n);
+            if n == 2 {
+                return Err(BinaryDbError::corruption("injected marker fsync failure"));
+            }
+            BinaryDbStdFsyncPolicy.sync_file(path)
+        }
+        fn sync_directory(&self, path: &Path) -> StoreResult<()> {
+            BinaryDbStdFsyncPolicy.sync_directory(path)
+        }
+    }
+    let (db, _temp, _) = new_db();
+    let file = BinaryFileId::new("records/checkpoint.bin", 1, 44);
+    let mut seed = BinaryDbWriteTxn::begin(&db, BinaryDbCommandScope::General).unwrap();
+    seed.append_record(file.clone(), &[0; 44]).unwrap();
+    seed.commit().unwrap();
+    let mut write = BinaryDbWriteTxn::begin_with_fsync_policy(
+        &db,
+        BinaryDbCommandScope::General,
+        FailMarkerSync(std::cell::Cell::new(0)),
+    )
+    .unwrap();
+    let mut body = [33; 44];
+    body[0] = 0;
+    write.overwrite_record(file.clone(), 0, &body).unwrap();
+    assert!(write
+        .commit_with_record_marker(file.clone(), 0, 1)
+        .unwrap_err()
+        .to_string()
+        .contains("may already be committed"));
+    drop(write);
+    body[0] = 1;
+    assert_eq!(db.read_record(file, 0).unwrap(), body);
+}
+
 fn collect_files(root: &Path) -> BTreeSet<PathBuf> {
     let mut stack = vec![root.to_path_buf()];
     let mut files = BTreeSet::new();
@@ -83,6 +158,7 @@ impl RecordingFsyncPolicy {
 #[derive(Clone, Debug, Default)]
 struct TrackingBinaryDbFileIoStore {
     events: Rc<RefCell<Vec<&'static str>>>,
+    full_reads: Rc<RefCell<Vec<(PathBuf, usize)>>>,
     fail_next_lock_release: Arc<AtomicBool>,
 }
 
@@ -140,7 +216,11 @@ impl FileIoStore for TrackingBinaryDbFileIoStore {
 
     fn read_bytes(&self, path: &Path) -> FileIoResult<Vec<u8>> {
         self.record("read_bytes");
-        FilesystemFileIoStore.read_bytes(path)
+        let bytes = FilesystemFileIoStore.read_bytes(path)?;
+        self.full_reads
+            .borrow_mut()
+            .push((path.to_path_buf(), bytes.len()));
+        Ok(bytes)
     }
 
     fn read_to_string(&self, path: &Path) -> FileIoResult<String> {
@@ -632,6 +712,138 @@ fn index_candidates_can_be_appended_and_looked_up() {
     assert!(found_missing.is_empty());
 }
 
+#[test]
+fn writer_index_cache_observes_append_and_abort_without_stale_candidates() {
+    let (db, _temp, _write) = new_db();
+    let index = BinaryIndexId::new_fixed("index/snapshot_id.idx", 12, 4, true);
+    let mut writer = db
+        .begin_write_txn_with_fsync_policy(BinaryDbCommandScope::General, BinaryDbNoopFsyncPolicy)
+        .unwrap();
+    assert!(writer
+        .lookup_index(index.clone(), b"aaaa")
+        .unwrap()
+        .is_empty());
+    writer
+        .append_index_candidate(index.clone(), b"aaaa", 2)
+        .unwrap();
+    assert_eq!(
+        writer.lookup_index(index.clone(), b"aaaa").unwrap(),
+        vec![2]
+    );
+    writer
+        .append_index_candidate(index.clone(), b"aaaa", 7)
+        .unwrap();
+    writer
+        .append_index_candidate(index.clone(), b"bbbb", 9)
+        .unwrap();
+    assert_eq!(
+        writer.lookup_index(index.clone(), b"aaaa").unwrap(),
+        vec![2, 7]
+    );
+    assert_eq!(
+        writer.lookup_index(index.clone(), b"bbbb").unwrap(),
+        vec![9]
+    );
+    writer.abort().unwrap();
+    assert!(db
+        .begin_read_txn()
+        .lookup_index(index.clone(), b"aaaa")
+        .unwrap()
+        .is_empty());
+    let mut writer = db
+        .begin_write_txn_with_fsync_policy(BinaryDbCommandScope::General, BinaryDbNoopFsyncPolicy)
+        .unwrap();
+    writer
+        .append_index_candidate(index.clone(), b"aaaa", 11)
+        .unwrap();
+    writer.commit().unwrap();
+    assert_eq!(
+        db.begin_read_txn().lookup_index(index, b"aaaa").unwrap(),
+        vec![11]
+    );
+}
+
+#[test]
+fn object_pack_metadata_batch_index_read_cost() {
+    use crate::content_binary_db::*;
+    use sha2::{Digest, Sha256};
+    let temp = tempdir().unwrap();
+    if let Some(seed_root) = std::env::var_os("AIT_INDEX_BENCH_SEED_ROOT") {
+        for entry in fs::read_dir(seed_root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext == "bin" || ext == "idx")
+            {
+                fs::copy(&path, temp.path().join(path.file_name().unwrap())).unwrap();
+            }
+        }
+    }
+    let files = TrackingBinaryDbFileIoStore::default();
+    let db = LocalBinaryDbFs::with_file_io_store(
+        files.clone(),
+        temp.path(),
+        temp.path(),
+        AuthorityId::new("object-metadata-read-cost"),
+        LocalStateScope::Repository,
+    );
+    let blobs = BinaryDbBlobStore::<_, 1>::new(db.clone(), temp.path());
+    let packs = BinaryDbObjectPackStore::<_, 1>::new(db.clone(), temp.path());
+    let tree_packs = BinaryDbTreePackStore::<_, 1>::new(db.clone(), temp.path());
+    let trees = BinaryDbTreeStore::<_, 1>::new(db.clone(), temp.path());
+    let snapshots = BinaryDbSnapshotStore::<_, 1>::new(db, temp.path());
+    let coordinator =
+        BinaryDbContentWriteCoordinator::new(&blobs, &packs, &tree_packs, &trees, &snapshots);
+    for batch in 0..3_u32 {
+        let members = (0..128_u32)
+            .map(|member| {
+                let hash: [u8; 32] =
+                    Sha256::digest(format!("batch {batch} member {member}").as_bytes()).into();
+                BinaryDbObjectPackMemberWriteInput {
+                    blob_id: blob_id_from_sha256(&hash),
+                    sha256: hash.iter().map(|byte| format!("{byte:02x}")).collect(),
+                    size_bytes: 24,
+                    pack_entry_type: "full".into(),
+                    pack_base_blob_id: None,
+                    pack_chain_depth: 0,
+                    created_at: "2026-07-10T00:00:00Z".into(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let id = format!("PCK-{:012X}", batch + 1);
+        let format = crate::pack_substrate::PACK_FORMAT_ZSTD_CHUNKED_V1;
+        let input = BinaryDbObjectPackWriteInput {
+            pack_id: id.clone(),
+            pack_rel_path: object_pack_relative_path(&id, format).unwrap(),
+            pack_format: format.into(),
+            member_count: 128,
+            total_bytes: 3072,
+            created_at: "2026-07-10T00:00:00Z".into(),
+            members,
+        };
+        files.full_reads.borrow_mut().clear();
+        let started = std::time::Instant::now();
+        coordinator
+            .record_object_pack_metadata(BinaryDbCommandScope::ContentWrite, &input)
+            .unwrap();
+        let reads = files.full_reads.borrow();
+        let blob_reads = reads
+            .iter()
+            .filter(|(path, _)| path.ends_with("blob_id.idx"))
+            .collect::<Vec<_>>();
+        let bytes = blob_reads.iter().map(|(_, len)| *len).sum::<usize>();
+        println!("metadata batch={batch} members=128 blob_index_reads={} blob_index_bytes={bytes} total_full_reads={} total_full_read_bytes={} wall_seconds={:.6}", blob_reads.len(), reads.len(), reads.iter().map(|(_, len)| *len).sum::<usize>(), started.elapsed().as_secs_f64());
+        if std::env::var_os("AIT_INDEX_BENCH_EXPECT_LEGACY_READS").is_some() {
+            assert!(blob_reads.len() >= 128);
+        } else {
+            assert!(
+                blob_reads.len() <= 1,
+                "one full Blob index read per batch, not per append"
+            );
+        }
+    }
+}
 #[test]
 fn index_candidates_are_parsed_once_per_read_transaction() {
     let (db, _temp, _write) = new_db();

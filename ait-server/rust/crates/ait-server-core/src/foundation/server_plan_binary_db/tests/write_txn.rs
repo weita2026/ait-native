@@ -50,6 +50,7 @@ fn server_plan_write_txn_rejects_wrong_append_for_purpose() {
         created_at_s: 0,
         updated_at_s: 0,
         published_at_s: 0,
+        actor_index_plus1: 0,
     };
 
     let error = tx
@@ -72,7 +73,7 @@ fn server_plan_write_txn_rejects_a_stale_intent_under_the_lock_before_append() {
         .expect("initial plan should read");
 
     service
-        .update_plan_status(plan_id, &json!({"status": "archived"}))
+        .update_plan_status(plan_id, &json!({"status": "archived", "actor_key_index":0}))
         .expect("the first prepared intent should update the plan");
 
     let error = service
@@ -111,7 +112,7 @@ fn server_plan_write_txn_rejects_a_stale_intent_under_the_lock_before_append() {
 
 #[test]
 fn server_plan_write_layout_is_const_generic_and_fails_closed() {
-    let service_v1: BinaryDbServerPlanServiceV1<FilesystemServerRemoteBinaryDb> =
+    let service_v1: BinaryDbServerPlanServiceV2<FilesystemServerRemoteBinaryDb> =
         service("write-layout-v1");
     let _tx = service_v1
         .store()

@@ -1,6 +1,9 @@
 use crate::json_support::{
     parse_json_array_with_error_prefix, parse_json_object_with_error_prefix,
-    parse_json_value_with_error_prefix,
+};
+use ait_core::plan_http_sdk::{
+    build_query_string, join_path as join_remote_path, normalize_remote_text,
+    require_remote_non_empty,
 };
 
 #[pyfunction(name = "join_path")]
@@ -37,17 +40,12 @@ fn build_list_plans_request_py(
     repo_name: &str,
     artifact_path: Option<&str>,
 ) -> PyResult<Py<PyDict>> {
-    let repo_name = require_remote_non_empty(repo_name, "repo_name")?;
-    let mut query = BTreeMap::new();
-    if let Some(value) = normalize_remote_text(artifact_path) {
-        query.insert("artifact_path".to_string(), value);
-    }
-    let mut path = format!("/v1/native/repositories/{repo_name}/sprints");
-    if let Some(query_string) = build_query_string(&query) {
-        path.push('?');
-        path.push_str(&query_string);
-    }
-    render_plan_remote_request(py, "GET", join_remote_path(base_url, &path), None)
+    require_remote_non_empty(repo_name, "repo_name").map_err(PyValueError::new_err)?;
+    render_json_dict(
+        py,
+        ait_core::plan_http_sdk::build_list_plans_request(base_url, repo_name, artifact_path)
+            .map_err(PyValueError::new_err)?,
+    )
 }
 
 #[pyfunction(name = "build_get_plan_request")]
@@ -56,12 +54,11 @@ fn build_get_plan_request_py(
     base_url: &str,
     plan_id: &str,
 ) -> PyResult<Py<PyDict>> {
-    let plan_id = require_remote_non_empty(plan_id, "plan_id")?;
-    render_plan_remote_request(
+    require_remote_non_empty(plan_id, "plan_id").map_err(PyValueError::new_err)?;
+    render_json_dict(
         py,
-        "GET",
-        join_remote_path(base_url, &format!("/v1/native/sprints/{plan_id}")),
-        None,
+        ait_core::plan_http_sdk::build_get_plan_request(base_url, plan_id)
+            .map_err(PyValueError::new_err)?,
     )
 }
 
@@ -71,12 +68,11 @@ fn build_list_plan_revisions_request_py(
     base_url: &str,
     plan_id: &str,
 ) -> PyResult<Py<PyDict>> {
-    let plan_id = require_remote_non_empty(plan_id, "plan_id")?;
-    render_plan_remote_request(
+    require_remote_non_empty(plan_id, "plan_id").map_err(PyValueError::new_err)?;
+    render_json_dict(
         py,
-        "GET",
-        join_remote_path(base_url, &format!("/v1/native/sprints/{plan_id}/revisions")),
-        None,
+        ait_core::plan_http_sdk::build_list_plan_revisions_request(base_url, plan_id)
+            .map_err(PyValueError::new_err)?,
     )
 }
 
@@ -87,16 +83,17 @@ fn build_get_plan_revision_request_py(
     plan_id: &str,
     plan_revision_id: &str,
 ) -> PyResult<Py<PyDict>> {
-    let plan_id = require_remote_non_empty(plan_id, "plan_id")?;
-    let plan_revision_id = require_remote_non_empty(plan_revision_id, "plan_revision_id")?;
-    render_plan_remote_request(
+    require_remote_non_empty(plan_id, "plan_id").map_err(PyValueError::new_err)?;
+    require_remote_non_empty(plan_revision_id, "plan_revision_id")
+        .map_err(PyValueError::new_err)?;
+    render_json_dict(
         py,
-        "GET",
-        join_remote_path(
+        ait_core::plan_http_sdk::build_get_plan_revision_request(
             base_url,
-            &format!("/v1/native/sprints/{plan_id}/revisions/{plan_revision_id}"),
-        ),
-        None,
+            plan_id,
+            plan_revision_id,
+        )
+        .map_err(PyValueError::new_err)?,
     )
 }
 
@@ -131,57 +128,29 @@ fn build_create_plan_request_py(
     source_kind: Option<&str>,
     artifact_body: Option<&str>,
 ) -> PyResult<Py<PyDict>> {
-    let resolved_repo_name = require_remote_non_empty(repo_name, "repo_name")?;
-    let resolved_title = require_remote_non_empty(title, "title")?;
-    let resolved_artifact_path = require_remote_non_empty(artifact_path, "artifact_path")?;
-    let resolved_artifact_heading = require_remote_non_empty(artifact_heading, "artifact_heading")?;
-    let mut body = JsonValue::Object(ait_core::json_support::JsonMap::new());
-    if let JsonValue::Object(payload) = &mut body {
-        payload.insert("title".to_string(), JsonValue::String(resolved_title));
-        payload.insert(
-            "artifact_path".to_string(),
-            JsonValue::String(resolved_artifact_path),
-        );
-        payload.insert(
-            "artifact_selector".to_string(),
-            artifact_selector
-                .map(|value| JsonValue::String(value.to_string()))
-                .unwrap_or(JsonValue::Null),
-        );
-        payload.insert(
-            "artifact_heading".to_string(),
-            JsonValue::String(resolved_artifact_heading),
-        );
-        payload.insert(
-            "items".to_string(),
-            JsonValue::Array(parse_json_array(items, "items")?),
-        );
-        payload.insert("status".to_string(), JsonValue::String(status.to_string()));
-        payload.insert(
-            "source_kind".to_string(),
-            JsonValue::String(source_kind.unwrap_or("manual_edit").to_string()),
-        );
-        if let Some(value) = summary {
-            payload.insert("summary".to_string(), JsonValue::String(value.to_string()));
-        }
-        if let Some(value) = plan_id {
-            payload.insert("plan_id".to_string(), JsonValue::String(value.to_string()));
-        }
-        if let Some(value) = artifact_body {
-            payload.insert(
-                "artifact_body".to_string(),
-                JsonValue::String(value.to_string()),
-            );
-        }
-    }
-    render_plan_remote_request(
+    require_remote_non_empty(repo_name, "repo_name").map_err(PyValueError::new_err)?;
+    require_remote_non_empty(title, "title").map_err(PyValueError::new_err)?;
+    require_remote_non_empty(artifact_path, "artifact_path").map_err(PyValueError::new_err)?;
+    require_remote_non_empty(artifact_heading, "artifact_heading")
+        .map_err(PyValueError::new_err)?;
+    let items = JsonValue::Array(parse_json_array(items, "items")?);
+    render_json_dict(
         py,
-        "POST",
-        join_remote_path(
+        ait_core::plan_http_sdk::build_create_plan_request(
             base_url,
-            &format!("/v1/native/repositories/{resolved_repo_name}/sprints"),
-        ),
-        Some(body),
+            repo_name,
+            title,
+            artifact_path,
+            artifact_selector,
+            artifact_heading,
+            &items,
+            summary,
+            status,
+            plan_id,
+            source_kind,
+            artifact_body,
+        )
+        .map_err(PyValueError::new_err)?,
     )
 }
 
@@ -214,57 +183,27 @@ fn build_revise_plan_request_py(
     artifact_body: Option<&str>,
     expected_head_revision_id: Option<&str>,
 ) -> PyResult<Py<PyDict>> {
-    let plan_id = require_remote_non_empty(plan_id, "plan_id")?;
-    let resolved_artifact_path = require_remote_non_empty(artifact_path, "artifact_path")?;
-    let resolved_artifact_heading = require_remote_non_empty(artifact_heading, "artifact_heading")?;
-    let mut body = JsonValue::Object(ait_core::json_support::JsonMap::new());
-    if let JsonValue::Object(payload) = &mut body {
-        payload.insert(
-            "artifact_path".to_string(),
-            JsonValue::String(resolved_artifact_path),
-        );
-        payload.insert(
-            "artifact_selector".to_string(),
-            artifact_selector
-                .map(|value| JsonValue::String(value.to_string()))
-                .unwrap_or(JsonValue::Null),
-        );
-        payload.insert(
-            "artifact_heading".to_string(),
-            JsonValue::String(resolved_artifact_heading),
-        );
-        payload.insert(
-            "items".to_string(),
-            JsonValue::Array(parse_json_array(items, "items")?),
-        );
-        payload.insert(
-            "source_kind".to_string(),
-            JsonValue::String(source_kind.unwrap_or("manual_edit").to_string()),
-        );
-        if let Some(value) = title {
-            payload.insert("title".to_string(), JsonValue::String(value.to_string()));
-        }
-        if let Some(value) = summary {
-            payload.insert("summary".to_string(), JsonValue::String(value.to_string()));
-        }
-        if let Some(value) = artifact_body {
-            payload.insert(
-                "artifact_body".to_string(),
-                JsonValue::String(value.to_string()),
-            );
-        }
-        if let Some(value) = expected_head_revision_id {
-            payload.insert(
-                "expected_head_revision_id".to_string(),
-                JsonValue::String(value.to_string()),
-            );
-        }
-    }
-    render_plan_remote_request(
+    require_remote_non_empty(plan_id, "plan_id").map_err(PyValueError::new_err)?;
+    require_remote_non_empty(artifact_path, "artifact_path").map_err(PyValueError::new_err)?;
+    require_remote_non_empty(artifact_heading, "artifact_heading")
+        .map_err(PyValueError::new_err)?;
+    let items = JsonValue::Array(parse_json_array(items, "items")?);
+    render_json_dict(
         py,
-        "POST",
-        join_remote_path(base_url, &format!("/v1/native/sprints/{plan_id}/revisions")),
-        Some(body),
+        ait_core::plan_http_sdk::build_revise_plan_request(
+            base_url,
+            plan_id,
+            artifact_path,
+            artifact_selector,
+            artifact_heading,
+            &items,
+            title,
+            summary,
+            source_kind,
+            artifact_body,
+            expected_head_revision_id,
+        )
+        .map_err(PyValueError::new_err)?,
     )
 }
 
@@ -275,15 +214,12 @@ fn build_update_plan_status_request_py(
     plan_id: &str,
     status: &str,
 ) -> PyResult<Py<PyDict>> {
-    let plan_id = require_remote_non_empty(plan_id, "plan_id")?;
-    let resolved_status = require_remote_non_empty(status, "status")?;
-    let mut body = ait_core::json_support::JsonMap::new();
-    body.insert("status".to_string(), JsonValue::String(resolved_status));
-    render_plan_remote_request(
+    require_remote_non_empty(plan_id, "plan_id").map_err(PyValueError::new_err)?;
+    require_remote_non_empty(status, "status").map_err(PyValueError::new_err)?;
+    render_json_dict(
         py,
-        "PATCH",
-        join_remote_path(base_url, &format!("/v1/native/sprints/{plan_id}")),
-        Some(JsonValue::Object(body)),
+        ait_core::plan_http_sdk::build_update_plan_status_request(base_url, plan_id, status)
+            .map_err(PyValueError::new_err)?,
     )
 }
 
@@ -302,118 +238,24 @@ fn build_put_plan_revision_artifacts_request_py(
     plan_revision_id: &str,
     artifacts: Bound<'_, PyAny>,
 ) -> PyResult<Py<PyDict>> {
-    let plan_id = require_remote_non_empty(plan_id, "plan_id")?;
-    let plan_revision_id = require_remote_non_empty(plan_revision_id, "plan_revision_id")?;
-    let mut body = ait_core::json_support::JsonMap::new();
-    body.insert(
-        "artifacts".to_string(),
-        JsonValue::Array(parse_json_array(artifacts, "artifacts")?),
-    );
-    render_plan_remote_request(
+    require_remote_non_empty(plan_id, "plan_id").map_err(PyValueError::new_err)?;
+    require_remote_non_empty(plan_revision_id, "plan_revision_id")
+        .map_err(PyValueError::new_err)?;
+    let artifacts = JsonValue::Array(parse_json_array(artifacts, "artifacts")?);
+    render_json_dict(
         py,
-        "PUT",
-        join_remote_path(
+        ait_core::plan_http_sdk::build_put_plan_revision_artifacts_request(
             base_url,
-            &format!("/v1/native/sprints/{plan_id}/revisions/{plan_revision_id}/artifacts"),
-        ),
-        Some(JsonValue::Object(body)),
+            plan_id,
+            plan_revision_id,
+            &artifacts,
+        )
+        .map_err(PyValueError::new_err)?,
     )
 }
 
-fn normalize_remote_text(value: Option<&str>) -> Option<String> {
-    value.and_then(|value| {
-        let normalized = value.trim();
-        if normalized.is_empty() {
-            None
-        } else {
-            Some(normalized.to_string())
-        }
-    })
-}
-
 fn parse_remote_timeout(field: &str, value: Option<f64>) -> PyResult<f64> {
-    let resolved = value.unwrap_or(if field == "request" {
-        DEFAULT_REQUEST_TIMEOUT_SECONDS
-    } else {
-        LONG_RUNNING_REQUEST_TIMEOUT_SECONDS
-    });
-    if !resolved.is_finite() || resolved <= 0.0 {
-        Err(PyValueError::new_err(format!(
-            "invalid timeout for {field}: {resolved}. expected positive finite seconds"
-        )))
-    } else {
-        Ok(resolved)
-    }
-}
-
-fn require_remote_non_empty(value: &str, field: &str) -> PyResult<String> {
-    if value.is_empty() {
-        Err(PyValueError::new_err(format!(
-            "missing required value: {field}"
-        )))
-    } else {
-        Ok(value.to_string())
-    }
-}
-
-fn join_remote_path(base_url: &str, path: &str) -> String {
-    let normalized_base = base_url.trim_end_matches('/');
-    let normalized_path = path.trim_start_matches('/');
-    if normalized_path.is_empty() {
-        format!("{normalized_base}/")
-    } else {
-        format!("{normalized_base}/{normalized_path}")
-    }
-}
-
-fn build_query_string(params: &BTreeMap<String, String>) -> Option<String> {
-    if params.is_empty() {
-        return None;
-    }
-    let encoded: Vec<String> = params
-        .iter()
-        .map(|(key, value)| {
-            format!(
-                "{}={}",
-                encode_query_component(key),
-                encode_query_component(value)
-            )
-        })
-        .collect();
-    Some(encoded.join("&"))
-}
-
-fn encode_query_component(text: &str) -> String {
-    let mut encoded = String::new();
-    for byte in text.bytes() {
-        let encoded_byte = match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => byte as char,
-            b' ' => '+',
-            _ => {
-                encoded.push('%');
-                encoded.push_str(&format!("{byte:02X}"));
-                continue;
-            }
-        };
-        encoded.push(encoded_byte);
-    }
-    encoded
-}
-
-fn render_plan_remote_request(
-    py: Python<'_>,
-    method: &str,
-    url: String,
-    body: Option<JsonValue>,
-) -> PyResult<Py<PyDict>> {
-    let output = PyDict::new(py);
-    output.set_item("method", method)?;
-    output.set_item("url", url)?;
-    match body {
-        Some(value) => output.set_item("body", json_value_to_py(py, &value)?)?,
-        None => output.set_item("body", py.None())?,
-    }
-    Ok(output.unbind())
+    ait_core::plan_http_sdk::remote_timeout(field, value).map_err(PyValueError::new_err)
 }
 
 fn parse_json_array(items: Bound<'_, PyAny>, field_name: &str) -> PyResult<Vec<JsonValue>> {
@@ -565,40 +407,6 @@ fn parse_blob_bytes_map(value: Option<Bound<'_, PyAny>>) -> PyResult<BTreeMap<St
     Ok(output)
 }
 
-fn parse_optional_header_map(headers_json: Option<&str>) -> PyResult<BTreeMap<String, String>> {
-    let Some(headers_json) = headers_json else {
-        return Ok(BTreeMap::new());
-    };
-    let text = headers_json.trim();
-    if text.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    let parsed = parse_json_value_with_error_prefix(text, "headers_json must be valid JSON")
-        .map_err(PyValueError::new_err)?;
-    let JsonValue::Object(values) = parsed else {
-        return Err(PyValueError::new_err(
-            "headers_json must contain a JSON object.",
-        ));
-    };
-    let mut headers = BTreeMap::new();
-    for (key, value) in values {
-        let JsonValue::String(text_value) = value else {
-            return Err(PyValueError::new_err(
-                "headers_json values must be non-empty strings.",
-            ));
-        };
-        headers.insert(key, text_value);
-    }
-    Ok(headers)
-}
-
-fn normalize_plan_http_timeout_ms(timeout_ms: Option<u64>) -> u64 {
-    match timeout_ms.unwrap_or(0) {
-        0 => (DEFAULT_REQUEST_TIMEOUT_SECONDS * 1000.0) as u64,
-        value => value,
-    }
-}
-
 fn build_plan_http_client_config(
     base_url: &str,
     headers_json: Option<&str>,
@@ -607,15 +415,16 @@ fn build_plan_http_client_config(
     retry_backoff_ms: u64,
     pool_max_idle_per_host: usize,
 ) -> PyResult<PlanHttpClientConfig> {
-    Ok(PlanHttpClientConfig {
-        base_url: base_url.to_string(),
-        repository_index: None,
-        headers: parse_optional_header_map(headers_json)?,
-        default_timeout_ms: normalize_plan_http_timeout_ms(timeout_ms),
+    ait_core::plan_http_sdk::client_config(
+        base_url,
+        headers_json,
+        timeout_ms,
         retry_attempts,
         retry_backoff_ms,
         pool_max_idle_per_host,
-    })
+        None,
+    )
+    .map_err(PyValueError::new_err)
 }
 
 #[pyfunction(name = "list_plans")]
@@ -1008,9 +817,7 @@ fn put_plan_revision_artifacts_py(
         pool_max_idle_per_host,
     )?;
     let payload = py
-        .detach(|| {
-            put_http_plan_revision_artifacts(config, plan_id, plan_revision_id, &artifacts)
-        })
+        .detach(|| put_http_plan_revision_artifacts(config, plan_id, plan_revision_id, &artifacts))
         .map_err(plan_http_py_error)?;
     render_json_dict(py, payload)
 }

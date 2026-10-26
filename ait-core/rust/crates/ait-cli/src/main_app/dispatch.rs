@@ -2,11 +2,8 @@ fn dispatch_with_args(args: Vec<OsString>) -> ExitCode {
     match run(args) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!(
-                "Error: {}",
-                ait_core::public_references::public_work_reference_text(&err)
-            );
-            ExitCode::from(1)
+            eprintln!("{}", crate::render::domain_error_text(&err));
+            ExitCode::from(crate::render::DOMAIN_ERROR_EXIT_CODE)
         }
     }
 }
@@ -30,9 +27,9 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
             Ok(cli) => cli,
             Err(error) => {
                 let exit_code = u8::try_from(error.exit_code()).unwrap_or(2);
-                error
-                    .print()
-                    .map_err(|print_error| format!("Failed to render command help: {print_error}"))?;
+                error.print().map_err(|print_error| {
+                    format!("Failed to render command help: {print_error}")
+                })?;
                 return Ok(ExitCode::from(exit_code));
             }
         };
@@ -121,6 +118,54 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         Commands::External { command } => run_external(repo, command),
+        Commands::Team {
+            command:
+                TeamCommand::Session {
+                    command: TeamSessionCommand::Acknowledge { activation, json },
+                },
+        } => {
+            let result = crate::binding_team::acknowledge_team_session(&repo, &activation);
+            if json {
+                print_json(&result.payload)?;
+            } else {
+                println!(
+                    "{}",
+                    crate::binding_team::format_team_session_acknowledge(&result.payload)
+                );
+            }
+            Ok(ExitCode::from(result.exit_code))
+        }
+        Commands::Team {
+            command:
+                TeamCommand::Session {
+                    command: TeamSessionCommand::Ensure { agent, role, json },
+                },
+        } => {
+            let result = crate::binding_team::ensure_team_session(&repo, agent, role);
+            if json {
+                print_json(&result.payload)?;
+            } else {
+                println!(
+                    "{}",
+                    crate::binding_team::format_team_session_ensure(&result.payload, agent)
+                );
+            }
+            Ok(ExitCode::from(result.exit_code))
+        }
+        Commands::Team {
+            command: TeamCommand::Contacts { json },
+        } => {
+            let result = crate::binding_team::team_contacts(&repo);
+            if json {
+                print_json(&result.payload)?;
+            } else {
+                println!(
+                    "{}",
+                    crate::binding_team::format_team_contacts(&result.payload)
+                );
+            }
+            Ok(ExitCode::from(result.exit_code))
+        }
         Commands::Status(args) => {
             run_status(repo, args)?;
             Ok(ExitCode::SUCCESS)
@@ -151,9 +196,7 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
             run_change(repo, command)?;
             Ok(ExitCode::SUCCESS)
         }
-        Commands::Snapshot { command } => {
-            run_snapshot(repo, command)
-        }
+        Commands::Snapshot { command } => run_snapshot(repo, command),
         Commands::Commit(args) => run_snapshot(repo, SnapshotCommand::Create(args)),
         Commands::Tag { command } => {
             run_tag(repo, command)?;
@@ -214,10 +257,15 @@ fn exit_code_value(code: ExitCode) -> u8 {
 fn validated_forwarded_cli_argv(args: CurrentSourceRunCliArgs) -> Result<Vec<OsString>, String> {
     let _range = perfetto_range!("ait.cli.current_source_bootstrap.validate");
     let Some(namespace) = args.command.first().and_then(|value| value.to_str()) else {
-        return Err("current-source-cache run-cli requires a UTF-8 public command namespace after `--`.".to_string());
+        return Err(
+            "current-source-cache run-cli requires a UTF-8 public command namespace after `--`."
+                .to_string(),
+        );
     };
     if namespace == "current-source-cache" {
-        return Err("current-source-cache run-cli refuses recursive internal command dispatch.".to_string());
+        return Err(
+            "current-source-cache run-cli refuses recursive internal command dispatch.".to_string(),
+        );
     }
     let executable_path = env::current_exe()
         .map_err(|err| format!("Failed to resolve the current ait-cli executable: {err}"))?;
@@ -239,12 +287,9 @@ fn is_retired_workflow_json_invocation(args: &[std::ffi::OsString]) -> bool {
     ) && matches!(
         args.get(2).and_then(|value| value.to_str()),
         Some("ready" | "finish")
-    ) && args
-        .iter()
-        .skip(3)
-        .any(|value| {
-            value
-                .to_str()
-                .is_some_and(|value| value == "--json" || value.starts_with("--json="))
-        })
+    ) && args.iter().skip(3).any(|value| {
+        value
+            .to_str()
+            .is_some_and(|value| value == "--json" || value.starts_with("--json="))
+    })
 }

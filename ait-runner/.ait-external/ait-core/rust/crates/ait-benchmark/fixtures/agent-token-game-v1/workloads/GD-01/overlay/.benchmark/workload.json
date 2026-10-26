@@ -1,0 +1,5 @@
+{
+  "contract": "ait-agent-token-game-workload/v1",
+  "workload_id": "GD-01",
+  "name": "projectile-cooldown-regression"
+}

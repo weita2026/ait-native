@@ -8,7 +8,7 @@ pub(in crate::primitives) fn resolve_patchset_argument_with_task_and_closeout_re
     repo_name: Option<&str>,
 ) -> Result<String, String>
 where
-    T: TaskWorkflowRemoteChangeReader + ?Sized,
+    T: TaskWorkflowRemoteChangeReader + TaskWorkflowRemoteTaskReader + ?Sized,
     C: TaskWorkflowPatchsetReader + TaskWorkflowPatchsetLister + ?Sized,
 {
     if let Some(patchset_id) = patchset_id {
@@ -17,22 +17,36 @@ where
     let Some(change_id) = change_id else {
         return Err("Provide a Patchset ID.".to_string());
     };
-    let (resolved_change_ref, selected_patchset_id) =
+    let (resolved_change_ref, current_patchset_id) =
         change_identity_with_task_remote(task_remote, change_id, repo_name)?;
-    if let Some(selected) = selected_patchset_id {
-        return Ok(selected);
-    }
-    let mut rows = closeout_remote
-        .list_patchsets(&resolved_change_ref, repo_name)
+    let current = current_patchset_id
+        .ok_or_else(|| format!("Task for {resolved_change_ref} has no current Patchset"))?;
+    let row = closeout_remote
+        .get_patchset(&current, repo_name, None)
         .map_err(|err| err.to_string())?;
-    rows.sort_by_key(|row| {
-        row.get("patchset_number")
-            .and_then(JsonValue::as_i64)
-            .unwrap_or_default()
-    });
-    rows.last()
-        .and_then(|row| string_field(row, "patchset_id"))
-        .ok_or_else(|| format!("Change {resolved_change_ref} has no patchsets"))
+    let task = if is_task_id(&resolved_change_ref) {
+        resolved_change_ref.as_str()
+    } else {
+        resolved_change_ref
+            .rsplit_once('/')
+            .ok_or("Change has no Task")?
+            .0
+    };
+    let association =
+        ait_core::workflow_expected_identity::validate_patchset_owner_fields(&row, task)?;
+    if !is_task_id(&resolved_change_ref)
+        && association.as_deref() != Some(resolved_change_ref.as_str())
+    {
+        return Err("Current Task candidate belongs to another Change".into());
+    }
+    let expected = ait_core::workflow_expected_identity::WorkflowExpectedIdentity {
+        repository_index: 0,
+        patchset_id: current,
+        base_snapshot_id: required_string_field(&row, "base_snapshot_id")?,
+        revision_snapshot_id: required_string_field(&row, "revision_snapshot_id")?,
+    };
+    expected.validate_patchset(0, &row)?;
+    required_string_field(&row, "patchset_id")
 }
 
 pub(in crate::primitives) fn resolve_patchset_argument<R>(
@@ -84,13 +98,32 @@ pub(in crate::primitives) fn change_identity_with_task_remote<R>(
     repo_name: Option<&str>,
 ) -> Result<(String, Option<String>), String>
 where
-    R: TaskWorkflowRemoteChangeReader + ?Sized,
+    R: TaskWorkflowRemoteChangeReader + TaskWorkflowRemoteTaskReader + ?Sized,
 {
-    let change = task_remote
-        .get_change(change_id, repo_name)
+    let owner = if is_task_id(change_id) {
+        change_id.to_string()
+    } else {
+        let change = task_remote
+            .get_change(change_id, repo_name)
+            .map_err(|err| err.to_string())?;
+        change_reference_from_payload(&change, Some(change_id))?
+    };
+    let task_id = if is_task_id(&owner) {
+        owner.as_str()
+    } else {
+        owner.rsplit_once('/').ok_or("Change has no Task owner")?.0
+    };
+    let task = task_remote
+        .get_task(task_id, repo_name)
         .map_err(|err| err.to_string())?;
-    Ok((
-        change_reference_from_payload(&change, Some(change_id))?,
-        string_field(&change, "selected_patchset_id"),
-    ))
+    if task["task_id"].as_str() != Some(task_id) {
+        return Err("Task readback owner mismatch".into());
+    }
+    ait_core::land_json::LandJson::stateless().task_successful_receipt(&task, task_id, None)?;
+    let current = match task.get("current_patchset_id") {
+        Some(JsonValue::Null) => None,
+        Some(JsonValue::String(id)) if !id.is_empty() && id.trim() == id => Some(id.clone()),
+        _ => return Err("Task requires nullable current_patchset_id".into()),
+    };
+    Ok((owner, current))
 }

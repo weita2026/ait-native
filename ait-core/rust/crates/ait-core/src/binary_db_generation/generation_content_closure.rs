@@ -33,6 +33,21 @@ pub(super) fn validate_repository_content_closure(
     authority_root: &Path,
     pack_root: &Path,
 ) -> GenerationResult<RepositoryContentClosureSummary> {
+    validate_content_closure(authority_root, pack_root, false)
+}
+
+pub(super) fn validate_repository_content_closure_preserving_pack_slots(
+    authority_root: &Path,
+    pack_root: &Path,
+) -> GenerationResult<RepositoryContentClosureSummary> {
+    validate_content_closure(authority_root, pack_root, true)
+}
+
+fn validate_content_closure(
+    authority_root: &Path,
+    pack_root: &Path,
+    preserve_retired_slots: bool,
+) -> GenerationResult<RepositoryContentClosureSummary> {
     let blob_count = record_count(authority_root, BLOB_BIN, BLOB_RECORD_SIZE)?;
     let snapshot_count = record_count(authority_root, SNAPSHOT_BIN, SNAPSHOT_RECORD_SIZE)?;
     let object_pack_count = record_count(authority_root, OBJECT_PACK_BIN, OBJECT_PACK_RECORD_SIZE)?;
@@ -94,7 +109,7 @@ pub(super) fn validate_repository_content_closure(
             let record = BinaryObjectPackCodec::<1>::decode_record(raw).map_err(|error| {
                 format!("Binary DB content closure cannot decode object pack {index}: {error}")
             })?;
-            if record.is_tombstone() || !record.is_ready() {
+            if (!preserve_retired_slots && record.is_tombstone()) || !record.is_ready() {
                 return Err(format!(
                     "Binary DB canonical generation contains unavailable object pack {index}."
                 ));
@@ -131,7 +146,7 @@ pub(super) fn validate_repository_content_closure(
                     "Binary DB content closure cannot decode object pack member {index}: {error}"
                 )
             })?;
-            if record.is_tombstone() {
+            if !preserve_retired_slots && record.is_tombstone() {
                 return Err(format!(
                     "Binary DB canonical generation contains tombstoned object pack member {index}."
                 ));

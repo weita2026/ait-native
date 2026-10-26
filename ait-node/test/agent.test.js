@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,25 +8,31 @@ import {
   AgentCapabilities,
   AgentClient,
   NativeProtocolError,
+  NativeRuntime,
 } from "../src/index.js";
 
-test("capabilities come from the real Rust binding", () => {
-  const capabilities = new AgentClient().capabilities();
+const RETIREMENT = "Chat integrations are retired in AIT 1.2.0";
+function retired(error) {
+  assert.ok(error instanceof Error);
+  assert.ok(error.message.includes(RETIREMENT), error.message);
+  return true;
+}
 
-  assert.equal(capabilities.contract, "ait.agent.worker.capabilities.v1");
-  assert.ok(capabilities.version);
-  assert.deepEqual(new Set(capabilities.supportedTransports), new Set([
-    "telegram",
-    "discord",
-    "slack",
-    "line",
-  ]));
-  assert.ok(
-    capabilities.eventLoopBackends.includes(
-      capabilities.defaultEventLoopBackend,
-    ),
-  );
-  assert.equal(capabilities.raw.python_worker_execution_allowed, false);
+test("all retained native chat symbols throw the existing native error", () => {
+  const runtime = new NativeRuntime();
+  assert.deepEqual(runtime.bindingInfo().supported_surfaces, ["ait-core"]);
+  const addon = runtime.loadAddon();
+  for (const [name, args] of [
+    ["agentWorkerCapabilitiesJson", []],
+    ["agentManagementJson", ["not JSON"]],
+    ["agentWorkerTransactionJson", ["not JSON"]],
+  ]) {
+    assert.equal(typeof addon[name], "function");
+    assert.throws(() => addon[name](...args), retired);
+  }
+  assert.throws(() => runtime.agentCapabilities(), retired);
+  assert.throws(() => runtime.agentManagement({}), retired);
+  assert.throws(() => runtime.agentWorkerTransaction({}), retired);
 });
 
 for (const [field, value, message] of [
@@ -52,31 +58,37 @@ for (const [field, value, message] of [
   });
 }
 
-test("management lists an empty manifest through the real binding", async (context) => {
+test("every chat facade fails without changing existing worker or user data", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-agent-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, ".ait"));
   const manifestPath = path.join(root, ".ait", "agent-workers.json");
-
-  assert.deepEqual(
-    new AgentClient().listWorkers("telegram", {
-      repoRoot: root,
-      manifestPath,
-    }),
-    [],
-  );
-});
-
-test("reply provider uses the real worker transaction binding", () => {
-  const result = new AgentClient().replyProvider({
-    contract: "unsupported",
-  });
-
-  assert.equal(
-    result.contract,
-    "ait.agent.gateway_reply_provider_response.v1",
-  );
-  assert.equal(result.error.kind, "provider_request_contract");
+  // An unreadable-as-JSON manifest cannot preempt the retirement error.
+  const contents = "user-owned manifest; preserve exactly\n";
+  await writeFile(manifestPath, contents);
+  const before = await readdir(root, { recursive: true });
+  const options = { repoRoot: root, manifestPath, cwd: root };
+  const client = new AgentClient();
+  const calls = [
+    () => client.capabilities(),
+    () => client.manage({ operation: "list", repo_root: root, manifest_path: manifestPath }),
+    () => client.add({ transport: "telegram", name: "main" }, options),
+    () => client.listWorkers("telegram", options),
+    () => client.status("telegram", "main", options),
+    () => client.start("telegram", "main", { ...options, workerBinary: path.join(root, "no-worker") }),
+    () => client.stop("telegram", "main", options),
+    () => client.restart("telegram", "main", options),
+    () => client.remove("telegram", "main", options),
+    () => client.logs("telegram", "main", options),
+    () => client.slackCommand({}, options),
+    () => client.discordInteraction({}, options),
+    () => client.replyProvider({ contract: "unsupported" }, options),
+  ];
+  for (const call of calls) {
+    assert.throws(call, retired);
+  }
+  assert.equal(await readFile(manifestPath, "utf8"), contents);
+  assert.deepEqual(await readdir(root, { recursive: true }), before);
 });
 
 test("manager and worker input validation happens before native calls", () => {

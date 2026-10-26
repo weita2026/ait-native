@@ -16,6 +16,12 @@ pub fn agent_local_current_workflow_execute_json(request: &JsonValue) -> Result<
     let request = request
         .as_object()
         .ok_or_else(|| "local current-workflow request must be an object".to_string())?;
+    if request.contains_key("workflow_mode") {
+        return Err(
+            "Retired execution field `workflow_mode`; resubmit with explicit target.mode."
+                .to_string(),
+        );
+    }
     let operation = required_text(request.get("operation"), "operation")?;
     if operation != AGENT_LOCAL_CURRENT_WORKFLOW_OPERATION {
         return Err(format!(
@@ -184,8 +190,11 @@ fn validate_target(
     if required_text(target.get("mode"), "target.mode")? != "local" {
         return Err("local current-workflow target mode must be `local`".to_string());
     }
-    if required_text(target.get("workflow_mode"), "target.workflow_mode")? != "solo_local" {
-        return Err("local current-workflow target workflow_mode must be `solo_local`".to_string());
+    if target.contains_key("workflow_mode") {
+        return Err(
+            "Retired execution field `workflow_mode`; resubmit with explicit target.mode."
+                .to_string(),
+        );
     }
     let repo_root =
         std::path::PathBuf::from(required_text(target.get("repo_root"), "target.repo_root")?);
@@ -348,7 +357,7 @@ mod tests {
         )
         .expect("config");
         let db = LocalBinaryDbFs::new(
-            StorePath::from(authority),
+            StorePath::from(authority.clone()),
             StorePath::from(temp.path()),
             AuthorityId::new("local:fixture"),
             LocalStateScope::Repository,
@@ -358,6 +367,12 @@ mod tests {
         BinaryDbLineStore::<_, BINARY_DB_WORKFLOW_LAYOUT_ID>::new(db.clone())
             .create_line("main", None, "2026-07-25T00:00:00Z")
             .expect("main line");
+        // Admit the empty fixture before authoring current workflow records.
+        // A populated, unadmitted fixture is correctly treated as legacy data.
+        let (_, guard) =
+            admit_activated_binary_db_generation_for_runtime(temp.path(), &authority, "fixture")
+                .expect("empty fixture admission");
+        drop(guard);
         let store = BinaryDbWorkflowStore::<_, BINARY_DB_WORKFLOW_LAYOUT_ID>::new(db, "fixture");
         let task = store
             .create_task("fixture", "Current task", "Ship it", None, None, None, None)
@@ -378,7 +393,6 @@ mod tests {
             "operation": AGENT_LOCAL_CURRENT_WORKFLOW_OPERATION,
             "target": {
                 "mode": "local",
-                "workflow_mode": "solo_local",
                 "repo_root": temp.path(),
                 "repo_name": "fixture",
             },

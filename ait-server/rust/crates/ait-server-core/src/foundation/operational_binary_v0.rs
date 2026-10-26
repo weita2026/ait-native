@@ -1,5 +1,5 @@
 use crate::foundation::remote_binary_db::{
-    BinaryDbError, BinaryDbFileFamily, BinaryIndexId, StoreResult,
+    BinaryDbError, BinaryDbFileFamily, BinaryFileId, BinaryIndexId, StoreResult,
 };
 
 pub const OPERATIONAL_V0_LAYOUT_ID: u32 = 1;
@@ -113,6 +113,10 @@ impl OperationalRepositoryRecord {
     pub fn is_tombstoned(self) -> bool {
         self.repository_meta & REPOSITORY_META_TOMBSTONED != 0
     }
+
+    pub fn is_serving(self) -> bool {
+        !self.is_tombstoned() && self.lifecycle_kind != REPOSITORY_LIFECYCLE_PURGED
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -168,6 +172,15 @@ pub struct ServerWorkerStateIndexRecord {
 pub struct ServerOperationalBinaryV0Codec;
 
 impl ServerOperationalBinaryV0Codec {
+    pub fn worker_job_file() -> BinaryFileId {
+        BinaryFileId::new(
+            "worker_job.bin",
+            OPERATIONAL_V0_LAYOUT_ID,
+            SERVER_WORKER_JOB_RECORD_SIZE,
+            BinaryDbFileFamily::Queue,
+        )
+    }
+
     pub fn repository_namespace_index_file() -> BinaryIndexId {
         BinaryIndexId::new_fixed(
             "repository_namespace.idx",
@@ -515,8 +528,10 @@ fn validate_worker_job_references(record: ServerWorkerJobRecord) -> StoreResult<
         | WORKER_JOB_KIND_CONTENT_OPTIMIZE
         | WORKER_JOB_KIND_CONTENT_PACK
         | WORKER_JOB_KIND_RECONCILE_REPO => patchset == 0 && snapshot == 0,
+        // The bounded package flow admits kind7 before its one-time finish
+        // binding. The Job store separately requires a managed runtime source.
+        WORKER_JOB_KIND_PATCHSET_CI => snapshot == 0,
         WORKER_JOB_KIND_LAND_PROCESS
-        | WORKER_JOB_KIND_PATCHSET_CI
         | WORKER_JOB_KIND_PATCHSET_CI_AGGREGATE
         | WORKER_JOB_KIND_POLICY_EVALUATE => patchset != 0 && snapshot == 0,
         WORKER_JOB_KIND_MAIN_SEED_REFRESH => patchset != 0,
@@ -851,7 +866,20 @@ mod tests {
     fn worker_job_kind_references_and_state_are_fixed() {
         let mut job = queued_patchset_ci();
         job.patchset_index_plus1 = 0;
-        assert!(ServerOperationalBinaryV0Codec::encode_worker_job(job).is_err());
+        let encoded = ServerOperationalBinaryV0Codec::encode_worker_job(job).unwrap();
+        assert_eq!(encoded.len(), SERVER_WORKER_JOB_RECORD_SIZE as usize);
+        assert_eq!(
+            ServerOperationalBinaryV0Codec::decode_worker_job(&encoded).unwrap(),
+            job
+        );
+        for kind in [
+            WORKER_JOB_KIND_LAND_PROCESS,
+            WORKER_JOB_KIND_PATCHSET_CI_AGGREGATE,
+            WORKER_JOB_KIND_POLICY_EVALUATE,
+        ] {
+            job.job_kind = kind;
+            assert!(ServerOperationalBinaryV0Codec::encode_worker_job(job).is_err());
+        }
 
         let mut job = queued_patchset_ci();
         job.snapshot_index_plus1 = 1;

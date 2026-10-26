@@ -22,7 +22,8 @@ use crate::foundation::server_operational_worker_jobs::{
 use crate::foundation::workflow_binary_v0::{
     V0ChangeRecord, V0FrozenPatchsetRecord, WorkflowBinaryV0Codec, CHANGE_META_BLOCKED,
     CHANGE_META_READY_TO_LAND, CHANGE_META_VALIDATION_PENDING, CI_STATUS_ERROR, CI_STATUS_FAIL,
-    CI_STATUS_NONE, CI_STATUS_PASS, PATCHSET_EVALUATION_PENDING,
+    CI_STATUS_NONE, CI_STATUS_PASS, PATCHSET_EVALUATION_PENDING, TASK_META_BLOCKED,
+    TASK_META_READY_TO_LAND, TASK_META_VALIDATION_PENDING,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -98,9 +99,10 @@ impl TryFrom<u8> for WorkerJobKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorkerJobPatchsetClosure {
     pub patchset_index: u32,
-    pub change_index: u32,
+    pub task_index: u32,
+    pub change_index: Option<u32>,
     pub patch_ordinal: u8,
-    pub change_ordinal: u8,
+    pub change_ordinal: Option<u8>,
     pub base_snapshot_index: u32,
     pub revision_snapshot_index: u32,
     pub ci_run_seq: u32,
@@ -124,6 +126,9 @@ pub enum WorkerJobExecutionSelector {
     },
     PatchsetCi {
         patchset: WorkerJobPatchsetClosure,
+    },
+    PreparedPatchsetCi {
+        key: WorkerJobKey,
     },
     PatchsetCiAggregate {
         patchset: WorkerJobPatchsetClosure,
@@ -151,7 +156,7 @@ pub struct WorkerJobCompactCiEvidence {
 }
 
 impl WorkerJobCompactCiEvidence {
-    fn status_bits(self) -> StoreResult<u8> {
+    pub(crate) fn status_bits(self) -> StoreResult<u8> {
         if self.ci_completed_at_s == 0
             || self.ci_run_seq == 0
             || self.overall_status == CI_STATUS_NONE
@@ -353,7 +358,17 @@ where
         &self,
         worker_job_index: u32,
     ) -> StoreResult<WorkerJobExecutionSelector> {
-        self.resolve_record(self.jobs.get(worker_job_index)?.record)
+        let entry = self.jobs.get(worker_job_index)?;
+        if entry.record.job_kind == WORKER_JOB_KIND_PATCHSET_CI
+            && entry.record.patchset_index_plus1 == 0
+        {
+            self.jobs
+                .prepared_ci_runtime()
+                .require_selected(entry.key)?
+                .verify()?;
+            return Ok(WorkerJobExecutionSelector::PreparedPatchsetCi { key: entry.key });
+        }
+        self.resolve_record(entry.record)
     }
 
     pub fn complete(
@@ -481,6 +496,18 @@ where
         entry: WorkerJobEntry,
         completion: WorkerJobDomainCompletion,
     ) -> StoreResult<()> {
+        if entry.record.job_kind == WORKER_JOB_KIND_PATCHSET_CI
+            && entry.record.patchset_index_plus1 == 0
+        {
+            return match completion {
+                WorkerJobDomainCompletion::PatchsetCi(evidence) => {
+                    self.jobs.commit_prepared_ci_result(entry, evidence)
+                }
+                _ => Err(invalid(
+                    "prepared CI completion requires its tested compact evidence",
+                )),
+            };
+        }
         let selector = self.resolve_record(entry.record)?;
         if completion == WorkerJobDomainCompletion::Skipped {
             return Ok(());
@@ -667,15 +694,22 @@ where
     fn validate_patchset_relation(
         &self,
         read: &BinaryDbReadTxn<'_, D>,
-        patchset_index: u32,
+        _patchset_index: u32,
         patchset: V0FrozenPatchsetRecord,
-    ) -> StoreResult<V0ChangeRecord> {
-        let change = self.read_change(read, patchset.change_index)?;
-        if patchset.change_ordinal != change.change_ordinal {
-            return Err(corrupt(format!(
-                "Patchset {patchset_index} Change ordinal disagrees"
-            )));
+    ) -> StoreResult<Option<(u32, V0ChangeRecord)>> {
+        let task = WorkflowBinaryV0Codec::decode_task(
+            &read.read_record(WorkflowBinaryV0Codec::task_file(), patchset.task_index)?,
+        )?;
+        if task.remote_meta & 1 != 0 {
+            return Err(corrupt("Patchset Task is retired"));
         }
+        let inventory = WorkflowBinaryV0Codec::decode_ordinal_index(&read.read_record(
+            WorkflowBinaryV0Codec::chain_index_file("task_change_index.bin"),
+            patchset.task_index,
+        )?)?;
+        let change = find_patchset_change(patchset, inventory.latest_index_plus1, |index| {
+            self.read_change(read, index)
+        })?;
         self.validate_snapshot_with_read(read, patchset.base_snapshot_index)?;
         self.validate_snapshot_with_read(read, patchset.revision_snapshot_index)?;
         Ok(change)
@@ -705,29 +739,57 @@ where
         )
     }
 
-    fn mark_change_ci_pending<F>(
+    fn mark_owner_ci_pending<F>(
         tx: &mut BinaryDbWriteTxn<'_, D, F>,
+        patchset_index: u32,
         patchset: V0FrozenPatchsetRecord,
         now_s: u64,
     ) -> StoreResult<()>
     where
         F: crate::foundation::remote_binary_db::BinaryDbFsyncPolicy,
     {
-        let mut change = Self::read_change_in_write(tx, patchset.change_index)?;
-        if change.change_ordinal != patchset.change_ordinal {
-            return Err(corrupt("Patchset Change ordinal relation disagrees"));
+        let inventory = WorkflowBinaryV0Codec::decode_inventory_index(&tx.read_record(
+            WorkflowBinaryV0Codec::chain_index_file("task_patchset_index.bin"),
+            patchset.task_index,
+        )?)?;
+        let mut task = WorkflowBinaryV0Codec::decode_task(
+            &tx.read_record(WorkflowBinaryV0Codec::task_file(), patchset.task_index)?,
+        )?;
+        if inventory.latest_index_plus1 != patchset_index + 1 || task.is_terminal() {
+            return Ok(());
         }
-        if now_s < change.updated_at_s {
-            return Err(invalid("Patchset CI mutation moved Change time backwards"));
+        if now_s < task.updated_at_s {
+            return Err(invalid("Patchset CI mutation moved Task time backwards"));
         }
-        change.change_meta |= CHANGE_META_VALIDATION_PENDING;
-        change.change_meta &= !(CHANGE_META_READY_TO_LAND | CHANGE_META_BLOCKED);
-        change.updated_at_s = now_s;
+        task.task_meta |= TASK_META_VALIDATION_PENDING;
+        task.task_meta &= !(TASK_META_READY_TO_LAND | TASK_META_BLOCKED);
+        task.updated_at_s = now_s;
         tx.overwrite_record(
-            WorkflowBinaryV0Codec::change_file(),
-            patchset.change_index,
-            &WorkflowBinaryV0Codec::encode_change(change)?,
-        )
+            WorkflowBinaryV0Codec::task_file(),
+            patchset.task_index,
+            &WorkflowBinaryV0Codec::encode_task(task)?,
+        )?;
+        let changes = WorkflowBinaryV0Codec::decode_ordinal_index(&tx.read_record(
+            WorkflowBinaryV0Codec::chain_index_file("task_change_index.bin"),
+            patchset.task_index,
+        )?)?;
+        let change = find_patchset_change(patchset, changes.latest_index_plus1, |index| {
+            Self::read_change_in_write(tx, index)
+        })?;
+        if let Some((index, mut change)) = change {
+            if now_s < change.updated_at_s {
+                return Err(invalid("Patchset CI mutation moved Change time backwards"));
+            }
+            change.change_meta |= CHANGE_META_VALIDATION_PENDING;
+            change.change_meta &= !(CHANGE_META_READY_TO_LAND | CHANGE_META_BLOCKED);
+            change.updated_at_s = now_s;
+            tx.overwrite_record(
+                WorkflowBinaryV0Codec::change_file(),
+                index,
+                &WorkflowBinaryV0Codec::encode_change(change)?,
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -814,9 +876,10 @@ where
         let change = self.validate_patchset_relation(&read, patchset_index, patchset)?;
         Ok(WorkerJobPatchsetClosure {
             patchset_index,
-            change_index: patchset.change_index,
+            task_index: patchset.task_index,
+            change_index: change.map(|(index, _)| index),
             patch_ordinal: patchset.patch_ordinal,
-            change_ordinal: change.change_ordinal,
+            change_ordinal: change.map(|(_, change)| change.change_ordinal),
             base_snapshot_index: patchset.base_snapshot_index,
             revision_snapshot_index: patchset.revision_snapshot_index,
             ci_run_seq: patchset.ci_run_seq,
@@ -840,6 +903,21 @@ where
         let mut tx =
             BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerWorkflow)?;
         let mut patchset = Self::read_frozen_patchset_in_write(&tx, patchset_index)?;
+        let current = WorkflowBinaryV0Codec::decode_inventory_index(&tx.read_record(
+            WorkflowBinaryV0Codec::chain_index_file("task_patchset_index.bin"),
+            patchset.task_index,
+        )?)?;
+        let task = WorkflowBinaryV0Codec::decode_task(
+            &tx.read_record(WorkflowBinaryV0Codec::task_file(), patchset.task_index)?,
+        )?;
+        if current.latest_index_plus1 != patchset_index + 1
+            || patchset.patchset_meta & 0b0110_0011 != 0
+            || task.is_terminal()
+        {
+            return Err(invalid(
+                "EXPECTED_CANDIDATE_MISMATCH: CI requires the valid current Task Patchset",
+            ));
+        }
         if patchset.ci_worker_job_index_plus1 == worker_job_index_plus1 {
             return Ok(());
         }
@@ -863,7 +941,7 @@ where
             patchset.ci_blocking_failure_count = 0;
             patchset.ci_status_bits = 0;
             patchset.patchset_meta |= PATCHSET_EVALUATION_PENDING;
-            Self::mark_change_ci_pending(&mut tx, patchset, now_s)?;
+            Self::mark_owner_ci_pending(&mut tx, patchset_index, patchset, now_s)?;
         }
         tx.overwrite_record(
             WorkflowBinaryV0Codec::patchset_file(),
@@ -917,7 +995,12 @@ where
         patchset.ci_blocking_failure_count = evidence.blocking_failure_count;
         patchset.ci_status_bits = status_bits;
         patchset.patchset_meta |= PATCHSET_EVALUATION_PENDING;
-        Self::mark_change_ci_pending(&mut tx, patchset, evidence.ci_completed_at_s)?;
+        Self::mark_owner_ci_pending(
+            &mut tx,
+            patchset_index,
+            patchset,
+            evidence.ci_completed_at_s,
+        )?;
         tx.overwrite_record(
             WorkflowBinaryV0Codec::patchset_file(),
             patchset_index,
@@ -925,6 +1008,40 @@ where
         )?;
         tx.commit().map(|_| ())
     }
+}
+
+fn find_patchset_change<F>(
+    patchset: V0FrozenPatchsetRecord,
+    latest: u32,
+    mut read_change: F,
+) -> StoreResult<Option<(u32, V0ChangeRecord)>>
+where
+    F: FnMut(u32) -> StoreResult<V0ChangeRecord>,
+{
+    let Some(ordinal) = patchset.change_ordinal_plus1.checked_sub(1) else {
+        return Ok(None);
+    };
+    let mut cursor = latest.checked_sub(1);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut found = None;
+    while let Some(index) = cursor {
+        if !seen.insert(index) {
+            return Err(corrupt("Task Change inventory has a cycle"));
+        }
+        let change = read_change(index)?;
+        if change.task_index != patchset.task_index {
+            return Err(corrupt("Patchset Change belongs to another Task"));
+        }
+        if change.change_ordinal == ordinal
+            && (change.remote_meta & 1 != 0 || found.replace((index, change)).is_some())
+        {
+            return Err(corrupt("Patchset explicit Change is retired or duplicated"));
+        }
+        cursor = change.previous_change_index_plus1.checked_sub(1);
+    }
+    found
+        .map(Some)
+        .ok_or_else(|| corrupt("Patchset exact explicit Change is missing"))
 }
 
 fn valid_ci_status(value: u8) -> bool {
@@ -966,14 +1083,15 @@ mod tests {
         FilesystemServerRemoteBinaryDb, RepoId, RepoName, StoreGeneration, StorePath,
     };
     use crate::foundation::server_binary_db_schema_registry::{
-        SERVER_BINARY_DB_BIN_SCHEMAS, SERVER_BINARY_DB_INDEX_SCHEMAS, SERVER_BINARY_DB_LAYOUT_ID,
+        SERVER_BINARY_DB_BIN_SCHEMAS, SERVER_BINARY_DB_INDEX_SCHEMAS,
     };
     use crate::foundation::server_content_binary_db::{
         server_snapshot_hash48_from_id, ServerBinaryDbLineStore, ServerBinarySnapshotPayload,
         ServerBinarySnapshotRecord,
     };
     use crate::foundation::workflow_binary_v0::{
-        V0ChangeRecord, V0FrozenPatchsetRecord, CHANGE_LIFECYCLE_ACTIVE, CHANGE_META_HAS_PATCHSETS,
+        V0ChangeRecord, V0FrozenPatchsetRecord, V0InventoryIndexRecord, V0OrdinalIndexRecord,
+        V0TaskRecord, CHANGE_LIFECYCLE_ACTIVE, CHANGE_META_HAS_PATCHSETS,
     };
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
@@ -1216,9 +1334,10 @@ mod tests {
                     2,
                     WorkerJobPatchsetClosure {
                         patchset_index: 2,
-                        change_index: 4,
+                        task_index: 3,
+                        change_index: Some(4),
                         patch_ordinal: 0,
-                        change_ordinal: 0,
+                        change_ordinal: Some(0),
                         base_snapshot_index: 20,
                         revision_snapshot_index: 21,
                         ci_run_seq: 0,
@@ -1519,174 +1638,262 @@ mod tests {
 
     #[test]
     fn frozen_binary_authority_commits_ci_locator_and_compact_evidence_idempotently() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "ait-server-frozen-job-domain-{}-{nonce}",
-            std::process::id()
-        ));
-        let authority_root = root.join("1");
-        fs::create_dir_all(&authority_root).unwrap();
-        for path in SERVER_BINARY_DB_BIN_SCHEMAS
-            .iter()
-            .map(|schema| schema.path)
-            .chain(
-                SERVER_BINARY_DB_INDEX_SCHEMAS
-                    .iter()
-                    .map(|schema| schema.path),
-            )
-        {
-            fs::write(
-                authority_root.join(path),
-                SERVER_BINARY_DB_LAYOUT_ID.to_le_bytes(),
-            )
-            .unwrap();
-        }
-        let db = FilesystemServerRemoteBinaryDb::test_fixture(
-            RepoId::new("REPO-FROZEN-DOMAIN"),
-            RepoName::new("ait-server"),
-            StorePath::new(authority_root.clone()),
-            StoreGeneration::new(1),
-        );
-        let lines = ServerBinaryDbLineStore::<_, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(db.clone());
-        let snapshots =
-            ServerBinaryDbSnapshotStore::<_, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(db.clone());
-        let line_index = lines.create_line("main", 0, 90).unwrap();
-        let payload = ServerBinarySnapshotPayload {
-            line_name: "main".to_string(),
-            message: Some("Worker Job domain fixture".to_string()),
-        };
-        let snapshot_record =
-            |snapshot_id: &str, parent_snapshot_index_plus1: u32| ServerBinarySnapshotRecord {
-                snapshot_meta: 0,
-                history_flags: 0,
-                payload_len: 0,
-                payload_offset: 0,
-                snapshot_hash48: server_snapshot_hash48_from_id(snapshot_id).unwrap(),
-                parent_snapshot_index_plus1,
-                root_tree_pack_index_plus1: 0,
-                root_entry_ordinal: 0,
-                line_index_plus1: line_index + 1,
-                manifest_hash: [0; 32],
-                file_count: 0,
-                total_bytes: 0,
-                created_at_s: 90,
+        for has_change in [false, true] {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "ait-server-frozen-job-domain-{}-{nonce}-{has_change}",
+                std::process::id()
+            ));
+            let authority_root = root.join("1");
+            fs::create_dir_all(&authority_root).unwrap();
+            for (path, layout_id) in SERVER_BINARY_DB_BIN_SCHEMAS
+                .iter()
+                .map(|schema| (schema.path, schema.layout_id))
+                .chain(
+                    SERVER_BINARY_DB_INDEX_SCHEMAS
+                        .iter()
+                        .map(|schema| (schema.path, schema.layout_id)),
+                )
+            {
+                fs::write(authority_root.join(path), layout_id.to_le_bytes()).unwrap();
+            }
+            let db = FilesystemServerRemoteBinaryDb::test_fixture(
+                RepoId::new("REPO-FROZEN-DOMAIN"),
+                RepoName::new("ait-server"),
+                StorePath::new(authority_root.clone()),
+                StoreGeneration::new(1),
+            );
+            let lines =
+                ServerBinaryDbLineStore::<_, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(db.clone());
+            let snapshots =
+                ServerBinaryDbSnapshotStore::<_, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(db.clone());
+            let line_index = lines.create_line("main", 0, 90).unwrap();
+            let payload = ServerBinarySnapshotPayload {
+                line_name: "main".to_string(),
+                message: Some("Worker Job domain fixture".to_string()),
             };
-        let base = snapshots
-            .append_snapshot(
-                "SNP-0000000000A1",
-                snapshot_record("SNP-0000000000A1", 0),
-                &payload,
-            )
-            .unwrap();
-        let revision = snapshots
-            .append_snapshot(
-                "SNP-0000000000A2",
-                snapshot_record("SNP-0000000000A2", base + 1),
-                &payload,
-            )
-            .unwrap();
-        let mut tx =
-            BinaryDbWriteTxn::begin_serving(&db, BinaryDbCommandScope::ServerWorkflow).unwrap();
-        let change = V0ChangeRecord {
-            change_meta: CHANGE_LIFECYCLE_ACTIVE | CHANGE_META_HAS_PATCHSETS,
-            payload_len: 1,
-            selected_patchset_index_plus1: 1,
-            base_line_index_plus1: line_index + 1,
-            created_at_s: 100,
-            updated_at_s: 100,
-            ..V0ChangeRecord::default()
-        };
-        assert_eq!(
+            let snapshot_record =
+                |snapshot_id: &str, parent_snapshot_index_plus1: u32| ServerBinarySnapshotRecord {
+                    actor_index_plus1: 0,
+                    snapshot_meta: 0,
+                    history_flags: 0,
+                    payload_len: 0,
+                    payload_offset: 0,
+                    snapshot_hash48: server_snapshot_hash48_from_id(snapshot_id).unwrap(),
+                    parent_snapshot_index_plus1,
+                    root_tree_pack_index_plus1: 0,
+                    root_entry_ordinal: 0,
+                    line_index_plus1: line_index + 1,
+                    manifest_hash: [0; 32],
+                    file_count: 0,
+                    total_bytes: 0,
+                    created_at_s: 90,
+                };
+            let base = snapshots
+                .append_snapshot(
+                    "SNP-0000000000A1",
+                    snapshot_record("SNP-0000000000A1", 0),
+                    &payload,
+                )
+                .unwrap();
+            let revision = snapshots
+                .append_snapshot(
+                    "SNP-0000000000A2",
+                    snapshot_record("SNP-0000000000A2", base + 1),
+                    &payload,
+                )
+                .unwrap();
+            let mut tx =
+                BinaryDbWriteTxn::begin_serving(&db, BinaryDbCommandScope::ServerWorkflow).unwrap();
             tx.append_record(
-                WorkflowBinaryV0Codec::change_file(),
-                &WorkflowBinaryV0Codec::encode_change(change).unwrap(),
+                WorkflowBinaryV0Codec::task_file(),
+                &WorkflowBinaryV0Codec::encode_task(V0TaskRecord {
+                    payload_len: 3,
+                    payload_offset: 4,
+                    created_at_s: 100,
+                    updated_at_s: 100,
+                    ..V0TaskRecord::default()
+                })
+                .unwrap(),
             )
-            .unwrap(),
-            0
-        );
-        let patchset = V0FrozenPatchsetRecord {
-            patchset_meta: 0,
-            change_index: 0,
-            base_snapshot_index: base,
-            revision_snapshot_index: revision,
-            created_at_s: 100,
-            summary_offset: 4,
-            summary_len: 1,
-            ..V0FrozenPatchsetRecord::default()
-        };
-        assert_eq!(
+            .unwrap();
+            tx.append_record(
+                WorkflowBinaryV0Codec::chain_index_file("task_patchset_index.bin"),
+                &WorkflowBinaryV0Codec::encode_inventory_index(V0InventoryIndexRecord {
+                    latest_index_plus1: 1,
+                    count: 1,
+                    reserved0: 0,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            tx.append_record(
+                WorkflowBinaryV0Codec::chain_index_file("task_change_index.bin"),
+                &WorkflowBinaryV0Codec::encode_ordinal_index(V0OrdinalIndexRecord {
+                    latest_index_plus1: u32::from(has_change),
+                    count: u16::from(has_change),
+                    next_ordinal: u8::from(has_change),
+                    reserved0: 0,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            let change = V0ChangeRecord {
+                change_meta: CHANGE_LIFECYCLE_ACTIVE | CHANGE_META_HAS_PATCHSETS,
+                payload_len: 1,
+                payload_offset: 4,
+                reserved_selected_patchset: 0,
+                base_line_index_plus1: line_index + 1,
+                created_at_s: 100,
+                updated_at_s: 100,
+                ..V0ChangeRecord::default()
+            };
+            if has_change {
+                assert_eq!(
+                    tx.append_record(
+                        WorkflowBinaryV0Codec::change_file(),
+                        &WorkflowBinaryV0Codec::encode_change(change).unwrap(),
+                    )
+                    .unwrap(),
+                    0
+                );
+            }
+            let patchset = V0FrozenPatchsetRecord {
+                patchset_meta: 0,
+                task_index: 0,
+                change_ordinal_plus1: u8::from(has_change),
+                base_snapshot_index: base,
+                revision_snapshot_index: revision,
+                created_at_s: 100,
+                summary_offset: 4,
+                summary_len: 1,
+                ..V0FrozenPatchsetRecord::default()
+            };
+            assert_eq!(
+                tx.append_record(
+                    WorkflowBinaryV0Codec::patchset_file(),
+                    &WorkflowBinaryV0Codec::encode_frozen_patchset(patchset).unwrap(),
+                )
+                .unwrap(),
+                0
+            );
+            tx.commit().unwrap();
+
+            let authority = FrozenBinaryV0WorkerJobAuthority::new(db.clone());
+            let original = authority.patchset_closure(0).unwrap();
+            assert_eq!(original.task_index, 0);
+            assert_eq!(original.change_index, has_change.then_some(0));
+            assert_eq!(
+                (
+                    original.base_snapshot_index,
+                    original.revision_snapshot_index,
+                    original.ci_run_seq,
+                    original.selected_ci_worker_job_index,
+                ),
+                (base, revision, 0, None)
+            );
+            authority.select_patchset_ci_job(0, 4, true, 101).unwrap();
+            let selected = authority.patchset_closure(0).unwrap();
+            assert_eq!(selected.ci_run_seq, 1);
+            assert_eq!(selected.selected_ci_worker_job_index, Some(4));
+            authority
+                .select_patchset_ci_job(0, 4, true, 101)
+                .expect("exact relationship replay must not allocate another CI run");
+            assert_eq!(authority.patchset_closure(0).unwrap().ci_run_seq, 1);
+            assert!(authority
+                .select_patchset_ci_job(0, 3, true, 102)
+                .expect_err("an older Job cannot replace the locator")
+                .to_string()
+                .contains("older patchset.ci"));
+
+            let evidence = WorkerJobCompactCiEvidence {
+                ci_completed_at_s: 102,
+                ci_run_seq: 1,
+                selected_suite_count: 3,
+                suite_result_count: 3,
+                blocking_failure_count: 0,
+                overall_status: CI_STATUS_PASS,
+                tests_status: CI_STATUS_PASS,
+                lint_status: CI_STATUS_PASS,
+            };
+            // A newer candidate becomes ready while the old Job is running.
+            let mut tx =
+                BinaryDbWriteTxn::begin_serving(&db, BinaryDbCommandScope::ServerWorkflow).unwrap();
             tx.append_record(
                 WorkflowBinaryV0Codec::patchset_file(),
-                &WorkflowBinaryV0Codec::encode_frozen_patchset(patchset).unwrap(),
-            )
-            .unwrap(),
-            0
-        );
-        tx.commit().unwrap();
-
-        let authority = FrozenBinaryV0WorkerJobAuthority::new(db.clone());
-        let original = authority.patchset_closure(0).unwrap();
-        assert_eq!(
-            (
-                original.base_snapshot_index,
-                original.revision_snapshot_index,
-                original.ci_run_seq,
-                original.selected_ci_worker_job_index,
-            ),
-            (base, revision, 0, None)
-        );
-        authority.select_patchset_ci_job(0, 4, true, 101).unwrap();
-        let selected = authority.patchset_closure(0).unwrap();
-        assert_eq!(selected.ci_run_seq, 1);
-        assert_eq!(selected.selected_ci_worker_job_index, Some(4));
-        authority
-            .select_patchset_ci_job(0, 4, true, 101)
-            .expect("exact relationship replay must not allocate another CI run");
-        assert_eq!(authority.patchset_closure(0).unwrap().ci_run_seq, 1);
-        assert!(authority
-            .select_patchset_ci_job(0, 3, true, 102)
-            .expect_err("an older Job cannot replace the locator")
-            .to_string()
-            .contains("older patchset.ci"));
-
-        let evidence = WorkerJobCompactCiEvidence {
-            ci_completed_at_s: 102,
-            ci_run_seq: 1,
-            selected_suite_count: 3,
-            suite_result_count: 3,
-            blocking_failure_count: 0,
-            overall_status: CI_STATUS_PASS,
-            tests_status: CI_STATUS_PASS,
-            lint_status: CI_STATUS_PASS,
-        };
-        authority
-            .commit_patchset_ci_evidence(0, 4, evidence)
-            .unwrap();
-        authority
-            .commit_patchset_ci_evidence(0, 4, evidence)
-            .expect("domain-first retry must accept exact committed evidence");
-        let read = BinaryDbReadTxn::new(&db);
-        let committed = WorkflowBinaryV0Codec::decode_frozen_patchset(
-            &read
-                .read_record(WorkflowBinaryV0Codec::patchset_file(), 0)
+                &WorkflowBinaryV0Codec::encode_frozen_patchset(V0FrozenPatchsetRecord {
+                    patch_ordinal: 1,
+                    previous_task_patchset_index_plus1: 1,
+                    previous_change_patchset_index_plus1: u32::from(has_change),
+                    created_at_s: 102,
+                    ..patchset
+                })
                 .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(committed.ci_worker_job_index_plus1, 5);
-        assert_eq!(committed.ci_completed_at_s, 102);
-        assert_eq!(committed.ci_selected_suite_count, 3);
-        assert_eq!(committed.ci_status_bits, 0b01_01_01);
-        drop(read);
-        assert_eq!(authority.clear_all_patchset_ci_job_locators().unwrap(), 1);
-        let cleared = authority.frozen_patchset_at(0).unwrap();
-        assert_eq!(cleared.ci_worker_job_index_plus1, 0);
-        assert_eq!(cleared.ci_completed_at_s, 102);
-        assert_eq!(cleared.ci_selected_suite_count, 3);
-        assert_eq!(cleared.ci_status_bits, 0b01_01_01);
-        assert_eq!(authority.clear_all_patchset_ci_job_locators().unwrap(), 0);
-        fs::remove_dir_all(root).unwrap();
+            )
+            .unwrap();
+            tx.overwrite_record(
+                WorkflowBinaryV0Codec::chain_index_file("task_patchset_index.bin"),
+                0,
+                &WorkflowBinaryV0Codec::encode_inventory_index(V0InventoryIndexRecord {
+                    latest_index_plus1: 2,
+                    count: 2,
+                    reserved0: 0,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            let mut task = WorkflowBinaryV0Codec::decode_task(
+                &tx.read_record(WorkflowBinaryV0Codec::task_file(), 0)
+                    .unwrap(),
+            )
+            .unwrap();
+            task.task_meta = TASK_META_READY_TO_LAND;
+            task.updated_at_s = 102;
+            let ready_task = WorkflowBinaryV0Codec::encode_task(task).unwrap();
+            tx.overwrite_record(WorkflowBinaryV0Codec::task_file(), 0, &ready_task)
+                .unwrap();
+            tx.commit().unwrap();
+            drop(tx);
+            authority
+                .commit_patchset_ci_evidence(0, 4, evidence)
+                .unwrap();
+            authority
+                .commit_patchset_ci_evidence(0, 4, evidence)
+                .expect("domain-first retry must accept exact committed evidence");
+            let read = BinaryDbReadTxn::new(&db);
+            assert_eq!(
+                read.read_record(WorkflowBinaryV0Codec::task_file(), 0)
+                    .unwrap(),
+                ready_task,
+                "late evidence must preserve readiness of the newer Task candidate"
+            );
+            let committed = WorkflowBinaryV0Codec::decode_frozen_patchset(
+                &read
+                    .read_record(WorkflowBinaryV0Codec::patchset_file(), 0)
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(committed.ci_worker_job_index_plus1, 5);
+            assert_eq!(committed.ci_completed_at_s, 102);
+            assert_eq!(committed.ci_selected_suite_count, 3);
+            assert_eq!(committed.ci_status_bits, 0b01_01_01);
+            drop(read);
+            assert!(authority
+                .select_patchset_ci_job(0, 5, true, 103)
+                .unwrap_err()
+                .to_string()
+                .contains("current"));
+            assert_eq!(authority.clear_all_patchset_ci_job_locators().unwrap(), 1);
+            let cleared = authority.frozen_patchset_at(0).unwrap();
+            assert_eq!(cleared.ci_worker_job_index_plus1, 0);
+            assert_eq!(cleared.ci_completed_at_s, 102);
+            assert_eq!(cleared.ci_selected_suite_count, 3);
+            assert_eq!(cleared.ci_status_bits, 0b01_01_01);
+            assert_eq!(authority.clear_all_patchset_ci_job_locators().unwrap(), 0);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 }

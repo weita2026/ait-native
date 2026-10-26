@@ -617,17 +617,17 @@ impl<const WRITE_LAYOUT: u32> LocalContentBinaryDb<WRITE_LAYOUT> {
                 .sum::<i64>(),
             created_at: created_at.clone(),
         };
-        if let Some((binding, namespace)) = binding {
+        let newly_created = if let Some((binding, namespace)) = binding {
             coordinator.record_snapshot_with_workflow_binding(
                 BinaryDbCommandScope::ContentWrite,
                 &snapshot_input,
                 binding,
                 repo_name,
                 namespace,
-            )?;
+            )?
         } else {
-            coordinator.record_snapshot(BinaryDbCommandScope::ContentWrite, &snapshot_input)?;
-        }
+            coordinator.record_snapshot(BinaryDbCommandScope::ContentWrite, &snapshot_input)?
+        };
         #[cfg(feature = "perfetto-tracing")]
         drop(_metadata_range);
         phase_timings_ms.insert(
@@ -687,6 +687,7 @@ impl<const WRITE_LAYOUT: u32> LocalContentBinaryDb<WRITE_LAYOUT> {
         });
         Ok(json!({
             "snapshot_id": snapshot_id,
+            "newly_created": newly_created,
             "parent_snapshot_id": normalized_primary_parent_snapshot_id,
             "primary_parent_snapshot_id": normalized_primary_parent_snapshot_id,
             "parent_snapshot_ids": normalized_parent_snapshot_ids,

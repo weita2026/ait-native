@@ -258,9 +258,11 @@ const RECORD_REVIEW_REQUEST_FIELDS: &[FieldSpec] = &[
 ];
 const UPSERT_ATTESTATION_REQUEST_FIELDS: &[FieldSpec] = &[
     FieldSpec::string("author_mode", "author_mode", "ai_with_human_review"),
-    FieldSpec::required("evaluation_summary", "dict<string,any>"),
-    FieldSpec::empty_object("provenance_summary"),
-    FieldSpec::empty_object("detail"),
+    FieldSpec::string("verification_state", "str", "unknown"),
+    FieldSpec::bool("require_tests_pass", true),
+    FieldSpec::bool("require_human_review", false),
+    FieldSpec::bool("require_lint_pass", false),
+    FieldSpec::bool("revoked", false),
 ];
 const CREATE_WAIVER_REQUEST_FIELDS: &[FieldSpec] = &[
     FieldSpec::required("rule_name", "str"),

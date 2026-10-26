@@ -860,35 +860,13 @@ fn normalize_namespace_prefix_value(value: Option<Bound<'_, PyAny>>) -> Option<S
     value.and_then(normalize_namespace_prefix_from_any)
 }
 
-fn string_or_empty(root: &Map<String, JsonValue>, object_key: &str, field_key: &str) -> String {
-    root.get(object_key)
-        .and_then(JsonValue::as_object)
-        .and_then(|value| value.get(field_key))
-        .and_then(JsonValue::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_default()
-}
 
-fn string_or_empty_root(root: &Map<String, JsonValue>, field_key: &str) -> String {
-    root.get(field_key)
-        .and_then(JsonValue::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_default()
-}
 
-fn int_or_zero_root(root: &Map<String, JsonValue>, field_key: &str) -> i64 {
-    root.get(field_key).and_then(JsonValue::as_i64).unwrap_or(0)
-}
 
-fn bool_or_false_root(root: &Map<String, JsonValue>, field_key: &str) -> bool {
-    root.get(field_key)
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false)
-}
+
+
+
+
 
 fn normalize_text_from_any(value: Bound<'_, PyAny>) -> Option<String> {
     if value.is_none() {
@@ -929,41 +907,8 @@ fn render_json_value(py: Python<'_>, value: JsonValue) -> PyResult<Py<PyAny>> {
 }
 
 
-fn render_plan_http_client_stats(
-    py: Python<'_>,
-    stats: PlanHttpClientStats,
-) -> PyResult<Py<PyDict>> {
-    render_json_dict(
-        py,
-        JsonValue::Object(ait_core::json_support::JsonMap::from_iter([
-            ("base_url".to_string(), JsonValue::String(stats.base_url)),
-            (
-                "default_timeout_ms".to_string(),
-                JsonValue::Number(stats.default_timeout_ms.into()),
-            ),
-            (
-                "retry_attempts".to_string(),
-                JsonValue::Number((stats.retry_attempts as u64).into()),
-            ),
-            (
-                "retry_backoff_ms".to_string(),
-                JsonValue::Number(stats.retry_backoff_ms.into()),
-            ),
-            (
-                "pool_max_idle_per_host".to_string(),
-                JsonValue::Number((stats.pool_max_idle_per_host as u64).into()),
-            ),
-            (
-                "request_count".to_string(),
-                JsonValue::Number((stats.request_count as u64).into()),
-            ),
-            (
-                "retry_count".to_string(),
-                JsonValue::Number((stats.retry_count as u64).into()),
-            ),
-            ("closed".to_string(), JsonValue::Bool(stats.closed)),
-        ])),
-    )
+fn render_plan_http_client_stats(py: Python<'_>, stats: PlanHttpClientStats) -> PyResult<Py<PyDict>> {
+    render_json_dict(py, ait_core::plan_http_sdk::client_stats_payload(stats))
 }
 
 #[pyfunction(name = "plan_ports_normalize_plan_store_read_request")]

@@ -1,7 +1,7 @@
 use crate::foundation::remote_binary_db::{
     binary_db_runtime_error, BinaryDb, BinaryDbCommandScope, BinaryDbError, BinaryDbFileFamily,
     BinaryDbFsyncPolicy, BinaryDbIndexAppender, BinaryDbReadTxn, BinaryDbWriteTxn, BinaryFileId,
-    BinaryPayloadFileId, ServerRemoteBinaryDb, StoreResult,
+    BinaryIndexId, BinaryPayloadFileId, ServerRemoteBinaryDb, StoreResult,
 };
 use crate::foundation::server_content_binary_db::{
     server_snapshot_id_from_hash48, ServerBinaryDbLineStore, ServerBinaryDbSnapshotStore,
@@ -40,18 +40,31 @@ where
     db: D,
     task_prefix: String,
     patchset_codec: PatchsetCodecMode,
+    // Immutable numeric routing authority supplied by the native Repository owner.
+    repository_index: Option<u32>,
 }
 
+#[path = "store/actors.rs"]
+mod actors;
 #[path = "store/history_promotion.rs"]
 mod history_promotion;
+pub use actors::UserActorIdentity;
+#[path = "store/ownership.rs"]
+mod ownership;
+#[path = "store/package_evidence.rs"]
+mod package_evidence;
 #[path = "store/patch_review.rs"]
 mod patch_review;
 #[path = "store/policy_land.rs"]
 mod policy_land;
+#[path = "store/snapshot_capture.rs"]
+mod snapshot_capture;
 #[path = "store/task_change.rs"]
 mod task_change;
 #[path = "store/task_land.rs"]
 mod task_land;
+
+use ownership::WorkflowOwner;
 
 impl<D> BinaryDbServerWorkflowV0Store<D>
 where
@@ -62,6 +75,7 @@ where
             db,
             task_prefix: String::new(),
             patchset_codec: PatchsetCodecMode::Transitional,
+            repository_index: None,
         }
     }
 
@@ -74,6 +88,7 @@ where
             db,
             task_prefix: String::new(),
             patchset_codec: PatchsetCodecMode::Frozen,
+            repository_index: None,
         }
     }
 
@@ -101,11 +116,17 @@ where
             db,
             task_prefix,
             patchset_codec,
+            repository_index: None,
         })
     }
 
     pub fn db(&self) -> &D {
         &self.db
+    }
+
+    pub fn with_repository_index(mut self, repository_index: u32) -> Self {
+        self.repository_index = Some(repository_index);
+        self
     }
 
     pub fn origin_namespace_prefix(&self) -> &str {
@@ -151,36 +172,20 @@ where
         format!("{}/C-{:02}", self.task_id(task_index), ordinal + 1)
     }
 
-    fn patchset_id(&self, change: V0ChangeRecord, ordinal: u8) -> String {
-        format!(
-            "{}/P-{:02}",
-            self.change_ref(change.task_index, change.change_ordinal),
-            ordinal + 1
-        )
-    }
-
-    fn selected_patchset_identity<A: ReadV0>(
+    fn current_change_patchset_identity<A: ReadV0>(
         &self,
         read: &A,
-        change_index: u32,
         change: V0ChangeRecord,
     ) -> Result<(Option<String>, Option<u64>), String> {
-        let Some(patchset_index) = change.selected_patchset_index_plus1.checked_sub(1) else {
-            return Ok((None, None));
-        };
-        let patchset = self
-            .read_patchset(read, patchset_index)
-            .map_err(|error| Self::error("Change selected Patchset read", error))?;
-        if patchset.change_index != change_index {
-            return Err("Binary DB v0 selected Patchset belongs to another Change".to_string());
-        }
-        if patchset.change_ordinal != change.change_ordinal {
-            return Err("Binary DB v0 selected Patchset Change ordinal disagrees".to_string());
-        }
-        Ok((
-            Some(self.patchset_id(change, patchset.patch_ordinal)),
-            Some(u64::from(patchset.patch_ordinal) + 1),
-        ))
+        let current = self
+            .current_task_patchset(read, change.task_index)?
+            .filter(|(_, patchset)| patchset.change_ordinal_plus1 == change.change_ordinal + 1);
+        Ok(current.map_or((None, None), |(_, patchset)| {
+            (
+                Some(self.patchset_public_id(patchset)),
+                Some(u64::from(patchset.patch_ordinal) + 1),
+            )
+        }))
     }
 
     fn review_id(&self, patchset_id: &str, ordinal: u8) -> String {
@@ -316,9 +321,9 @@ where
         V0PatchsetRecord {
             patchset_meta: record.patchset_meta,
             patch_ordinal: record.patch_ordinal,
-            change_ordinal: record.change_ordinal,
+            change_ordinal_plus1: record.change_ordinal_plus1,
             reserved0: record.reserved0,
-            change_index: record.change_index,
+            task_index: record.task_index,
             previous_task_patchset_index_plus1: record.previous_task_patchset_index_plus1,
             previous_change_patchset_index_plus1: record.previous_change_patchset_index_plus1,
             base_snapshot_index: record.base_snapshot_index,
@@ -343,9 +348,9 @@ where
         Ok(V0FrozenPatchsetRecord {
             patchset_meta: record.patchset_meta,
             patch_ordinal: record.patch_ordinal,
-            change_ordinal: record.change_ordinal,
+            change_ordinal_plus1: record.change_ordinal_plus1,
             reserved0: record.reserved0,
-            change_index: record.change_index,
+            task_index: record.task_index,
             previous_task_patchset_index_plus1: record.previous_task_patchset_index_plus1,
             previous_change_patchset_index_plus1: record.previous_change_patchset_index_plus1,
             base_snapshot_index: record.base_snapshot_index,
@@ -506,11 +511,35 @@ where
         } else {
             "active"
         };
+        let workflow_state = if record.is_terminal() {
+            status
+        } else if record.task_meta & TASK_META_BLOCKED != 0 {
+            "attention_required"
+        } else if record.task_meta & TASK_META_REVIEW_PENDING != 0 {
+            "in_review"
+        } else if record.task_meta & TASK_META_VALIDATION_PENDING != 0 {
+            "validation_pending"
+        } else if record.task_meta & TASK_META_READY_TO_LAND != 0 {
+            "ready_to_land"
+        } else {
+            "in_progress"
+        };
+        let current_patchset_id = self
+            .current_task_patchset(read, task_index)?
+            .map(|(_, patchset)| self.patchset_public_id(patchset));
+        let successful_land = self
+            .task_successful_receipt(read, task_index)?
+            .map(|(index, _)| self.land_at(read, index))
+            .transpose()?;
         Ok(json!({
             "task_id": self.task_id(task_index),
+            "repository_index": self.repository_index,
+            "actor_key_index": record.actor_index_plus1.checked_sub(1),
             "repo_name": self.db.repo_name().as_str(),
             "repo_id": self.db.repo_id().as_str(),
             "task_seq": task_index + 1,
+            "current_patchset_id": current_patchset_id,
+            "successful_land": successful_land,
             "title": payload.title,
             "intent": payload.intent,
             "planning_state": if record.task_meta & TASK_META_PLANNED != 0 { "planned" } else { "unplanned" },
@@ -521,6 +550,7 @@ where
             "plan_drift_state": drift_state,
             "plan_linked_at": Self::timestamp(record.plan_linked_at_s)?,
             "status": status,
+            "workflow_state": workflow_state,
             "created_at": Self::timestamp(record.created_at_s)?,
             "updated_at": Self::timestamp(record.updated_at_s)?,
             "closed_at": Self::timestamp(record.closed_at_s)?,
@@ -619,6 +649,34 @@ where
         } else {
             None
         };
+        if let Some((task_index, ordinal)) = exact_owner {
+            let inventory = self.owner_ordinal_index(read, "task_change_index.bin", task_index)?;
+            let mut cursor = inventory.latest_index_plus1.checked_sub(1);
+            let mut visited = BTreeSet::new();
+            let mut found = None;
+            while let Some(index) = cursor {
+                if !visited.insert(index) {
+                    return Err("Task Change inventory has a cycle".to_string());
+                }
+                let change = self.read_change(read, index).map_err(|e| e.to_string())?;
+                if change.task_index != task_index {
+                    return Err("Task Change inventory has a foreign owner".to_string());
+                }
+                if change.change_ordinal == ordinal
+                    && change.remote_meta & 1 == 0
+                    && found.replace(index).is_some()
+                {
+                    return Err(format!(
+                        "Duplicate Binary DB v0 Change identity: {change_ref}"
+                    ));
+                }
+                cursor = change.previous_change_index_plus1.checked_sub(1);
+            }
+            if visited.len() != usize::from(inventory.count) {
+                return Err("Task Change inventory count disagrees".to_string());
+            }
+            return found.ok_or_else(|| format!("Unknown change: {change_ref}"));
+        }
         let short_ordinal = if exact_owner.is_none() {
             let digits = change_ref
                 .strip_prefix("C-")
@@ -676,29 +734,39 @@ where
     }
 
     fn patchset_index_for_id<A: ReadV0>(&self, read: &A, patchset_id: &str) -> Result<u32, String> {
-        let (change_ref, _) = patchset_id
+        let (parent, _) = patchset_id
             .rsplit_once("/P-")
-            .ok_or_else(|| format!("{patchset_id:?} is not a normalized Patchset identity"))?;
-        let change_index = self.change_index_for_ref(read, change_ref)?;
-        let ordinal = Self::parse_owned_ordinal(patchset_id, change_ref, "P")?;
-        let count = read
-            .record_count_v0(WorkflowBinaryV0Codec::patchset_file())
-            .map_err(|error| Self::error("Patchset identity read", error))?;
+            .ok_or_else(|| format!("Invalid Patchset identity {patchset_id:?}"))?;
+        let owner = self.workflow_owner(read, parent)?;
+        let ordinal = Self::parse_owned_ordinal(patchset_id, parent, "P")?;
+        let inventory = self.task_inventory(read, "task_patchset_index.bin", owner.task_index)?;
+        let mut cursor = inventory.latest_index_plus1.checked_sub(1);
+        let mut seen = BTreeSet::new();
+        let mut ordinals = BTreeSet::new();
         let mut found = None;
-        for index in 0..count {
-            let record = self
-                .read_patchset(read, index)
-                .map_err(|error| Self::error("Patchset identity read", error))?;
-            if record.change_index == change_index
-                && record.patch_ordinal == ordinal
-                && found.replace(index).is_some()
+        while let Some(index) = cursor {
+            if !seen.insert(index) {
+                return Err("Task Patchset inventory has a cycle".to_string());
+            }
+            let patchset = self.read_patchset(read, index).map_err(|e| e.to_string())?;
+            if patchset.task_index != owner.task_index || !ordinals.insert(patchset.patch_ordinal) {
+                return Err("Task Patchset owner or allocated ordinal disagrees".to_string());
+            }
+            self.patchset_owner(read, patchset)?;
+            if patchset.patch_ordinal == ordinal
+                && (owner.change.is_none() || self.patchset_public_id(patchset) == patchset_id)
             {
-                return Err(format!(
-                    "Duplicate Binary DB v0 Patchset identity: {patchset_id}"
-                ));
+                found = Some(index);
+            }
+            cursor = patchset.previous_task_patchset_index_plus1.checked_sub(1);
+            if cursor.is_some_and(|previous| previous >= index) {
+                return Err("Task Patchset inventory is not in physical append order".to_string());
             }
         }
-        found.ok_or_else(|| format!("Unknown patchset: {patchset_id}"))
+        if seen.len() != usize::from(inventory.count) {
+            return Err("Task Patchset count disagrees".to_string());
+        }
+        found.ok_or_else(|| format!("Unknown Patchset {patchset_id}"))
     }
 
     fn content_line_name<A: ReadV0>(
@@ -723,13 +791,12 @@ where
     ) -> Result<String, String> {
         let raw = read
             .read_record_v0(
-                ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
+                ServerBinarySnapshotCodec::<2>::record_file(),
                 snapshot_index,
             )
             .map_err(|error| Self::error("Snapshot read", error))?;
-        let record =
-            ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::decode_record(&raw)
-                .map_err(|error| Self::error("Snapshot decode", error))?;
+        let record = ServerBinarySnapshotCodec::<2>::decode_record(&raw)
+            .map_err(|error| Self::error("Snapshot decode", error))?;
         if record.is_tombstone() {
             return Err(format!("Snapshot index {snapshot_index} is tombstoned"));
         }
@@ -781,17 +848,9 @@ where
                     .map_err(|error| format!("Change fork Snapshot read failed: {error}"))
             })
             .transpose()?;
-        let (selected_patchset_id, selected_patchset_number) =
-            self.selected_patchset_identity(read, index, record)?;
-        let current = self.owner_ordinal_index(read, "change_patchset_index.bin", index)?;
-        let current_patchset_number = current
-            .latest_index_plus1
-            .checked_sub(1)
-            .map(|patchset_index| self.read_patchset(read, patchset_index))
-            .transpose()
-            .map_err(|error| Self::error("Change current Patchset read", error))?
-            .map(|patchset| u64::from(patchset.patch_ordinal) + 1)
-            .unwrap_or(0);
+        let (current_patchset_id, current_patchset_number) =
+            self.current_change_patchset_identity(read, record)?;
+        let current_patchset_number = current_patchset_number.unwrap_or(0);
         let latest_success = match precomputed_latest_success {
             Some(latest_success) => latest_success,
             None => self.latest_succeeded_land(read, index)?,
@@ -841,6 +900,7 @@ where
             "change_id": format!("C-{:02}", record.change_ordinal + 1),
             "change_ref": change_ref,
             "repo_name": self.db.repo_name().as_str(),
+            "actor_key_index": record.actor_index_plus1.checked_sub(1),
             "repo_id": self.db.repo_id().as_str(),
             "task_id": self.task_id(record.task_index),
             "title": title,
@@ -849,8 +909,7 @@ where
             "forked_from_line": base_line,
             "status": status,
             "current_patchset_number": current_patchset_number,
-            "selected_patchset_number": selected_patchset_number,
-            "selected_patchset_id": selected_patchset_id,
+            "current_patchset_id": current_patchset_id,
             "target_line": target_line,
             "landed_snapshot_id": landed_snapshot_id,
             "created_at": Self::timestamp(record.created_at_s)?,
@@ -900,12 +959,7 @@ where
         let record = self
             .read_patchset(read, index)
             .map_err(|error| Self::error("Patchset read", error))?;
-        let change = self
-            .read_change(read, record.change_index)
-            .map_err(|error| Self::error("Patchset Change read", error))?;
-        if record.change_ordinal != change.change_ordinal {
-            return Err("Binary DB v0 Patchset Change ordinal disagrees".to_string());
-        }
+        let owner = self.patchset_owner(read, record)?;
         let summary_raw = read
             .read_payload_v0(
                 WorkflowBinaryV0Codec::patchset_summary_file(),
@@ -948,15 +1002,18 @@ where
                 .ok_or_else(|| "non-pending Patchset has no live Policy Decision".to_string())?
         };
         let ci_status = |shift| ci_status_name(record.ci_status(shift));
-        let change_ref = self.change_ref(change.task_index, change.change_ordinal);
-        let patchset_id = self.patchset_id(change, record.patch_ordinal);
+        let change_ref = owner
+            .change
+            .map(|(_, change)| self.change_ref(owner.task_index, change.change_ordinal));
+        let patchset_id = self.patchset_public_id(record);
         let diff_stats_json =
             serde_json::to_string(&diff_stats).map_err(|error| error.to_string())?;
         Ok(json!({
             "patchset_id": patchset_id,
             "repo_name": self.db.repo_name().as_str(),
             "repo_id": self.db.repo_id().as_str(),
-            "change_id": format!("C-{:02}", change.change_ordinal + 1),
+            "task_id": self.task_id(owner.task_index),
+            "change_id": owner.change.map(|(_, change)| format!("C-{:02}", change.change_ordinal + 1)),
             "change_ref": change_ref,
             "patchset_number": u64::from(record.patch_ordinal) + 1,
             "base_snapshot_id": base_snapshot_id,
@@ -1052,10 +1109,10 @@ where
     where
         F: BinaryDbFsyncPolicy,
     {
-        let record = ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::decode_record(
+        let record = ServerBinarySnapshotCodec::<2>::decode_record(
             &write
                 .read_record(
-                    ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
+                    ServerBinarySnapshotCodec::<2>::record_file(),
                     snapshot_index,
                 )
                 .map_err(|error| Self::error("Patchset Snapshot read", error))?,
@@ -1076,10 +1133,10 @@ where
         read: &BinaryDbReadTxn<'_, D>,
         snapshot_index: u32,
     ) -> Result<BTreeMap<String, ServerBinarySnapshotFileIdentity>, String> {
-        let record = ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::decode_record(
+        let record = ServerBinarySnapshotCodec::<2>::decode_record(
             &read
                 .read_record(
-                    ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
+                    ServerBinarySnapshotCodec::<2>::record_file(),
                     snapshot_index,
                 )
                 .map_err(|error| Self::error("Patchset Snapshot read", error))?,
@@ -1103,12 +1160,21 @@ where
         let record = self
             .read_patchset(read, index)
             .map_err(|error| Self::error("queue Patchset read", error))?;
-        let change = self
-            .read_change(read, record.change_index)
-            .map_err(|error| Self::error("queue Patchset Change read", error))?;
-        if record.change_ordinal != change.change_ordinal {
-            return Err("Binary DB v0 Patchset Change ordinal disagrees".to_string());
-        }
+        let owner = self.patchset_owner(read, record)?;
+        let raw_summary = read
+            .read_payload_v0(
+                WorkflowBinaryV0Codec::patchset_summary_file(),
+                record.summary_offset,
+                u32::from(record.summary_len),
+            )
+            .map_err(|e| e.to_string())?;
+        let summary = WorkflowBinaryV0Codec::decode_single_text_payload(
+            &raw_summary,
+            "queue Patchset summary",
+        )
+        .map_err(|e| e.to_string())?;
+        let (source_kind, governance_authority) =
+            history_promotion::source_kind_for_summary(summary);
         let snapshots =
             ServerBinaryDbSnapshotStore::<D, SERVER_CONTENT_BINARY_LAYOUT_ID>::new(self.db.clone());
         let base_snapshot_id = snapshots
@@ -1117,18 +1183,30 @@ where
         let revision_snapshot_id = snapshots
             .snapshot_id_at(read, record.revision_snapshot_index)
             .map_err(|error| Self::error("queue Patchset revision Snapshot read", error))?;
-        let change_ref = self.change_ref(change.task_index, change.change_ordinal);
+        let change_ref = owner
+            .change
+            .map(|(_, change)| self.change_ref(owner.task_index, change.change_ordinal));
         Ok(json!({
-            "patchset_id": self.patchset_id(change, record.patch_ordinal),
-            "repo_name": self.db.repo_name().as_str(),
-            "repo_id": self.db.repo_id().as_str(),
-            "change_id": format!("C-{:02}", change.change_ordinal + 1),
-            "change_ref": change_ref,
-            "patchset_number": u64::from(record.patch_ordinal) + 1,
-            "base_snapshot_id": base_snapshot_id,
-            "revision_snapshot_id": revision_snapshot_id,
-            "created_at": Self::timestamp(record.created_at_s)?,
-        }))
+                "patchset_id": self.patchset_public_id(record),
+                "repo_name": self.db.repo_name().as_str(),
+                "repo_id": self.db.repo_id().as_str(),
+                "task_id": self.task_id(owner.task_index),
+                "change_id": owner.change.map(|(_, change)| format!("C-{:02}", change.change_ordinal + 1)),
+                "change_ref": change_ref,
+        "patchset_number": u64::from(record.patch_ordinal) + 1,
+        "source_kind":source_kind,"governance_authority":governance_authority,
+        "withdrawn":record.patchset_meta & 1 != 0,"invalidated":record.patchset_meta & 2 != 0,
+        "publish_state":if record.patchset_meta & PATCHSET_PUBLISH_STATE_MASK == 0 {"published"}else{"superseded"},
+        "ci":{"run_seq":record.ci_run_seq,"completed_at_s":record.ci_completed_at_s,
+        "overall_status":ci_status_name(record.ci_status(CI_STATUS_OVERALL_SHIFT)),
+        "tests_status":ci_status_name(record.ci_status(CI_STATUS_TESTS_SHIFT)),
+        "lint_status":ci_status_name(record.ci_status(CI_STATUS_LINT_SHIFT)),
+        "selected_suite_count":record.ci_selected_suite_count,"suite_result_count":record.ci_suite_result_count,
+        "blocking_failure_count":record.ci_blocking_failure_count},
+                "base_snapshot_id": base_snapshot_id,
+                "revision_snapshot_id": revision_snapshot_id,
+                "created_at": Self::timestamp(record.created_at_s)?,
+            }))
     }
 
     fn owner_ordinal_index<A: ReadV0>(
@@ -1137,11 +1215,14 @@ where
         path: &'static str,
         owner_index: u32,
     ) -> Result<V0OrdinalIndexRecord, String> {
-        WorkflowBinaryV0Codec::decode_ordinal_index(
-            &read
-                .read_record_v0(WorkflowBinaryV0Codec::chain_index_file(path), owner_index)
-                .map_err(|error| Self::error("owner ordinal index read", error))?,
-        )
+        let raw = read
+            .read_record_v0(WorkflowBinaryV0Codec::chain_index_file(path), owner_index)
+            .map_err(|error| Self::error("owner ordinal index read", error))?;
+        (if path == "task_snapshot_index.bin" {
+            WorkflowBinaryV0Codec::decode_task_snapshot_index(&raw)
+        } else {
+            WorkflowBinaryV0Codec::decode_ordinal_index(&raw)
+        })
         .map_err(|error| Self::error("owner ordinal index decode", error))
     }
 
@@ -1150,30 +1231,12 @@ where
         read: &A,
         change_index: u32,
     ) -> Result<Option<(u32, V0LandRecord)>, String> {
-        let count = read
-            .record_count_v0(WorkflowBinaryV0Codec::land_file())
-            .map_err(|error| Self::error("Land read", error))?;
-        let mut latest = None;
-        for index in 0..count {
-            let land = WorkflowBinaryV0Codec::decode_land(
-                &read
-                    .read_record_v0(WorkflowBinaryV0Codec::land_file(), index)
-                    .map_err(|error| Self::error("Land read", error))?,
-            )
-            .map_err(|error| Self::error("Land decode", error))?;
-            if land.change_index == change_index
-                && land.land_meta & LAND_TOMBSTONE == 0
-                && land.land_meta & LAND_STATUS_MASK == LAND_STATUS_SUCCEEDED
-                && latest
-                    .as_ref()
-                    .is_none_or(|(_, current): &(u32, V0LandRecord)| {
-                        land.land_ordinal > current.land_ordinal
-                    })
-            {
-                latest = Some((index, land));
-            }
-        }
-        Ok(latest)
+        let change = self
+            .read_change(read, change_index)
+            .map_err(|e| e.to_string())?;
+        Ok(self
+            .task_successful_receipt(read, change.task_index)?
+            .filter(|(_, receipt)| receipt.change_ordinal_plus1 == change.change_ordinal + 1))
     }
 
     pub(super) fn latest_succeeded_lands_from_records(
@@ -1191,16 +1254,11 @@ where
             }
             let index = u32::try_from(index)
                 .map_err(|_| "Binary DB v0 queue Land index exceeds u32".to_string())?;
-            match latest.entry(land.change_index) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert((index, land));
-                }
-                std::collections::btree_map::Entry::Occupied(mut entry)
-                    if land.land_ordinal > entry.get().1.land_ordinal =>
-                {
-                    entry.insert((index, land));
-                }
-                std::collections::btree_map::Entry::Occupied(_) => {}
+            if latest.insert(land.task_index, (index, land)).is_some() {
+                return Err(
+                    "Task has multiple successful receipts; historical disposition required"
+                        .to_string(),
+                );
             }
         }
         Ok(latest)
@@ -1257,6 +1315,7 @@ where
 }
 
 trait ReadV0 {
+    fn lookup_index_v0(&self, index: BinaryIndexId, key: &[u8]) -> StoreResult<Vec<u32>>;
     fn read_record_v0(&self, file: BinaryFileId, index: u32) -> StoreResult<Vec<u8>>;
     fn record_count_v0(&self, file: BinaryFileId) -> StoreResult<u32>;
     fn read_payload_v0(
@@ -1271,6 +1330,9 @@ impl<'a, B> ReadV0 for BinaryDbReadTxn<'a, B>
 where
     B: BinaryDb + ?Sized,
 {
+    fn lookup_index_v0(&self, index: BinaryIndexId, key: &[u8]) -> StoreResult<Vec<u32>> {
+        self.lookup_index(index, key)
+    }
     fn read_record_v0(&self, file: BinaryFileId, index: u32) -> StoreResult<Vec<u8>> {
         self.read_record(file, index)
     }
@@ -1294,6 +1356,9 @@ where
     B: BinaryDb + ?Sized,
     F: BinaryDbFsyncPolicy,
 {
+    fn lookup_index_v0(&self, index: BinaryIndexId, key: &[u8]) -> StoreResult<Vec<u32>> {
+        self.lookup_index(index, key)
+    }
     fn read_record_v0(&self, file: BinaryFileId, index: u32) -> StoreResult<Vec<u8>> {
         self.read_record(file, index)
     }
@@ -1379,11 +1444,20 @@ where
                 .read_change(&read, index)
                 .map_err(|error| Self::error("queue Change read", error))?;
             if record.remote_meta & 1 == 0 {
-                changes.push(self.change_at_with_precomputed_latest_success(
-                    &read,
-                    index,
-                    Some(latest_succeeded_lands.get(&index).copied()),
-                )?);
+                changes.push(
+                    self.change_at_with_precomputed_latest_success(
+                        &read,
+                        index,
+                        Some(
+                            latest_succeeded_lands
+                                .get(&record.task_index)
+                                .copied()
+                                .filter(|(_, land)| {
+                                    land.change_ordinal_plus1 == record.change_ordinal + 1
+                                }),
+                        ),
+                    )?,
+                );
             }
         }
         #[cfg(feature = "perfetto-tracing")]
@@ -1589,28 +1663,20 @@ where
         line_live.push(!record.is_tombstone());
     }
     let snapshot_count = read
-        .record_count(ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file())
+        .record_count(ServerBinarySnapshotCodec::<2>::record_file())
         .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?;
     let mut snapshot_live = Vec::with_capacity(snapshot_count as usize);
     for index in 0..snapshot_count {
-        let record = ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::decode_record(
+        let record = ServerBinarySnapshotCodec::<2>::decode_record(
             &read
-                .read_record(
-                    ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
-                    index,
-                )
+                .read_record(ServerBinarySnapshotCodec::<2>::record_file(), index)
                 .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?,
         )
         .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?;
         snapshot_live.push(!record.is_tombstone());
     }
     let plan_revision_count = read
-        .record_count(BinaryFileId::new(
-            "plan_revision.bin",
-            1,
-            56,
-            BinaryDbFileFamily::Plan,
-        ))
+        .record_count(crate::foundation::server_plan_binary_db::remote_plan_revision_file())
         .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?;
     let plan_item_count = read
         .record_count(BinaryFileId::new(
@@ -1712,6 +1778,16 @@ where
     }
     validate_payload_ranges("change_payload.bin", &mut change_ranges)?;
 
+    let mut change_by_owner = BTreeMap::new();
+    for (index, change) in changes.iter().enumerate() {
+        if change_by_owner
+            .insert((change.task_index, change.change_ordinal), index as u32)
+            .is_some()
+        {
+            return Err("Duplicate Task Change ordinal".to_string());
+        }
+    }
+    let mut task_patchset_ordinals = BTreeMap::<u32, BTreeSet<u8>>::new();
     let mut patchset_ranges = Vec::new();
     let mut patchsets = Vec::with_capacity(patchset_count as usize);
     let mut patchset_change_items = Vec::new();
@@ -1726,10 +1802,21 @@ where
                 .map(BinaryDbServerWorkflowV0Store::<D>::logical_patchset_from_frozen),
         }
         .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?;
-        let change = changes
-            .get(record.change_index as usize)
-            .ok_or_else(|| format!("Binary DB v0 Patchset {index} has an invalid Change owner"))?;
-        if record.change_ordinal != change.change_ordinal
+        let change_index = record
+            .change_ordinal_plus1
+            .checked_sub(1)
+            .map(|ordinal| {
+                change_by_owner
+                    .get(&(record.task_index, ordinal))
+                    .copied()
+                    .ok_or_else(|| format!("Patchset {index} has an invalid explicit Change"))
+            })
+            .transpose()?;
+        if record.task_index >= task_count
+            || !task_patchset_ordinals
+                .entry(record.task_index)
+                .or_default()
+                .insert(record.patch_ordinal)
             || snapshot_live
                 .get(record.base_snapshot_index as usize)
                 .copied()
@@ -1753,38 +1840,31 @@ where
         WorkflowBinaryV0Codec::decode_single_text_payload(&summary, "Patchset summary")
             .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?;
         patchset_ranges.push((record.summary_offset, u32::from(record.summary_len), index));
-        patchset_change_items.push((
-            index,
-            record.change_index,
-            record.patch_ordinal,
-            record.previous_change_patchset_index_plus1,
-        ));
+        if let Some(change_index) = change_index {
+            patchset_change_items.push((
+                index,
+                change_index,
+                record.patch_ordinal,
+                record.previous_change_patchset_index_plus1,
+            ));
+        }
         patchset_task_items.push((
             index,
-            change.task_index,
+            record.task_index,
             record.previous_task_patchset_index_plus1,
         ));
         patchsets.push(record);
     }
     validate_payload_ranges("patchset_summary_payload.bin", &mut patchset_ranges)?;
     for (index, change) in changes.iter().enumerate() {
-        let has_patchsets = patchsets
-            .iter()
-            .any(|patchset| patchset.change_index == index as u32);
+        let has_patchsets = patchsets.iter().any(|patchset| {
+            patchset.task_index == change.task_index
+                && patchset.change_ordinal_plus1 == change.change_ordinal + 1
+        });
         if (change.change_meta & CHANGE_META_HAS_PATCHSETS != 0) != has_patchsets {
             return Err(format!(
                 "Binary DB v0 Change {index} has_patchsets projection disagrees"
             ));
-        }
-        if let Some(patchset_index) = change.selected_patchset_index_plus1.checked_sub(1) {
-            let patchset = patchsets
-                .get(patchset_index as usize)
-                .ok_or_else(|| format!("Binary DB v0 Change {index} selects a missing Patchset"))?;
-            if patchset.change_index != index as u32 || patchset.patchset_meta & 0b11 != 0 {
-                return Err(format!(
-                    "Binary DB v0 Change {index} selected-Patchset authority is invalid"
-                ));
-            }
         }
     }
 
@@ -1805,9 +1885,8 @@ where
             .ok_or_else(|| {
                 format!("Binary DB v0 Attestation {index} has an invalid Patchset owner")
             })?;
-        let change = &changes[patchset.change_index as usize];
         if record.patch_ordinal != patchset.patch_ordinal
-            || record.change_ordinal != change.change_ordinal
+            || record.change_ordinal_plus1 != patchset.change_ordinal_plus1
         {
             return Err(format!(
                 "Binary DB v0 Attestation {index} ownership disagrees"
@@ -1815,7 +1894,7 @@ where
         }
         attest_task_items.push((
             index,
-            change.task_index,
+            patchset.task_index,
             record.attest_ordinal,
             record.previous_task_attest_index_plus1,
         ));
@@ -1858,13 +1937,14 @@ where
             || record.actor_key_hash != fnv1a64(payload.user_name.as_bytes())
             || ((record.created_at_s == 0) != (record.last_seen_at_s == 0))
             || (record.created_at_s != 0 && record.created_at_s > record.last_seen_at_s)
-            || !actor_identities.insert((
-                record.actor_meta & 0b111,
-                payload.user_name,
-                payload.user_id,
-                payload.email,
-                payload.memo,
-            ))
+            || (record.actor_meta & 0x80 == 0
+                && !actor_identities.insert((
+                    record.actor_meta & 0b111,
+                    payload.user_name,
+                    payload.user_id,
+                    payload.email,
+                    payload.memo,
+                )))
         {
             return Err(format!(
                 "Binary DB v0 Actor {index} identity authority is invalid"
@@ -1901,14 +1981,13 @@ where
         let patchset = patchsets
             .get(record.patchset_index as usize)
             .ok_or_else(|| format!("Binary DB v0 Review {index} has an invalid Patchset owner"))?;
-        let change = &changes[patchset.change_index as usize];
         if record
             .actor_index_plus1
             .checked_sub(1)
             .and_then(|value| actors.get(value as usize))
             .is_none_or(|actor| actor.actor_meta & 0x80 != 0)
             || record.patch_ordinal != patchset.patch_ordinal
-            || record.change_ordinal != change.change_ordinal
+            || record.change_ordinal_plus1 != patchset.change_ordinal_plus1
         {
             return Err(format!("Binary DB v0 Review {index} ownership disagrees"));
         }
@@ -1930,7 +2009,7 @@ where
         ));
         review_task_items.push((
             index,
-            change.task_index,
+            patchset.task_index,
             record.previous_task_review_index_plus1,
         ));
     }
@@ -1939,74 +2018,53 @@ where
     let snapshot_link_count = read
         .record_count(WorkflowBinaryV0Codec::snapshot_link_file())
         .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?;
-    let mut snapshot_link_ranges = Vec::new();
     let mut snapshot_task_items = Vec::new();
     let mut snapshot_change_items = Vec::new();
+    let mut linked_content = BTreeSet::new();
     for index in 0..snapshot_link_count {
         let record = WorkflowBinaryV0Codec::decode_snapshot_link(
             &read
                 .read_record(WorkflowBinaryV0Codec::snapshot_link_file(), index)
-                .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?,
+                .map_err(|e| e.to_string())?,
         )
-        .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?;
+        .map_err(|e| e.to_string())?;
         if record.task_index >= task_count
             || snapshot_live
                 .get(record.content_snapshot_index as usize)
                 .copied()
                 != Some(true)
+            // Historical metadata can associate distinct owners with the same
+            // content. Operation-specific capture/finish authority is checked
+            // separately and never inferred by choosing one of these rows.
+            || !linked_content.insert((record.task_index, record.change_index_plus1, record.content_snapshot_index))
         {
             return Err(format!(
-                "Binary DB v0 Snapshot Link {index} has an invalid Task/Snapshot relation"
+                "Snapshot Link {index} has invalid or duplicate Task/content ownership"
             ));
+        }
+        let snapshot = ServerBinarySnapshotCodec::<2>::decode_record(
+            &read
+                .read_record(
+                    ServerBinarySnapshotCodec::<2>::record_file(),
+                    record.content_snapshot_index,
+                )
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        if record.created_at_s != snapshot.created_at_s {
+            return Err("Snapshot Link immutable timestamp differs".to_string());
         }
         if let Some(change_index) = record.change_index_plus1.checked_sub(1) {
-            let change = changes.get(change_index as usize).ok_or_else(|| {
-                format!("Binary DB v0 Snapshot Link {index} has an invalid Change owner")
-            })?;
+            let change = changes
+                .get(change_index as usize)
+                .ok_or("Snapshot Link Change is out of range")?;
             if change.task_index != record.task_index {
-                return Err(format!(
-                    "Binary DB v0 Snapshot Link {index} Change belongs to another Task"
-                ));
+                return Err("Snapshot Link Change belongs to another Task".to_string());
             }
-            snapshot_change_items.push((
-                index,
-                change_index,
-                record.previous_change_snapshot_link_index_plus1,
-            ));
-        } else if record.previous_change_snapshot_link_index_plus1 != 0 {
-            return Err(format!(
-                "Binary DB v0 Snapshot Link {index} has a Change link without a Change owner"
-            ));
+            snapshot_change_items.push((index, change_index));
         }
-        let payload = read
-            .read_payload(
-                WorkflowBinaryV0Codec::snapshot_link_payload_file(),
-                record.payload_offset,
-                u32::from(record.payload_len),
-            )
-            .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?;
-        let payload = WorkflowBinaryV0Codec::decode_snapshot_link_payload(&payload)
-            .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?;
-        if (record.link_meta & SNAPSHOT_LINK_HAS_WORKTREE_NAME != 0)
-            == payload.worktree_name.is_empty()
-            || (record.link_meta & SNAPSHOT_LINK_HAS_LINE_NAME != 0) == payload.line_name.is_empty()
-            || (record.link_meta & SNAPSHOT_LINK_HAS_AUTHOR_OR_MODEL != 0)
-                != (!payload.author_mode.is_empty() || !payload.model_name.is_empty())
-            || (record.change_index_plus1 != 0) == payload.change_id.is_empty()
-        {
-            return Err(format!(
-                "Binary DB v0 Snapshot Link {index} payload presence flags disagree"
-            ));
-        }
-        snapshot_link_ranges.push((record.payload_offset, u32::from(record.payload_len), index));
-        snapshot_task_items.push((
-            index,
-            record.task_index,
-            record.snapshot_ordinal,
-            record.previous_task_snapshot_link_index_plus1,
-        ));
+        snapshot_task_items.push((index, record.task_index, record.snapshot_ordinal));
     }
-    validate_payload_ranges("snapshot_link_payload.bin", &mut snapshot_link_ranges)?;
 
     let waiver_count = read
         .record_count(WorkflowBinaryV0Codec::waiver_file())
@@ -2024,9 +2082,8 @@ where
         let patchset = patchsets
             .get(record.patchset_index as usize)
             .ok_or_else(|| format!("Binary DB v0 Waiver {index} has an invalid Patchset owner"))?;
-        let change = &changes[patchset.change_index as usize];
         if record.patch_ordinal != patchset.patch_ordinal
-            || record.change_ordinal != change.change_ordinal
+            || record.change_ordinal_plus1 != patchset.change_ordinal_plus1
         {
             return Err(format!("Binary DB v0 Waiver {index} authority is invalid"));
         }
@@ -2042,7 +2099,7 @@ where
         waiver_ranges.push((record.payload_offset, u32::from(record.payload_len), index));
         waiver_task_items.push((
             index,
-            change.task_index,
+            patchset.task_index,
             record.waiver_ordinal,
             record.previous_task_waiver_index_plus1,
         ));
@@ -2074,9 +2131,8 @@ where
         let patchset = patchsets
             .get(record.patchset_index as usize)
             .ok_or_else(|| format!("Binary DB v0 Policy {index} has an invalid Patchset owner"))?;
-        let change = &changes[patchset.change_index as usize];
         if record.patch_ordinal != patchset.patch_ordinal
-            || record.change_ordinal != change.change_ordinal
+            || record.change_ordinal_plus1 != patchset.change_ordinal_plus1
         {
             return Err(format!("Binary DB v0 Policy {index} ownership disagrees"));
         }
@@ -2116,7 +2172,7 @@ where
         ));
         policy_task_items.push((
             index,
-            change.task_index,
+            patchset.task_index,
             record.previous_task_policy_index_plus1,
         ));
         if record.policy_meta & POLICY_TOMBSTONE == 0
@@ -2146,6 +2202,8 @@ where
     let mut land_change_items = Vec::new();
     let mut land_task_items = Vec::new();
     let mut succeeded_land_by_change = vec![false; change_count as usize];
+    let mut succeeded_land_by_task = BTreeSet::new();
+    let mut task_land_ordinals = BTreeMap::<u32, BTreeSet<u8>>::new();
     for index in 0..land_count {
         let record = WorkflowBinaryV0Codec::decode_land(
             &read
@@ -2153,14 +2211,15 @@ where
                 .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?,
         )
         .map_err(|error| BinaryDbServerWorkflowV0Store::<D>::error("validation", error))?;
-        let change = changes
-            .get(record.change_index as usize)
-            .ok_or_else(|| format!("Binary DB v0 Land {index} has an invalid Change owner"))?;
         let patchset = patchsets
             .get(record.patchset_index as usize)
             .ok_or_else(|| format!("Binary DB v0 Land {index} has an invalid accepted Patchset"))?;
-        if record.change_ordinal != change.change_ordinal
-            || patchset.change_index != record.change_index
+        if record.change_ordinal_plus1 != patchset.change_ordinal_plus1
+            || patchset.task_index != record.task_index
+            || !task_land_ordinals
+                .entry(record.task_index)
+                .or_default()
+                .insert(record.land_ordinal)
             || record
                 .pre_land_target_snapshot_index_plus1
                 .checked_sub(1)
@@ -2188,17 +2247,51 @@ where
         if record.land_meta & LAND_TOMBSTONE == 0
             && record.land_meta & LAND_STATUS_MASK == LAND_STATUS_SUCCEEDED
         {
-            succeeded_land_by_change[record.change_index as usize] = true;
+            if !succeeded_land_by_task.insert(record.task_index) {
+                return Err("Task has multiple successful Remote receipts; historical disposition is required".to_string());
+            }
+            let task = tasks
+                .get(record.task_index as usize)
+                .ok_or("Land Task is out of range")?;
+            if task.task_meta & TASK_META_COMPLETED == 0 {
+                return Err("Successful Remote receipt has an incomplete Task".to_string());
+            }
+            let raw = read
+                .read_payload(
+                    WorkflowBinaryV0Codec::patchset_summary_file(),
+                    patchset.summary_offset,
+                    u32::from(patchset.summary_len),
+                )
+                .map_err(|e| e.to_string())?;
+            let summary =
+                WorkflowBinaryV0Codec::decode_single_text_payload(&raw, "accepted Patchset")
+                    .map_err(|e| e.to_string())?;
+            if !history_promotion::source_kind_for_summary(summary).1 {
+                return Err(
+                    "Provenance-only history cannot own a Remote successful receipt".to_string(),
+                );
+            }
+            if let Some(ordinal) = record.change_ordinal_plus1.checked_sub(1) {
+                let change_index = *change_by_owner
+                    .get(&(record.task_index, ordinal))
+                    .ok_or("Land explicit Change is missing")?;
+                succeeded_land_by_change[change_index as usize] = true;
+            }
         }
-        land_change_items.push((
-            index,
-            record.change_index,
-            record.land_ordinal,
-            record.previous_change_land_index_plus1,
-        ));
+        if let Some(ordinal) = record.change_ordinal_plus1.checked_sub(1) {
+            let change_index = *change_by_owner
+                .get(&(record.task_index, ordinal))
+                .ok_or("Land explicit Change is missing")?;
+            land_change_items.push((
+                index,
+                change_index,
+                record.land_ordinal,
+                record.previous_change_land_index_plus1,
+            ));
+        }
         land_task_items.push((
             index,
-            change.task_index,
+            record.task_index,
             record.previous_task_land_index_plus1,
         ));
     }
@@ -2245,14 +2338,10 @@ where
         &read_inventory_indexes(&read, "task_review_index.bin", task_count)?,
         &review_task_items,
     )?;
-    validate_ordinal_chains(
-        "Task Snapshot Link",
+    validate_snapshot_owner_indexes(
         &read_ordinal_indexes(&read, "task_snapshot_index.bin", task_count)?,
-        &snapshot_task_items,
-    )?;
-    validate_inventory_chains(
-        "Change Snapshot Link",
         &read_inventory_indexes(&read, "change_snapshot_index.bin", change_count)?,
+        &snapshot_task_items,
         &snapshot_change_items,
     )?;
     validate_ordinal_chains(
@@ -2298,11 +2387,14 @@ where
 {
     (0..count)
         .map(|index| {
-            WorkflowBinaryV0Codec::decode_ordinal_index(
-                &read
-                    .read_record(WorkflowBinaryV0Codec::chain_index_file(path), index)
-                    .map_err(|error| format!("Binary DB v0 {path} read failed: {error}"))?,
-            )
+            let raw = read
+                .read_record(WorkflowBinaryV0Codec::chain_index_file(path), index)
+                .map_err(|error| format!("Binary DB v0 {path} read failed: {error}"))?;
+            (if path == "task_snapshot_index.bin" {
+                WorkflowBinaryV0Codec::decode_task_snapshot_index(&raw)
+            } else {
+                WorkflowBinaryV0Codec::decode_ordinal_index(&raw)
+            })
             .map_err(|error| format!("Binary DB v0 {path} decode failed: {error}"))
         })
         .collect()
@@ -2358,7 +2450,10 @@ fn validate_ordinal_chains(
             }
             previous = physical + 1;
         }
-        let expected_next = rows.last().map(|(_, ordinal, _)| ordinal + 1).unwrap_or(0);
+        let expected_next = rows
+            .last()
+            .map(|(_, ordinal, _)| ordinal.saturating_add(1))
+            .unwrap_or(0);
         if index.latest_index_plus1 != previous
             || usize::from(index.count) != rows.len()
             || index.next_ordinal != expected_next
@@ -2403,6 +2498,49 @@ fn validate_inventory_chains(
         if index.latest_index_plus1 != previous || usize::from(index.count) != rows.len() {
             return Err(format!(
                 "Binary DB v0 {label} owner {owner} index projection disagrees"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_snapshot_owner_indexes(
+    tasks: &[V0OrdinalIndexRecord],
+    changes: &[V0InventoryIndexRecord],
+    task_links: &[(u32, u32, u8)],
+    change_links: &[(u32, u32)],
+) -> Result<(), String> {
+    let mut by_task = BTreeMap::<u32, Vec<(u32, u8)>>::new();
+    for &(index, task, ordinal) in task_links {
+        by_task.entry(task).or_default().push((index, ordinal));
+    }
+    for (task, expected) in tasks.iter().enumerate() {
+        let rows = by_task.entry(task as u32).or_default();
+        rows.sort_by_key(|(index, _)| *index);
+        if rows
+            .iter()
+            .enumerate()
+            .any(|(n, (_, ordinal))| usize::from(*ordinal) != n)
+            || rows.len() != usize::from(expected.count)
+            || expected.latest_index_plus1 != rows.last().map_or(0, |(index, _)| index + 1)
+            || expected.next_ordinal != u8::try_from(rows.len()).unwrap_or(u8::MAX)
+        {
+            return Err(format!(
+                "Task {task} Snapshot owner index disagrees with allocated numeric links"
+            ));
+        }
+    }
+    let mut by_change = BTreeMap::<u32, Vec<u32>>::new();
+    for &(index, change) in change_links {
+        by_change.entry(change).or_default().push(index);
+    }
+    for (change, expected) in changes.iter().enumerate() {
+        let rows = by_change.entry(change as u32).or_default();
+        if rows.len() != usize::from(expected.count)
+            || expected.latest_index_plus1 != rows.iter().max().map_or(0, |index| index + 1)
+        {
+            return Err(format!(
+                "Change {change} Snapshot owner index disagrees with numeric links"
             ));
         }
     }

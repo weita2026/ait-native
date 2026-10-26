@@ -46,6 +46,7 @@ fn init_authoring_worktree(root: &Path) -> std::path::PathBuf {
             "--json",
         ],
     );
+    assert!(started.get("change").is_none_or(JsonValue::is_null));
     std::path::PathBuf::from(
         started["worktree"]["path"]
             .as_str()
@@ -66,7 +67,7 @@ fn native_stash_cli_preserves_the_complete_binary_db_lifecycle() {
         &[
             "snapshot",
             "create",
-            "LT-0001/C-01",
+            "LT-0001",
             "--message",
             "base",
             "--json",
@@ -168,7 +169,7 @@ fn native_stash_cli_rejects_cross_line_restore_without_mutation() {
         &[
             "snapshot",
             "create",
-            "LT-0001/C-01",
+            "LT-0001",
             "--message",
             "base",
             "--json",

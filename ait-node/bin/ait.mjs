@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
 import { NativeRuntime } from "../src/index.js";
+import { runTerminal, reportTerminalError } from "../src/terminal.js";
 
+const runtime = new NativeRuntime();
 try {
-  process.exitCode = new NativeRuntime().runCli(process.argv.slice(2));
+  process.exitCode = runTerminal(process.argv.slice(2), {
+    runtime,
+  });
 } catch (error) {
-  process.stderr.write(`ait: ${error?.message ?? String(error)}\n`);
-  process.exitCode = 1;
+  process.exitCode = reportTerminalError(error, { runtime });
 }

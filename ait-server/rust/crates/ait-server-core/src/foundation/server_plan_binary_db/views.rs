@@ -23,6 +23,7 @@ where
             "repo_name": self.db.repo_name().as_str(),
             "repo_id": meta.repo_id,
             "title": title,
+            "actor_key_index": record.actor_index_plus1.checked_sub(1),
             "status": meta.status,
             "head_revision_id": head_revision_id,
             "head_revision": head_revision,
@@ -131,6 +132,10 @@ where
             },
         )?;
         view.insert("items".to_string(), JsonValue::Array(compact_items));
+        view.insert(
+            "actor_key_index".to_string(),
+            json!(record.actor_index_plus1.checked_sub(1)),
+        );
         Ok(JsonValue::Object(view))
     }
 
@@ -199,6 +204,7 @@ where
             "repo_name": self.db.repo_name().as_str(),
             "repo_id": meta.repo_id,
             "title": title,
+            "actor_key_index": record.actor_index_plus1.checked_sub(1),
             "status": meta.status,
             "head_revision_id": head_revision_id,
             "created_by": meta.created_by,
@@ -213,6 +219,7 @@ where
             "head_revision_summary": head_revision_summary,
             "head_revision_created_at": head_revision_created_at,
             "head_revision": {
+                "actor_key_index": head_payload.as_ref().and_then(|(record,_)| record.actor_index_plus1.checked_sub(1)),
                 "plan_revision_id": head_revision_id,
                 "revision_number": head_revision_number,
                 "artifact_path": head_artifact_path,

@@ -1533,18 +1533,19 @@ impl TaskWorkflowAttestationWriter for FakeCloseoutRemote {
         &mut self,
         patchset_id: &str,
         author_mode: &str,
-        evaluation_summary: &JsonValue,
-        provenance_summary: &JsonValue,
-        detail: &JsonValue,
+        statement: &crate::attest_json::RemoteAttestationStatement,
         repo_name: Option<&str>,
         exact_id: bool,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
         Ok(json!({
             "patchset_id": patchset_id,
             "author_mode": author_mode,
-            "evaluation_summary": evaluation_summary,
-            "provenance_summary": provenance_summary,
-            "detail": detail,
+            "verification_state": statement.verification_state,
+            "require_tests_pass": statement.require_tests_pass,
+            "require_lint_pass": statement.require_lint_pass,
+            "require_human_review": statement.require_human_review,
+            "revoked": statement.revoked,
+            "ci_backed": false,
             "repo_name": repo_name,
             "exact_id": exact_id,
         }))
@@ -2117,18 +2118,19 @@ impl TaskWorkflowAttestationWriter for FakeAttestationRemote {
         &mut self,
         patchset_id: &str,
         author_mode: &str,
-        evaluation_summary: &JsonValue,
-        provenance_summary: &JsonValue,
-        detail: &JsonValue,
+        statement: &crate::attest_json::RemoteAttestationStatement,
         repo_name: Option<&str>,
         exact_id: bool,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
         Ok(json!({
             "patchset_id": patchset_id,
             "author_mode": author_mode,
-            "evaluation_summary": evaluation_summary,
-            "provenance_summary": provenance_summary,
-            "detail": detail,
+            "verification_state": statement.verification_state,
+            "require_tests_pass": statement.require_tests_pass,
+            "require_lint_pass": statement.require_lint_pass,
+            "require_human_review": statement.require_human_review,
+            "revoked": statement.revoked,
+            "ci_backed": false,
             "repo_name": repo_name,
             "exact_id": exact_id,
         }))
@@ -2156,18 +2158,19 @@ impl TaskWorkflowAttestationWriter for FakeAttestationWriterPort {
         &mut self,
         patchset_id: &str,
         author_mode: &str,
-        evaluation_summary: &JsonValue,
-        provenance_summary: &JsonValue,
-        detail: &JsonValue,
+        statement: &crate::attest_json::RemoteAttestationStatement,
         repo_name: Option<&str>,
         exact_id: bool,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
         Ok(json!({
             "patchset_id": patchset_id,
             "author_mode": author_mode,
-            "evaluation_summary": evaluation_summary,
-            "provenance_summary": provenance_summary,
-            "detail": detail,
+            "verification_state": statement.verification_state,
+            "require_tests_pass": statement.require_tests_pass,
+            "require_lint_pass": statement.require_lint_pass,
+            "require_human_review": statement.require_human_review,
+            "revoked": statement.revoked,
+            "ci_backed": false,
             "repo_name": repo_name,
             "exact_id": exact_id,
         }))
@@ -2509,3 +2512,8 @@ mod repository;
 mod review;
 mod snapshot;
 mod task;
+
+fn expected_actor_body(mut body: JsonValue) -> JsonValue {
+    body["actor_key_index"] = json!(0);
+    body
+}

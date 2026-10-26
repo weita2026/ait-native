@@ -441,10 +441,24 @@ where
         let mut attestations = Vec::new();
         let mut policy_decisions = Vec::new();
 
-        for change in &changes {
-            let Some(change_ref) = text_field(change, "change_ref") else {
-                continue;
-            };
+        let task_owned = tasks
+            .iter()
+            .filter(|task| task.contains_key("current_patchset_id"))
+            .filter_map(|task| text_field(task, "task_id"))
+            .collect::<BTreeSet<_>>();
+        let owners = task_owned
+            .iter()
+            .cloned()
+            .chain(
+                changes
+                    .iter()
+                    .filter(|change| {
+                        text_field(change, "task_id").is_none_or(|task| !task_owned.contains(&task))
+                    })
+                    .filter_map(|change| text_field(change, "change_ref")),
+            )
+            .collect::<Vec<_>>();
+        for change_ref in owners {
             for patchset in object_rows(
                 self.workflow.list_patchsets(Some(repo_name), &change_ref)?,
                 "patchset list",
@@ -509,12 +523,18 @@ fn queue_projection_rows_from_bulk_values(
         .iter()
         .filter_map(|row| text_field(row, "change_ref"))
         .collect::<BTreeSet<_>>();
+    let task_ids = tasks
+        .iter()
+        .filter_map(|row| text_field(row, "task_id"))
+        .collect::<BTreeSet<_>>();
     let patchsets = take_projection_object_rows(values, "patchsets")?
         .into_iter()
         .filter(|row| {
-            text_field(row, "change_ref")
-                .map(|change_ref| change_refs.contains(&change_ref))
-                .unwrap_or(false)
+            if let Some(reference) = text_field(row, "change_ref") {
+                change_refs.contains(&reference)
+            } else {
+                text_field(row, "task_id").is_some_and(|id| task_ids.contains(&id))
+            }
         })
         .collect::<Vec<_>>();
     let patchset_ids = patchsets
@@ -524,9 +544,14 @@ fn queue_projection_rows_from_bulk_values(
     let reviews = take_projection_object_rows(values, "reviews")?
         .into_iter()
         .filter(|row| {
-            text_field(row, "change_ref")
-                .map(|change_ref| change_refs.contains(&change_ref))
-                .unwrap_or(false)
+            let exact_patchset =
+                text_field(row, "patchset_id").is_some_and(|id| patchset_ids.contains(&id));
+            exact_patchset
+                && if let Some(reference) = text_field(row, "change_ref") {
+                    change_refs.contains(&reference)
+                } else {
+                    text_field(row, "task_id").is_some_and(|id| task_ids.contains(&id))
+                }
         })
         .collect::<Vec<_>>();
     let review_requests = reviews
@@ -633,6 +658,7 @@ mod identity_tests {
                 ],
                 "patchsets": [
                     {"patchset_id":"TASK-A/C-01/P-01", "change_id":"C-01", "change_ref":"TASK-A/C-01"},
+                    {"patchset_id":"TASK-B/C-01/P-01", "change_id":"C-01", "change_ref":"TASK-B/C-01"},
                     {"patchset_id":"TASK-X/C-01/P-01", "change_id":"C-01", "change_ref":"TASK-X/C-01"}
                 ],
                 "reviews": [
@@ -645,7 +671,7 @@ mod identity_tests {
         )
         .expect("queue projection");
 
-        assert_eq!(rows.patchsets.len(), 1);
+        assert_eq!(rows.patchsets.len(), 2);
         assert_eq!(
             text_field(&rows.patchsets[0], "patchset_id").as_deref(),
             Some("TASK-A/C-01/P-01")

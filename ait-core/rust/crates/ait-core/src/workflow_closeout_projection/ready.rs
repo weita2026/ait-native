@@ -19,7 +19,15 @@ pub(crate) fn workflow_ready_steps(
     let external_readiness = optional_obj_field(facts, "external_readiness");
     let patchset_refresh = optional_obj_field(facts, "patchset_refresh");
     let publish_command = command_hint(command_hints, "publish_command");
-    let patchset_ci_required = command_hint(command_hints, "patchset_ci_command").is_some();
+    let patchset_ci_required = attestation
+        .as_ref()
+        .and_then(|row| {
+            crate::attest_json::RemoteAttestationStatement::from_readback(&JsonValue::Object(
+                row.clone(),
+            ))
+            .ok()
+        })
+        .is_none_or(|statement| statement.require_tests_pass || statement.require_lint_pass);
     if ignore_workspace_authoring {
         steps.push(workflow_land_step("snapshot", "Snapshot", "done", "Final-snapshot remote promotion is using the completed local target-line snapshot and does not require repo-root authoring state.", None));
     } else if !bool_field(&workspace, "clean") {
@@ -142,32 +150,20 @@ pub(crate) fn workflow_ready_steps(
                     .or_else(|| command_hint(command_hints, "attest_command"))
             },
         ));
-    } else if !string_field(facts, "tests_state").is_empty()
-        && !matches!(
-            string_field(facts, "tests_state").as_str(),
-            "pass" | "not_required"
-        )
+    } else if !attestation
+        .as_ref()
+        .and_then(|row| {
+            crate::attest_json::RemoteAttestationStatement::from_readback(&JsonValue::Object(
+                row.clone(),
+            ))
+            .ok()
+        })
+        .is_some_and(|statement| {
+            statement.verification_state == crate::attest_json::RemoteVerificationState::Pass
+                && !statement.revoked
+        })
     {
-        let tests_state = string_field(facts, "tests_state");
-        let detail = if command_hint(command_hints, "patchset_ci_command").is_some() {
-            format!(
-                "Patchset CI currently reports tests `{tests_state}` for patchset `{patchset_id}`."
-            )
-        } else {
-            format!("Tests are currently `{tests_state}` for patchset `{patchset_id}`.")
-        };
-        steps.push(workflow_land_step(
-            "attestation",
-            "Attestation",
-            if tests_state == "pending" {
-                "pending"
-            } else {
-                "blocked"
-            },
-            &detail,
-            command_hint(command_hints, "attestation_command")
-                .or_else(|| command_hint(command_hints, "attest_command")),
-        ));
+        steps.push(workflow_land_step("attestation","Attestation","blocked","The compact verification statement is unknown, pending, failed, revoked or incompatible. Actual Patchset CI is a separate requirement.",command_hint(command_hints,"attestation_command").or_else(||command_hint(command_hints,"attest_command"))));
     } else {
         let attestation_id = optional_string_field(attestation.as_ref().unwrap(), "attestation_id")
             .unwrap_or_default();
@@ -260,6 +256,7 @@ mod tests {
     fn ready_steps_mark_compact_attestation_done_for_ci_contract() {
         let facts = ready_facts(json!({
             "attestation_id": "AT-1",
+            "verification_state":"pass","require_tests_pass":true,"require_human_review":false,"require_lint_pass":false,"revoked":false,"ci_backed":true,
             "evaluation_summary": {"tests": "pass"}
         }));
 

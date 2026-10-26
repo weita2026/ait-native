@@ -118,18 +118,14 @@ impl<'a> WorkflowDetailIndex<'a> {
         &self,
         change: &JsonMap<String, JsonValue>,
     ) -> Option<&'a JsonMap<String, JsonValue>> {
+        if change.get("current_patchset_id") == Some(&JsonValue::Null) {
+            return None;
+        }
         self.patchset_for_change_field(change, "current_patchset_id", "current_patchset_number")
             .or_else(|| {
                 let change_id = object_text(change, "change_id")?;
                 self.patchsets_by_change.get(&change_id)?.last().copied()
             })
-    }
-
-    pub(super) fn selected_patchset(
-        &self,
-        change: &JsonMap<String, JsonValue>,
-    ) -> Option<&'a JsonMap<String, JsonValue>> {
-        self.patchset_for_change_field(change, "selected_patchset_id", "selected_patchset_number")
     }
 
     fn patchset_for_change_field(

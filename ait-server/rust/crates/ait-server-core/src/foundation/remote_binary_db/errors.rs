@@ -43,13 +43,17 @@ impl BinaryDbErrorKind {
 
 const BINARY_DB_RUNTIME_ERROR_PREFIX: &str = "ait.binary-db.error.v1|";
 
+pub(crate) fn binary_db_typed_runtime_error(context: &str, error: BinaryDbError) -> String {
+    format!(
+        "{BINARY_DB_RUNTIME_ERROR_PREFIX}{}|{context}: {}",
+        error.kind().transport_tag(),
+        error.message()
+    )
+}
+
 pub fn binary_db_runtime_error(context: &str, error: BinaryDbError) -> String {
     if error.is_retryable_busy() {
-        return format!(
-            "{BINARY_DB_RUNTIME_ERROR_PREFIX}{}|{context}: {}",
-            error.kind().transport_tag(),
-            error.message()
-        );
+        return binary_db_typed_runtime_error(context, error);
     }
 
     format!("{context}: {}", error.message())

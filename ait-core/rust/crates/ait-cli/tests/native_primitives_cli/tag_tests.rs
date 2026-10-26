@@ -1,8 +1,7 @@
 #[test]
 fn native_tag_namespace_stores_message_and_resolves_snapshot_refs() {
-    let (base_url, _log, _state, handle) = spawn_fake_remote();
-    let (_temp, worktree) = init_worktree_repo(&base_url);
-    let repo_root = worktree.parent().unwrap().to_path_buf();
+    let (temp, worktree, started) = init_cli_local_draft_worktree_repo("http://127.0.0.1:1");
+    let repo_root = temp.path().canonicalize().unwrap();
 
     let created = json_output(
         &worktree,
@@ -24,21 +23,26 @@ fn native_tag_namespace_stores_message_and_resolves_snapshot_refs() {
         created["message"].as_str(),
         Some("known good regression baseline")
     );
-    assert_eq!(created["source_line"].as_str(), Some("feature/rt-1"));
+    assert_eq!(created["source_line"].as_str(), Some("feature/lt-0001"));
 
-    let tag_path = repo_root
-        .join(".ait")
-        .join("refs")
-        .join("tags")
-        .join(format!("{}.json", encode_ref_name("stable/baseline")));
-    let tag_text = fs::read_to_string(tag_path).unwrap();
-    assert!(tag_text.contains(&format!(
-        "\"snapshot_id\": \"{FIXTURE_BASE_SNAPSHOT_ID}\""
-    )));
-    assert!(tag_text.contains("\"message\": \"known good regression baseline\""));
+    let tag_path = repo_root.join(".ait/binary-db/tag.bin");
+    let tag_bytes = fs::read(&tag_path).unwrap();
+    assert_eq!(tag_bytes.len(), 4 + 24);
+    assert_eq!(tag_bytes[4], 0);
+    let payload = fs::read(repo_root.join(".ait/binary-db/tag_payload.bin")).unwrap();
+    assert!(payload
+        .windows(b"stable/baseline".len())
+        .any(|v| v == b"stable/baseline"));
+    assert!(payload
+        .windows(b"known good regression baseline".len())
+        .any(|v| v == b"known good regression baseline"));
+    assert!(!repo_root.join(".ait/refs/tags").exists());
 
     let shown = json_output(&worktree, &["tag", "show", "stable/baseline", "--json"]);
-    assert_eq!(shown["snapshot_id"].as_str(), Some(FIXTURE_BASE_SNAPSHOT_ID));
+    assert_eq!(
+        shown["snapshot_id"].as_str(),
+        Some(FIXTURE_BASE_SNAPSHOT_ID)
+    );
 
     let listed = json_output(&worktree, &["tag", "list", "--json"]);
     assert_eq!(listed.as_array().unwrap().len(), 1);
@@ -57,7 +61,7 @@ fn native_tag_namespace_stores_message_and_resolves_snapshot_refs() {
         &worktree.join("src/lib.rs"),
         "pub fn worktree_version() -> &'static str { \"after baseline\" }\n",
     );
-    let next = checkpoint_bound_worktree_fixture(&worktree, "after baseline");
+    let next = json_output(&worktree, &["snapshot", "create", started["task_id"].as_str().unwrap(), "--message", "after baseline", "--json"]);
     let next_snapshot_id = next["snapshot_id"].as_str().unwrap();
     let diff = json_output(
         &worktree,
@@ -121,8 +125,7 @@ fn native_tag_namespace_stores_message_and_resolves_snapshot_refs() {
         .unwrap();
     assert!(!retired_force.status.success());
     assert!(
-        String::from_utf8_lossy(&retired_force.stderr)
-            .contains("unexpected argument '--force'")
+        String::from_utf8_lossy(&retired_force.stderr).contains("unexpected argument '--force'")
     );
 
     let deleted = json_output(&worktree, &["tag", "delete", "stable/baseline", "--json"]);
@@ -145,7 +148,26 @@ fn native_tag_namespace_stores_message_and_resolves_snapshot_refs() {
     );
     assert!(String::from_utf8_lossy(&missing.stderr).contains("Unknown tag"));
 
-    handle.join().unwrap();
+    let tombstone = fs::read(&tag_path).unwrap();
+    assert_eq!(tombstone.len(), tag_bytes.len());
+    assert_eq!(tombstone[4], 128);
+    json_output(
+        &worktree,
+        &[
+            "tag",
+            "create",
+            "stable/baseline",
+            "--snapshot",
+            FIXTURE_BASE_SNAPSHOT_ID,
+            "--message",
+            "recreated",
+            "--json",
+        ],
+    );
+    let recreated = fs::read(&tag_path).unwrap();
+    assert_eq!(recreated.len(), tag_bytes.len());
+    assert_eq!(recreated[4], 0);
+
 }
 
 #[test]

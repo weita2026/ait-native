@@ -19,7 +19,8 @@ def test_package_builds_the_pinned_pyo3_extension() -> None:
 
     assert pyproject["build-system"]["build-backend"] == "maturin"
     assert pyproject["build-system"]["requires"] == ["maturin==1.13.3"]
-    assert "scripts" not in pyproject["project"]
+    assert pyproject["project"]["scripts"] == {"ait": "ait_python.cli:main"}
+    assert pyproject["project"]["dependencies"] == []
     assert (
         pyproject["tool"]["maturin"]["manifest-path"]
         == ".ait-external/ait-core/rust/crates/ait-py/Cargo.toml"
@@ -55,13 +56,16 @@ def test_package_builds_the_pinned_pyo3_extension() -> None:
         assert target_dir.parts[-3] == "cargo-target"
         assert target_dir.parts[-2] == "task-workspaces"
         assert target_dir.name == worktree_name
-        assert "cargo-build" in build_dir.parts
+        assert any(
+            part in {"cargo-build", "cargo-build-ssd"}
+            for part in build_dir.parts
+        )
         assert build_dir.parts[-2] == "task-workspaces"
         assert build_dir.name == worktree_name != "main-seed"
         assert target_dir != build_dir
 
 
-def test_package_declares_the_apache_rc_identity() -> None:
+def test_package_declares_the_current_apache_identity() -> None:
     pyproject = tomllib.loads(
         (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )
@@ -122,7 +126,8 @@ def test_materialized_core_matches_the_external_lock() -> None:
     node = lock["node"][0]
 
     assert node["repository_index"] == 0
-    assert node["snapshot"] == "SNP-D8DD5ACBA74B"
+    assert node["snapshot"] == "SNP-E05379CAEDF7"
+    assert node["version"] == ait_python.__version__ == "1.1.4"
     assert marker["format"] == "ait.external.materialized"
     assert marker["name"] == node["name"] == "ait-core"
     assert marker["repo_name"] == node["repo_name"] == "ait-core"
@@ -182,7 +187,7 @@ def test_runtime_source_has_no_process_api_relay() -> None:
 
     assert "subprocess" not in source
     assert "os.exec" not in source
-    assert not (ROOT / "src" / "ait_python" / "cli.py").exists()
+    assert (ROOT / "src" / "ait_python" / "cli.py").is_file()
     assert not (ROOT / "src" / "ait_python" / "bundle.py").exists()
 
 

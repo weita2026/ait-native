@@ -1,9 +1,7 @@
 use crate::runtime::{RemoteRow, RepoRuntime};
 use ait_core::json_support::JsonValue;
-use ait_core::plan_http_client::PlanHttpClientConfig;
-use ait_core::task_workflow_http_adapter::{
-    HttpTaskRemote, TaskWorkflowRepositoryEnsurer, TaskWorkflowRepositoryReader,
-};
+use ait_core::plan_http_client::{PlanHttpClientConfig, PlanHttpClientManager};
+use ait_core::task_workflow_http_adapter::TaskWorkflowRepositoryReader;
 use std::collections::BTreeSet;
 use std::fs;
 
@@ -12,35 +10,41 @@ pub(crate) fn ensure_or_read_remote_repository_authority_for_url(
     remote_url: &str,
     repo_name: &str,
 ) -> Result<JsonValue, String> {
-    if repo.repository_index().is_some() {
-        read_remote_repository_authority_for_url(repo, remote_url, repo_name)
-    } else {
-        ensure_remote_repository_authority_for_url(repo, remote_url, repo_name)
-    }
-}
-
-pub(crate) fn ensure_remote_repository_authority_for_url(
-    repo: &RepoRuntime,
-    remote_url: &str,
-    repo_name: &str,
-) -> Result<JsonValue, String> {
-    let repo_name = normalize_required_text(repo_name, "repo_name")?;
+    let identity = repo.remote_actor_identity()?;
     let remote_row = RemoteRow {
-        name: "new remote".to_string(),
-        url: remote_url.to_string(),
-        repo_name: Some(repo_name.clone()),
+        name: "new remote".into(),
+        url: remote_url.into(),
+        repo_name: Some(repo_name.into()),
     };
-    let mut task_remote = http_task_remote(repo, &remote_row)?;
-    ensure_remote_repository_authority(repo, &mut task_remote, &repo_name)
+    let mut client = PlanHttpClientManager::new(http_config(repo, &remote_row))
+        .map_err(|error| error.to_string())?;
+    let policy = if repo.repository_index().is_none() {
+        local_policy_payload(repo)?
+    } else {
+        None
+    };
+    let response = client
+        .ensure_repository_with_actor(
+            repo_name,
+            "main",
+            policy.as_ref(),
+            Some(&repo.id_namespace_prefix()),
+            &identity,
+        )
+        .map_err(|error| error.to_string())?;
+    let index = remote_repository_index(&response)?;
+    verify_remote_repository_authority(&response, index, &repo.id_namespace_prefix(), repo_name)?;
+    Ok(response)
 }
 
+#[cfg(test)]
 pub(crate) fn ensure_remote_repository_authority<R>(
     repo: &RepoRuntime,
     task_remote: &mut R,
     repo_name: &str,
 ) -> Result<JsonValue, String>
 where
-    R: TaskWorkflowRepositoryEnsurer + ?Sized,
+    R: ait_core::task_workflow_http_adapter::TaskWorkflowRepositoryEnsurer + ?Sized,
 {
     let repo_name = normalize_required_text(repo_name, "repo_name")?;
     let expected_namespace = repo.id_namespace_prefix();
@@ -61,21 +65,6 @@ where
         &repo_name,
     )?;
     Ok(remote_repository)
-}
-
-pub(crate) fn read_remote_repository_authority_for_url(
-    repo: &RepoRuntime,
-    remote_url: &str,
-    repo_name: &str,
-) -> Result<JsonValue, String> {
-    let repo_name = normalize_required_text(repo_name, "repo_name")?;
-    let remote_row = RemoteRow {
-        name: "new remote".to_string(),
-        url: remote_url.to_string(),
-        repo_name: Some(repo_name.clone()),
-    };
-    let mut task_remote = http_task_remote(repo, &remote_row)?;
-    read_remote_repository_authority(repo, &mut task_remote, &repo_name)
 }
 
 pub(crate) fn read_remote_repository_authority<R>(
@@ -113,10 +102,6 @@ pub(crate) fn remote_repository_index(remote_repository: &JsonValue) -> Result<u
         .ok_or_else(|| {
             "Remote Repository authority response is missing numeric repository_index.".to_string()
         })
-}
-
-fn http_task_remote(repo: &RepoRuntime, remote_row: &RemoteRow) -> Result<HttpTaskRemote, String> {
-    HttpTaskRemote::new(http_config(repo, remote_row)).map_err(|err| err.to_string())
 }
 
 fn http_config(repo: &RepoRuntime, remote_row: &RemoteRow) -> PlanHttpClientConfig {

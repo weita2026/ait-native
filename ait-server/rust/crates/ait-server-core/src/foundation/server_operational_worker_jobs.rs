@@ -9,14 +9,17 @@ use crate::foundation::operational_binary_v0::{
     WORKER_JOB_OUTCOME_SKIPPED, WORKER_JOB_OUTCOME_SUPERSEDED, WORKER_JOB_STATE_FAILED,
     WORKER_JOB_STATE_QUEUED, WORKER_JOB_STATE_RUNNING, WORKER_JOB_STATE_SUCCEEDED,
 };
+use crate::foundation::prepared_ci_runtime::PackageAbandonState;
+use crate::foundation::prepared_ci_runtime::{ManagedCiPackage, PreparedCiRuntime};
 use crate::foundation::remote_binary_db::{
-    BinaryDbError, BoxedServerBinaryDbProcessLockGuard, ServerBinaryDbByteStore,
-    ServerBinaryDbDurabilityStore, ServerBinaryDbFilesystemStore, ServerBinaryDbLockMode,
-    ServerBinaryDbLockStore, ServerBinaryDbLockWait, StoreResult,
+    BinaryDbError, BoxedServerBinaryDbProcessLockGuard, ServerBinaryDbFilesystemStore,
+    ServerBinaryDbLockMode, ServerBinaryDbLockWait, ServerBinaryDbStore, StoreResult,
 };
+use crate::foundation::server_operational_job_domain::WorkerJobCompactCiEvidence;
 use crate::foundation::server_operational_repository_registry::{
     canonical_repository_directory_name, parse_repository_directory_name,
 };
+use crate::foundation::workflow_package_contract::PackageAbandonRequest;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -26,7 +29,12 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[path = "server_operational_worker_jobs/prepared_finish.rs"]
+mod prepared_finish;
+pub use prepared_finish::{PreparedCiCommitted, PreparedCiFinishContext, PreparedCiPublication};
+
 pub const WORKER_QUEUE_LOCK_FILE_NAME: &str = "worker-queue.lock";
+const LAND_PUBLICATION_JOURNAL_FILE_NAME: &str = "server-land.write.journal";
 
 const WORKER_JOB_FILE_NAME: &str = "worker_job.bin";
 const WORKER_READY_INDEX_FILE_NAME: &str = "worker_ready.idx";
@@ -104,7 +112,8 @@ pub struct ServerOperationalWorkerJobStore {
     repository_index: u32,
     authority_root: PathBuf,
     domain: Arc<dyn WorkerJobDomainAuthority>,
-    files: ServerBinaryDbFilesystemStore,
+    files: Arc<dyn ServerBinaryDbStore + Send + Sync>,
+    prepared_ci: Arc<PreparedCiRuntime>,
 }
 
 pub(crate) struct WorkerJobQueueWrite<'a> {
@@ -129,6 +138,16 @@ impl WorkerJobQueueWrite<'_> {
         next: ServerWorkerJobRecord,
     ) -> StoreResult<WorkerJobEntry> {
         let current = self.entry(worker_job_index)?;
+        if current.record.job_kind == WORKER_JOB_KIND_PATCHSET_CI
+            && current.record.patchset_index_plus1 == 0
+            && current.record.state_kind == WORKER_JOB_STATE_QUEUED
+            && next.state_kind == WORKER_JOB_STATE_RUNNING
+        {
+            self.store
+                .prepared_ci
+                .require_selected(current.key)?
+                .verify()?;
+        }
         if next.job_kind != current.record.job_kind
             || next.patchset_index_plus1 != current.record.patchset_index_plus1
             || next.snapshot_index_plus1 != current.record.snapshot_index_plus1
@@ -195,7 +214,8 @@ impl ServerOperationalWorkerJobStore {
             repository_index,
             authority_root,
             domain,
-            files: ServerBinaryDbFilesystemStore,
+            files: Arc::new(ServerBinaryDbFilesystemStore),
+            prepared_ci: Arc::default(),
         })
     }
 
@@ -238,14 +258,414 @@ impl ServerOperationalWorkerJobStore {
         disposition: WorkerJobEnqueueDisposition,
         relationship_commit: impl FnOnce(WorkerJobEntry) -> StoreResult<()>,
     ) -> StoreResult<WorkerJobEntry> {
+        self.enqueue_with_source(spec, disposition, None, relationship_commit)
+    }
+
+    /// Fresh ready joins an active execution; a terminal execution gets a new
+    /// physical Job. Resume uses `resume_prepared_ci` and never allocates.
+    pub fn enqueue_prepared_ci(
+        &self,
+        source: ManagedCiPackage,
+        max_attempts: u16,
+        now_s: u64,
+    ) -> StoreResult<WorkerJobEntry> {
+        self.enqueue_with_source(
+            WorkerJobCreateSpec {
+                job_kind: WORKER_JOB_KIND_PATCHSET_CI,
+                max_attempts,
+                patchset_index_plus1: 0,
+                snapshot_index_plus1: 0,
+                available_at_s: now_s,
+                created_at_s: now_s,
+            },
+            WorkerJobEnqueueDisposition::Queued,
+            Some(source),
+            |_| Ok(()),
+        )
+    }
+
+    pub fn prepared_ci_runtime(&self) -> &PreparedCiRuntime {
+        &self.prepared_ci
+    }
+
+    /// A new Server process has no accepted preformal execution evidence.
+    /// Fence its old runnable Jobs before leases, claims or results are admitted.
+    /// Terminal records and committed Patchset bindings retain their authority;
+    /// this operation grants no resource-deletion or Runner-stop proof.
+    pub fn invalidate_prepared_ci_after_restart(&self, now_s: u64) -> StoreResult<u32> {
+        self.with_exclusive_queue(|queue| {
+            let mut invalidated = 0_u32;
+            for index in 0..self.worker_job_count_unlocked()? {
+                let entry = queue.entry(index)?;
+                if entry.record.is_tombstoned()
+                    || entry.record.job_kind != WORKER_JOB_KIND_PATCHSET_CI
+                    || entry.record.patchset_index_plus1 != 0
+                    || !matches!(
+                        entry.record.state_kind,
+                        WORKER_JOB_STATE_QUEUED | WORKER_JOB_STATE_RUNNING
+                    )
+                    || self.prepared_ci.source(entry.key).is_ok()
+                {
+                    continue;
+                }
+                queue.replace(
+                    index,
+                    ServerWorkerJobRecord {
+                        state_kind: WORKER_JOB_STATE_FAILED,
+                        outcome_kind: WORKER_JOB_OUTCOME_FAILED,
+                        // A revoked claimed lease is not a terminal owner
+                        // report. Preserve that distinction on later boots.
+                        error_kind: if entry.record.attempt_count == 0 {
+                            WORKER_JOB_ERROR_TERMINAL_EXECUTION
+                        } else {
+                            WORKER_JOB_ERROR_LEASE_EXPIRED
+                        },
+                        locked_at_s: 0,
+                        updated_at_s: now_s.max(entry.record.updated_at_s),
+                        ..entry.record
+                    },
+                )?;
+                invalidated += 1;
+            }
+            Ok(invalidated)
+        })
+    }
+
+    /// Lease validation holds Queue while pinning this exact selected source.
+    pub(crate) fn pin_prepared_ci_package(
+        &self,
+        entry: WorkerJobEntry,
+        hash: [u8; 32],
+    ) -> StoreResult<crate::foundation::prepared_ci_runtime::ManagedPackageDownload> {
+        if entry.record.is_tombstoned() || entry.record.job_kind != WORKER_JOB_KIND_PATCHSET_CI {
+            return Err(invalid(
+                "Package download Job does not identify a package execution",
+            ));
+        }
+        let source = self.prepared_ci.require_selected(entry.key)?;
+        if source.sha256() != hash {
+            return Err(invalid(
+                "Package download hash differs from the original Job",
+            ));
+        }
+        source.pin_download()
+    }
+
+    pub fn resume_prepared_ci(
+        &self,
+        worker_job_index: u32,
+        hash: [u8; 32],
+    ) -> StoreResult<WorkerJobEntry> {
+        let entry = self.get(worker_job_index)?;
+        if entry.record.job_kind != WORKER_JOB_KIND_PATCHSET_CI
+            || entry.record.patchset_index_plus1 != 0
+            || entry.record.is_tombstoned()
+        {
+            return Err(invalid("prepared CI identity requires an unbound live kind7 Job; read formal completion for a bound Job"));
+        }
+        let source = self.prepared_ci.require_selected(entry.key)?;
+        if source.sha256() != hash {
+            return Err(invalid(
+                "prepared CI identity hash differs from its original Job",
+            ));
+        }
+        source.verify()?;
+        Ok(entry)
+    }
+
+    /// Reattach only a genuinely retained Server-managed source to its original
+    /// queued/running Job after volatile state loss. No fields, attempts,
+    /// results, approvals or priority order are invented or reset.
+    pub fn recover_prepared_ci_source(
+        &self,
+        worker_job_index: u32,
+        source: ManagedCiPackage,
+    ) -> StoreResult<WorkerJobEntry> {
         self.validate_root_paths()?;
         let mut lock = self.acquire_queue_lock(ServerBinaryDbLockMode::Exclusive)?;
         self.recover_exclusive_state()?;
+        let entry = self.read_job_at_unlocked(worker_job_index)?;
+        if source.repository_index() != self.repository_index
+            || entry.record.is_tombstoned()
+            || entry.record.job_kind != WORKER_JOB_KIND_PATCHSET_CI
+            || entry.record.patchset_index_plus1 != 0
+            || !matches!(
+                entry.record.state_kind,
+                WORKER_JOB_STATE_QUEUED | WORKER_JOB_STATE_RUNNING
+            )
+        {
+            return Err(invalid(
+                "Original Job has no recoverable prefinish execution; run fresh ready",
+            ));
+        }
+        source.verify()?;
+        if let Some(selected) = self
+            .prepared_ci
+            .selected_job(self.repository_index, source.sha256())?
+        {
+            if selected != entry.key {
+                return Err(invalid(
+                    "Original Job is superseded by another selected execution",
+                ));
+            }
+        }
+        if let Ok(existing) = self.prepared_ci.source(entry.key) {
+            if existing != source {
+                return Err(invalid("Retained package association differs"));
+            }
+        } else {
+            self.prepared_ci.register(entry.key, source)?;
+        }
+        lock.clear_contents_and_flush()?;
+        Ok(entry)
+    }
+
+    pub fn abandon_prepared_ci(
+        &self,
+        request: &PackageAbandonRequest,
+        actor_index_plus1: u32,
+        now_s: u64,
+        ownership_released: impl FnOnce(WorkerJobKey) -> StoreResult<bool>,
+    ) -> StoreResult<PackageAbandonState> {
+        self.abandon_prepared_ci_with_cleanup(
+            request,
+            actor_index_plus1,
+            now_s,
+            ownership_released,
+            ManagedCiPackage::request_cleanup,
+        )
+    }
+
+    pub fn abandon_prepared_ci_with_cleanup(
+        &self,
+        request: &PackageAbandonRequest,
+        actor_index_plus1: u32,
+        now_s: u64,
+        ownership_released: impl FnOnce(WorkerJobKey) -> StoreResult<bool>,
+        cleanup: impl FnOnce(&ManagedCiPackage) -> StoreResult<bool>,
+    ) -> StoreResult<PackageAbandonState> {
+        self.with_exclusive_queue(|queue| {
+            let mut entry = queue.entry(request.expected_identity.worker_job_index)?;
+            if entry.record.job_kind != WORKER_JOB_KIND_PATCHSET_CI
+                || entry.record.patchset_index_plus1 != 0
+                || entry.record.is_tombstoned()
+            {
+                return Err(invalid(
+                    "Package attempt is already accepted or does not match; use formal readback",
+                ));
+            }
+            let state =
+                self.prepared_ci
+                    .request_abandonment(entry.key, request, actor_index_plus1)?;
+            if state != PackageAbandonState::Abandoning {
+                return Ok(state);
+            }
+            let released = ownership_released(entry.key)?;
+            if entry.record.state_kind == WORKER_JOB_STATE_QUEUED
+                && released
+                && (entry.record.attempt_count == 0
+                    || entry.record.error_kind == WORKER_JOB_ERROR_RETRYABLE_EXECUTION)
+            {
+                entry = queue.replace(
+                    entry.key.worker_job_index,
+                    ServerWorkerJobRecord {
+                        state_kind: WORKER_JOB_STATE_FAILED,
+                        outcome_kind: WORKER_JOB_OUTCOME_FAILED,
+                        error_kind: WORKER_JOB_ERROR_TERMINAL_EXECUTION,
+                        locked_at_s: 0,
+                        updated_at_s: now_s.max(entry.record.updated_at_s),
+                        ..entry.record
+                    },
+                )?;
+                self.prepared_ci.confirm_abandoned_stop(entry.key)?;
+            } else if released
+                && ((entry.record.state_kind == WORKER_JOB_STATE_FAILED
+                    && entry.record.error_kind == WORKER_JOB_ERROR_TERMINAL_EXECUTION)
+                    || (entry.record.state_kind == WORKER_JOB_STATE_SUCCEEDED
+                        && self.prepared_ci.evidence(entry.key)?.is_some()))
+            {
+                // These are actual terminal owner reports. Lease expiry alone
+                // says nothing about whether an off-host process has stopped.
+                self.prepared_ci.confirm_abandoned_stop(entry.key)?;
+            } else if entry.record.error_kind == WORKER_JOB_ERROR_LEASE_EXPIRED {
+                return Ok(PackageAbandonState::Unknown);
+            }
+            self.prepared_ci
+                .cleanup_abandoned_source(entry.key, |source| match cleanup(source) {
+                    Ok(cleaned) => cleaned,
+                    Err(error) => {
+                        eprintln!("warning: package abandonment cleanup pending: {error}");
+                        false
+                    }
+                })
+        })
+    }
+
+    /// Called inside the existing exact-attempt/lease domain-commit boundary.
+    pub fn commit_prepared_ci_result(
+        &self,
+        entry: WorkerJobEntry,
+        evidence: WorkerJobCompactCiEvidence,
+    ) -> StoreResult<()> {
+        if entry.key.repository_index != self.repository_index
+            || entry.record.job_kind != WORKER_JOB_KIND_PATCHSET_CI
+            || entry.record.patchset_index_plus1 != 0
+            || entry.record.state_kind != WORKER_JOB_STATE_RUNNING
+        {
+            return Err(invalid(
+                "prepared CI completion requires its original running unbound Job",
+            ));
+        }
+        self.prepared_ci.require_selected(entry.key)?.verify()?;
+        self.prepared_ci.record_result(entry.key, evidence)
+    }
+
+    fn enqueue_with_source(
+        &self,
+        spec: WorkerJobCreateSpec,
+        disposition: WorkerJobEnqueueDisposition,
+        source: Option<ManagedCiPackage>,
+        relationship_commit: impl FnOnce(WorkerJobEntry) -> StoreResult<()>,
+    ) -> StoreResult<WorkerJobEntry> {
+        let hash = source.as_ref().map(ManagedCiPackage::sha256);
+        self.enqueue_with_source_factory(
+            spec,
+            disposition,
+            hash,
+            |_| Err(invalid("An active package Job has no recoverable source; exact recovery or abandonment is required")),
+            |_| Ok(source),
+            relationship_commit,
+        )
+    }
+
+    pub fn enqueue_prepared_ci_with(
+        &self,
+        hash: [u8; 32],
+        max_attempts: u16,
+        now_s: u64,
+        recover: impl FnMut(WorkerJobEntry) -> StoreResult<ManagedCiPackage>,
+        create: impl FnOnce(WorkerJobKey) -> StoreResult<ManagedCiPackage>,
+    ) -> StoreResult<(WorkerJobEntry, bool)> {
+        let mut created = false;
+        let job = self.enqueue_with_source_factory(
+            WorkerJobCreateSpec {
+                job_kind: WORKER_JOB_KIND_PATCHSET_CI,
+                max_attempts,
+                patchset_index_plus1: 0,
+                snapshot_index_plus1: 0,
+                available_at_s: now_s,
+                created_at_s: now_s,
+            },
+            WorkerJobEnqueueDisposition::Queued,
+            Some(hash),
+            recover,
+            |key| {
+                created = true;
+                create(key).map(Some)
+            },
+            |_| Ok(()),
+        )?;
+        Ok((job, !created))
+    }
+
+    fn enqueue_with_source_factory(
+        &self,
+        spec: WorkerJobCreateSpec,
+        disposition: WorkerJobEnqueueDisposition,
+        hash: Option<[u8; 32]>,
+        mut recover: impl FnMut(WorkerJobEntry) -> StoreResult<ManagedCiPackage>,
+        create: impl FnOnce(WorkerJobKey) -> StoreResult<Option<ManagedCiPackage>>,
+        relationship_commit: impl FnOnce(WorkerJobEntry) -> StoreResult<()>,
+    ) -> StoreResult<WorkerJobEntry> {
+        self.validate_root_paths()?;
+        let mut lock = self.acquire_queue_lock(ServerBinaryDbLockMode::Exclusive)?;
+        self.recover_exclusive_state()?;
+        if spec.job_kind == WORKER_JOB_KIND_PATCHSET_CI && spec.patchset_index_plus1 == 0 {
+            let hash = hash.ok_or_else(|| {
+                invalid("unbound kind7 admission requires a managed package runtime source")
+            })?;
+            if disposition != WorkerJobEnqueueDisposition::Queued {
+                return Err(invalid("unbound package Job must be queued"));
+            }
+            // RAM selection is not admission authority after restart. Resolve
+            // every active unbound Job before allocating another execution.
+            let mut active_hashes = BTreeMap::new();
+            let mut recovered = Vec::new();
+            for index in 0..self.worker_job_count_unlocked()? {
+                let active = self.read_job_at_unlocked(index)?;
+                if active.record.is_tombstoned()
+                    || active.record.job_kind != WORKER_JOB_KIND_PATCHSET_CI
+                    || active.record.patchset_index_plus1 != 0
+                    || !matches!(
+                        active.record.state_kind,
+                        WORKER_JOB_STATE_QUEUED | WORKER_JOB_STATE_RUNNING
+                    )
+                {
+                    continue;
+                }
+                let source = match self.prepared_ci.source(active.key) {
+                    Ok(source) => source,
+                    Err(_) => {
+                        let source = recover(active)?;
+                        recovered.push((active.key, source.clone()));
+                        source
+                    }
+                };
+                if source.repository_index() != self.repository_index {
+                    return Err(invalid(
+                        "Retained active package belongs to another Repository",
+                    ));
+                }
+                source.verify().map_err(|error|invalid(format!("Active package source is unavailable; recover or abandon that exact attempt: {error}")))?;
+                if active_hashes.insert(source.sha256(), active.key).is_some() {
+                    return Err(invalid("Multiple active Jobs retain the same package hash; resolve those attempts before ready"));
+                }
+            }
+            for (key, source) in recovered {
+                self.prepared_ci.register(key, source)?;
+            }
+            if let Some(key) = self.prepared_ci.selected_job(self.repository_index, hash)? {
+                let current = self.read_job_at_unlocked(key.worker_job_index)?;
+                if !current.record.is_tombstoned()
+                    && matches!(
+                        current.record.state_kind,
+                        WORKER_JOB_STATE_QUEUED | WORKER_JOB_STATE_RUNNING
+                    )
+                {
+                    self.prepared_ci.require_selected(key)?.verify().map_err(|error|invalid(format!("Active package source is unavailable; abandon that exact attempt before fresh ready: {error}")))?;
+                    lock.clear_contents_and_flush()?;
+                    return Ok(current);
+                }
+            }
+        } else if hash.is_some() {
+            return Err(invalid(
+                "managed package source only supports unbound kind7 admission",
+            ));
+        }
         let worker_job_index = self.worker_job_count_unlocked()?;
         if worker_job_index == u32::MAX {
             return Err(invalid(
                 "Repository-local Worker Job authority exhausted v0 index capacity",
             ));
+        }
+        let source = create(WorkerJobKey {
+            repository_index: self.repository_index,
+            worker_job_index,
+        })?;
+        if let Some(source) = source.as_ref() {
+            if source.repository_index() != self.repository_index
+                || Some(source.sha256()) != hash
+                || source.worktree().starts_with(
+                    fs::canonicalize(&self.authority_root).map_err(|error| {
+                        BinaryDbError::io("resolve Worker Job authority", error)
+                    })?,
+                )
+            {
+                return Err(invalid("managed package source differs from routed identity or is inside Binary authority"));
+            }
+            source.verify()?;
+        } else if hash.is_some() {
+            return Err(invalid("package source factory returned no source"));
         }
 
         let (state_kind, outcome_kind) = match disposition {
@@ -303,6 +723,10 @@ impl ServerOperationalWorkerJobStore {
             return Err(corrupt(format!(
                 "Worker Job append offset changed: expected {expected_offset}, got {actual_offset}"
             )));
+        }
+
+        if let Some(source) = source {
+            self.prepared_ci.register(entry.key, source)?;
         }
 
         let relationship_result = relationship_commit(entry);
@@ -365,11 +789,11 @@ impl ServerOperationalWorkerJobStore {
             {
                 continue;
             }
-            let patchset_index = entry
-                .record
-                .patchset_index_plus1
-                .checked_sub(1)
-                .ok_or_else(|| corrupt("patchset.ci Worker Job lacks its Patchset reference"))?;
+            let Some(patchset_index) = entry.record.patchset_index_plus1.checked_sub(1) else {
+                // A prepared package has no formal locator to repair. Its
+                // source may be recovered only by exact guarded preparation.
+                continue;
+            };
             let worker_job_index_plus1 = entry
                 .key
                 .worker_job_index
@@ -381,12 +805,24 @@ impl ServerOperationalWorkerJobStore {
     }
 
     pub fn get(&self, worker_job_index: u32) -> StoreResult<WorkerJobEntry> {
+        self.get_optional(worker_job_index)?.ok_or_else(|| {
+            invalid(format!(
+                "Worker Job index {worker_job_index} is out of range"
+            ))
+        })
+    }
+
+    pub fn get_optional(&self, worker_job_index: u32) -> StoreResult<Option<WorkerJobEntry>> {
         self.validate_root_paths()?;
         let _lock = self.acquire_queue_lock(ServerBinaryDbLockMode::Shared)?;
         self.require_clean_read_state()?;
-        let entry = self.read_job_at_unlocked(worker_job_index)?;
+        let count = self.worker_job_count_unlocked()?;
+        if worker_job_index >= count {
+            return Ok(None);
+        }
+        let entry = self.read_job_at_known_count_unlocked(worker_job_index, count)?;
         self.validate_domain_references(entry.record)?;
-        Ok(entry)
+        Ok(Some(entry))
     }
 
     pub fn begin_attempt(&self, worker_job_index: u32, now_s: u64) -> StoreResult<WorkerJobEntry> {
@@ -1245,6 +1681,15 @@ impl ServerOperationalWorkerJobStore {
         })();
         if let Err(error) = persist_result {
             let recovery_result = (|| {
+                // Journal removal may have succeeded before the final parent
+                // barrier failed. Protect every rollback write, including that
+                // uncertain window, with the same durable native journal.
+                // If re-publication fails, leave the row untouched for recovery.
+                self.atomic_replace(
+                    &journal_path,
+                    &self.worker_job_update_staging_path(),
+                    &journal,
+                )?;
                 let offset = fixed_record_offset(
                     current.key.worker_job_index,
                     SERVER_WORKER_JOB_RECORD_SIZE,
@@ -1467,6 +1912,7 @@ impl ServerOperationalWorkerJobStore {
     }
 
     fn require_clean_read_state(&self) -> StoreResult<()> {
+        self.require_no_pending_land_journal()?;
         for name in [
             WORKER_JOB_REWRITE_FILE_NAME,
             WORKER_JOB_UPDATE_JOURNAL_FILE_NAME,
@@ -1487,6 +1933,22 @@ impl ServerOperationalWorkerJobStore {
     }
 
     fn recover_exclusive_state(&self) -> StoreResult<()> {
+        self.require_no_pending_land_journal()?;
+        self.recover_job_replacement()
+    }
+
+    fn require_no_pending_land_journal(&self) -> StoreResult<()> {
+        let path = self.authority_root.join(LAND_PUBLICATION_JOURNAL_FILE_NAME);
+        if path.exists() {
+            reject_symlink_or_hardlink_if_present(&path)?;
+            return Err(BinaryDbError::retryable_busy(
+                "Worker Job requires recovery of an interrupted atomic finish",
+            ));
+        }
+        Ok(())
+    }
+
+    fn recover_job_replacement(&self) -> StoreResult<()> {
         self.remove_rebuild_temps()?;
         let journal_path = self.worker_job_update_journal_path();
         if !journal_path.exists() {
@@ -1581,6 +2043,7 @@ impl ServerOperationalWorkerJobStore {
                 error,
             )
         })?;
+        drop(file);
         fs::rename(temporary, target).map_err(|error| {
             BinaryDbError::io(
                 format!(
@@ -1910,6 +2373,10 @@ fn invalid(message: impl Into<String>) -> BinaryDbError {
 fn corrupt(message: impl Into<String>) -> BinaryDbError {
     BinaryDbError::corruption(message)
 }
+
+#[cfg(test)]
+#[path = "server_operational_worker_jobs/replacement_fault_tests.rs"]
+mod replacement_fault_tests;
 
 #[cfg(test)]
 mod tests {

@@ -2,8 +2,8 @@ use super::{
     generate_namespaced_sequence_id, normalize_id_namespace_prefix,
     publication_state_has_unpublished_head, publication_state_value, task_status_details,
     task_status_value, workflow_error_envelope, workflow_id_matches, workflow_id_token,
-    workflow_mode_value, workflow_origin_namespace_prefix, workflow_success_envelope,
-    CheckboxState, DEFAULT_ID_NAMESPACE_PREFIX,
+    workflow_origin_namespace_prefix, workflow_success_envelope, CheckboxState,
+    DEFAULT_ID_NAMESPACE_PREFIX,
 };
 
 #[test]
@@ -44,19 +44,6 @@ fn normalized_checkbox_states_parse_from_contract_values() {
         "none"
     );
     assert!(CheckboxState::from_normalized_state("invalid").is_none());
-}
-
-#[test]
-fn workflow_modes_normalize_from_contract_values() {
-    assert_eq!(
-        workflow_mode_value(Some("solo_remote")).unwrap(),
-        Some("solo_remote".to_string())
-    );
-    assert_eq!(
-        workflow_mode_value(Some(" solo_local ")).unwrap(),
-        Some("solo_local".to_string())
-    );
-    assert_eq!(workflow_mode_value(None).unwrap(), None);
 }
 
 #[test]

@@ -7,8 +7,10 @@ include!("binary_db.rs");
 include!("git.rs");
 include!("repo_commands.rs");
 include!("workflow.rs");
+include!("workflow_services.rs");
 include!("worktree.rs");
 include!("task.rs");
+include!("inventory_output.rs");
 include!("change.rs");
 include!("snapshot.rs");
 include!("stash.rs");
@@ -17,8 +19,12 @@ include!("patchset.rs");
 include!("review.rs");
 include!("attest_policy.rs");
 include!("plan.rs");
+include!("plan_services.rs");
+include!("plan_output.rs");
 include!("render_helpers.rs");
 
+#[cfg(test)]
+mod cli_binding_inventory;
 #[cfg(test)]
 mod tests;
 

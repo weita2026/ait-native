@@ -204,13 +204,25 @@ test("ait-node builds and packages one exact direct addon for its native target"
 
   const smoke = run(process.execPath, [
     "-e",
-    "const addon = require(process.argv[1]); process.stdout.write(addon.bindingInfoJson());",
+    [
+      "const assert = require('node:assert/strict');",
+      "const addon = require(process.argv[1]);",
+      "for (const [name, args] of [",
+      "  ['agentWorkerCapabilitiesJson', []],",
+      "  ['agentManagementJson', ['not JSON']],",
+      "  ['agentWorkerTransactionJson', ['not JSON']],",
+      "]) {",
+      "  assert.throws(() => addon[name](...args), (error) => error instanceof Error && error.message.includes('Chat integrations are retired in AIT 1.2.0'));",
+      "}",
+      "process.stdout.write(addon.bindingInfoJson());",
+    ].join("\n"),
     packageRoot,
   ]);
   assert.equal(smoke.status, 0, smoke.stderr);
   const info = JSON.parse(smoke.stdout);
   assert.equal(info.node_binding, "napi");
   assert.equal(info.process_transport_allowed, false);
+  assert.deepEqual(info.supported_surfaces, ["ait-core"]);
 });
 
 test("npm admits a glibc optional package and omits it for musl", async (context) => {
@@ -357,7 +369,7 @@ test("packager rejects missing addon, drift, wrong target, and a non-addon", asy
     packagerArgs("check", payload, textPath, outputRoot),
   );
   assert.notEqual(nonAddon.status, 0);
-  assert.match(nonAddon.stderr, /cannot be loaded/);
+  assert.match(nonAddon.stderr, /must declare a loadable native image/);
 });
 
 test("packager rejects a symlinked built addon", { skip: process.platform === "win32" }, async (context) => {
@@ -373,4 +385,15 @@ test("packager rejects a symlinked built addon", { skip: process.platform === "w
   );
   assert.notEqual(linked.status, 0);
   assert.match(linked.stderr, /regular non-symlink file/);
+});
+
+test("packager rejects a standalone native image before addon loading", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ait-node-executable-input-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const disguised = path.join(root, "ait_napi.node");
+  await copyFile(process.platform === "darwin" ? "/usr/bin/true" : process.execPath, disguised);
+  const result = run(process.execPath, packagerArgs("check", await hostPayload(), disguised, root));
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /standalone .* executable is forbidden|process entrypoint is forbidden/);
+  assert.doesNotMatch(result.stderr, /dlopen|Module did not self-register/);
 });

@@ -4,7 +4,11 @@ from dataclasses import dataclass
 import os
 from typing import Any, Mapping
 
-from .contract import AGENT_CAPABILITIES_CONTRACT, SUPPORTED_TRANSPORTS
+from .contract import (
+    AGENT_CAPABILITIES_CONTRACT,
+    CHAT_RETIREMENT_MESSAGE,
+    SUPPORTED_TRANSPORTS,
+)
 from .errors import NativeProtocolError
 from .runtime import NativeRuntime
 
@@ -72,51 +76,38 @@ class AgentCapabilities:
 
 @dataclass(frozen=True, slots=True)
 class AgentClient:
+    """Compatibility facade whose chat methods raise the retirement error."""
+
     runtime: NativeRuntime = NativeRuntime()
 
     def capabilities(self) -> AgentCapabilities:
-        return AgentCapabilities.from_payload(self.runtime.agent_capabilities())
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def manage(self, request: Mapping[str, Any]) -> Any:
-        return self.runtime.agent_management(request)
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def add(self, worker: Mapping[str, Any], **context: Any) -> Any:
-        return self.manage(
-            {"operation": "add", "worker": dict(worker), **_context(context)}
-        )
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def list_workers(self, transport: str, **context: Any) -> Any:
-        return self.manage(
-            {
-                "operation": "list",
-                "transport": _transport(transport),
-                **_context(context),
-            }
-        )
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def status(
         self, transport: str, name: str | None = None, **context: Any
     ) -> Any:
-        request = {
-            "operation": "status",
-            "transport": _transport(transport),
-            **_context(context),
-        }
-        if name is not None:
-            request["name"] = _worker_name(name)
-        return self.manage(request)
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def start(self, transport: str, name: str, **context: Any) -> Any:
-        return self._named_management(transport, "start", name, context)
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def stop(self, transport: str, name: str, **context: Any) -> Any:
-        return self._named_management(transport, "stop", name, context)
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def restart(self, transport: str, name: str, **context: Any) -> Any:
-        return self._named_management(transport, "restart", name, context)
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def remove(self, transport: str, name: str, **context: Any) -> Any:
-        return self._named_management(transport, "remove", name, context)
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def logs(
         self,
@@ -126,17 +117,7 @@ class AgentClient:
         lines: int = 200,
         **context: Any,
     ) -> Any:
-        if not isinstance(lines, int) or isinstance(lines, bool) or lines < 0:
-            raise ValueError("lines must be a non-negative integer")
-        return self.manage(
-            {
-                "operation": "logs",
-                "transport": _transport(transport),
-                "name": _worker_name(name),
-                "lines": lines,
-                **_context(context),
-            }
-        )
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def worker_transaction(
         self,
@@ -146,41 +127,22 @@ class AgentClient:
         worker: str = "main",
         **context: Any,
     ) -> Any:
-        normalized = operation.strip()
-        if normalized not in _WORKER_OPERATIONS:
-            choices = ", ".join(sorted(_WORKER_OPERATIONS))
-            raise ValueError(
-                f"unsupported worker operation {operation!r}; expected: {choices}"
-            )
-        return self.runtime.agent_worker_transaction(
-            {
-                "operation": normalized,
-                "payload": payload,
-                "worker": _worker_name(worker),
-                **_context(context, worker_transaction=True),
-            }
-        )
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def slack_command(
         self, payload: Any, *, worker: str = "main", **context: Any
     ) -> Any:
-        return self.worker_transaction(
-            "slack-command", payload, worker=worker, **context
-        )
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def discord_interaction(
         self, payload: Any, *, worker: str = "main", **context: Any
     ) -> Any:
-        return self.worker_transaction(
-            "discord-interaction", payload, worker=worker, **context
-        )
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def reply_provider(
         self, payload: Any, *, worker: str = "main", **context: Any
     ) -> Any:
-        return self.worker_transaction(
-            "reply-provider", payload, worker=worker, **context
-        )
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def _named_management(
         self,

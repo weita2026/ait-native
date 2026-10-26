@@ -819,7 +819,28 @@ where
     }
 
     fn track_index_file_for_write(&mut self, index: BinaryIndexId) -> StoreResult<()> {
-        self.track_relative_path_for_write(index.relative_path())
+        self.track_relative_path_for_write(index.relative_path())?;
+        if index.fixed_key_size().is_some()
+            && crate::foundation::server_binary_db_schema_registry::server_binary_db_index_schema(
+                index.as_str(),
+            )
+            .is_some()
+            && self
+                .journal
+                .requires_before_image(index.relative_path(), 0)?
+            && !self.journal.has_before_image(index.relative_path(), 0)
+        {
+            if let Some(bytes) = self.db.index_rollback_image(&index)? {
+                self.journal.track_before_image(
+                    self.db,
+                    index.relative_path(),
+                    0,
+                    &bytes,
+                    &self.fsync_policy,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     fn track_relative_path_for_write(&mut self, relative: &StorePath) -> StoreResult<()> {
@@ -861,6 +882,9 @@ const fn binary_db_write_txn_trace_name(command_scope: BinaryDbCommandScope) -> 
         BinaryDbCommandScope::ServerContent => "ait.server.binary_db.write.server_content",
         BinaryDbCommandScope::ServerTaskStart => "ait.server.binary_db.write.server_task_start",
         BinaryDbCommandScope::ServerLand => "ait.server.binary_db.write.server_land",
+        BinaryDbCommandScope::ServerSnapshotCapture => {
+            "ait.server.binary_db.write.server_snapshot_capture"
+        }
         BinaryDbCommandScope::ServerRemoteSyncCommit => {
             "ait.server.binary_db.write.server_remote_sync_commit"
         }

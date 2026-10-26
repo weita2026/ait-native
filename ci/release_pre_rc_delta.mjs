@@ -428,6 +428,9 @@ if (changed.length === 0) fail("release delta is empty");
 
 const normalizedPaths = [];
 for (const relativePath of changed) {
+  if (relativePath.startsWith("ait-runner/.ait-external/ait-core/")) {
+    fail(`release version-only delta changes immutable Runner Core source: ${relativePath}`);
+  }
   if (structuralAuthorityPaths.has(relativePath)) continue;
   let before;
   let after;

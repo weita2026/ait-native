@@ -12,6 +12,7 @@ pub mod schema;
 pub mod write;
 
 pub use adapters::{LocalContentBinaryDb, RemoteContentBinaryDb, RemoteFsContentBinaryDb};
+pub(crate) use read::BinaryBlobReadSession;
 pub use read::{
     BinaryBlobView, BinaryDbSnapshotReader, BinaryDbTreeReadCache, BinaryObjectPackMemberView,
     BinaryObjectPackView, BinarySnapshotView, BinaryTreeEntryView, BinaryTreePackView,
@@ -36,8 +37,8 @@ pub(crate) use schema::{
 };
 pub use write::{
     BinaryDbContentWriteCoordinator, BinaryDbObjectPackMemberWriteInput,
-    BinaryDbObjectPackWriteInput, BinaryDbSnapshotWriteInput, BinaryDbTreeEntryWriteInput,
-    BinaryDbTreePackTreeWriteInput, BinaryDbTreePackWriteInput,
+    BinaryDbObjectPackWriteInput, BinaryDbSnapshotReplayWriteInput, BinaryDbSnapshotWriteInput,
+    BinaryDbTreeEntryWriteInput, BinaryDbTreePackTreeWriteInput, BinaryDbTreePackWriteInput,
 };
 
 #[derive(Clone, Debug)]

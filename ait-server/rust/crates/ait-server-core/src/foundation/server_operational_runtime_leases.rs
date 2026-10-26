@@ -110,6 +110,12 @@ pub struct RuntimeLeaseGrant {
     pub expires_at_s: u64,
 }
 
+#[derive(Debug)]
+pub enum RuntimePackageDownloadError {
+    Ownership(BinaryDbError),
+    Source(BinaryDbError),
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RuntimeLeaseReplicaOpenReport {
     pub replica_existed: bool,
@@ -293,6 +299,48 @@ impl ServerOperationalRuntimeLeases {
                 expires_at_s: lease.expires_at_s,
             })
         })
+    }
+
+    pub fn download_prepared_ci_package(
+        &self,
+        store: &ServerOperationalWorkerJobStore,
+        worker_job_index: u32,
+        attempt_count: u16,
+        token: RuntimeLeaseToken,
+        hash: [u8; 32],
+        now: impl Fn() -> StoreResult<u64>,
+    ) -> Result<Option<Vec<u8>>, RuntimePackageDownloadError> {
+        use RuntimePackageDownloadError::{Ownership, Source};
+        let now_s = now().map_err(Ownership)?;
+        let download = store
+            .with_exclusive_queue(|queue| {
+                let current = queue.entry(worker_job_index)?;
+                require_running_attempt(current.record, attempt_count)?;
+                self.valid_entry(
+                    RuntimeLeaseAttemptKey {
+                        repository_index: store.repository_index(),
+                        worker_job_index,
+                        attempt_count,
+                    },
+                    token,
+                    now_s,
+                )?;
+                Ok(store.pin_prepared_ci_package(current, hash))
+            })
+            .map_err(Ownership)?
+            .map_err(Source)?;
+        // The source pin protects cleanup. Heartbeats and lease transitions use
+        // short Queue locks while the potentially large copy runs independently.
+        let bytes = download.read().map_err(Source)?;
+        self.validate_presented(
+            store,
+            worker_job_index,
+            attempt_count,
+            token,
+            now().map_err(Ownership)?,
+        )
+        .map_err(Ownership)?;
+        Ok(bytes)
     }
 
     pub fn validate_presented(
@@ -1333,6 +1381,96 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn package_download_rechecks_expiry_and_keeps_heartbeat_and_cleanup_independent() {
+        use crate::foundation::prepared_ci_runtime::{
+            ManagedCiPackage, ManagedCiPackagePaths, PreparedCiTarget,
+        };
+        let fixture = LeaseFixture::new("package-download", 1);
+        let managed = fixture.root.join("managed");
+        let worktree = managed.join("job");
+        fs::create_dir_all(worktree.join("source")).unwrap();
+        fs::write(worktree.join("package.zst"), b"sealed package").unwrap();
+        let source = ManagedCiPackage::open(
+            1,
+            ManagedCiPackagePaths {
+                managed_root: managed,
+                sources: worktree.join("source"),
+                package: worktree.join("package.zst"),
+                worktree: worktree.clone(),
+            },
+            Sha256::digest(b"sealed package").into(),
+            PreparedCiTarget {
+                target_line: "main".into(),
+                base_snapshot_id: "SNP-000000000001".into(),
+                revision_snapshot_id: "SNP-000000000002".into(),
+            },
+        )
+        .unwrap();
+        let job = fixture
+            .store
+            .enqueue_prepared_ci(source.clone(), 2, 100)
+            .unwrap();
+        let grant = fixture
+            .leases
+            .claim(&fixture.store, job.key.worker_job_index, 100, 30)
+            .unwrap();
+        let read = |now: &dyn Fn() -> StoreResult<u64>| {
+            fixture.leases.download_prepared_ci_package(
+                &fixture.store,
+                job.key.worker_job_index,
+                grant.attempt_count,
+                grant.lease_token,
+                source.sha256(),
+                now,
+            )
+        };
+        assert_eq!(read(&|| Ok(105)).unwrap().unwrap(), b"sealed package");
+        assert!(matches!(
+            read(&|| Ok(131)),
+            Err(RuntimePackageDownloadError::Ownership(_))
+        ));
+        let clock = std::cell::Cell::new(105);
+        assert!(matches!(
+            read(&|| {
+                let at = clock.replace(131);
+                Ok(at)
+            }),
+            Err(RuntimePackageDownloadError::Ownership(_))
+        ));
+        let pin = fixture
+            .store
+            .with_exclusive_queue(|queue| {
+                fixture.store.pin_prepared_ci_package(
+                    queue.entry(job.key.worker_job_index)?,
+                    source.sha256(),
+                )
+            })
+            .unwrap();
+        // A pinned, potentially long copy owns no Queue or lease mutex.
+        fixture
+            .leases
+            .heartbeat(
+                &fixture.store,
+                job.key.worker_job_index,
+                grant.attempt_count,
+                grant.lease_token,
+                106,
+                30,
+            )
+            .unwrap();
+        fixture
+            .store
+            .prepared_ci_runtime()
+            .release_priority(job.key, source.sha256())
+            .unwrap();
+        assert!(!source.request_cleanup().unwrap());
+        assert!(worktree.exists());
+        assert_eq!(pin.read().unwrap().unwrap(), b"sealed package");
+        drop(pin);
+        assert!(!worktree.exists());
     }
 
     #[test]

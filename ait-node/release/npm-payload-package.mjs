@@ -14,7 +14,8 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnNpmSync } from "../scripts/npm-command.mjs";
-import { detectRuntimeLibc } from "../src/runtime.js";
+import { ADDON_FILES, assertAddonImage, assertPackageFiles } from "../scripts/package-inventory.mjs";
+import { detectRuntimeLibc, requiredAddonExports, requiredAddonConstants, requiredAddonStringConstants } from "../src/runtime.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACT_PATH = path.join(ROOT, "lib", "npm-payload-contract.json");
@@ -122,7 +123,7 @@ export function validateContract(contract) {
       payload.package !== expectedPackage ||
       payload.version !== contract.family_version ||
       payload.binding_repository !== "ait-core" ||
-      payload.binding_snapshot !== "SNP-D8DD5ACBA74B" ||
+      payload.binding_snapshot !== "SNP-E05379CAEDF7" ||
       payload.license !== "Apache-2.0" ||
       payload.addon !== "native/ait_napi.node"
     ) {
@@ -225,16 +226,24 @@ function validateLoadedAddon(addonPath, payload) {
   } catch (error) {
     fail(`built addon cannot be loaded in the current Node.js process: ${error.message}`);
   }
-  for (const name of [
-    "bindingInfoJson",
-    "agentWorkerCapabilitiesJson",
-    "agentManagementJson",
-    "agentWorkerTransactionJson",
-    "runCli",
-  ]) {
+  for (const name of requiredAddonExports()) {
     if (typeof addon[name] !== "function") {
       fail(`built addon is missing required export ${name}`);
     }
+  }
+  if (typeof addon.runCli === "function") {
+    fail("built addon exposes the removed CLI relay");
+  }
+  for (const [name, value] of Object.entries(addon)) {
+    if (typeof value === "function" && !requiredAddonExports().includes(name)) {
+      fail(`built addon exposes an unmapped function: ${name}`);
+    }
+  }
+  for (const [name, expected] of Object.entries(requiredAddonConstants())) {
+    if (addon[name] !== expected) fail(`built addon has incompatible constant ${name}`);
+  }
+  for (const name of requiredAddonStringConstants()) {
+    if (typeof addon[name] !== "string") fail(`built addon is missing string constant ${name}`);
   }
   let info;
   try {
@@ -247,7 +256,8 @@ function validateLoadedAddon(addonPath, payload) {
     info.version !== payload.version ||
     info.runtime_authority !== "rust" ||
     info.node_binding !== "napi" ||
-    info.process_transport_allowed !== false
+    info.process_transport_allowed !== false ||
+    JSON.stringify(info.supported_surfaces) !== JSON.stringify(["ait-core"])
   ) {
     fail("built addon does not expose the exact direct Node-API contract");
   }
@@ -266,6 +276,7 @@ async function validateInputs(contract, packageJson, options) {
     fail("ait-node built addon is empty");
   }
   const addonBytes = await readFile(addonPath);
+  assertAddonImage(addonBytes, "ait-node built addon");
   const bindingInfo = validateLoadedAddon(addonPath, payload);
   const licenseEntry = await regularFile(LICENSE_PATH, "ait-node license");
   const noticeEntry = await regularFile(NOTICE_PATH, "ait-node NOTICE");
@@ -406,6 +417,7 @@ async function buildPackage(inputs, outDir) {
       path.join(packageRoot, "provenance.json"),
       `${JSON.stringify(provenance, null, 2)}\n`,
     );
+    await assertPackageFiles(packageRoot, ADDON_FILES);
 
     const expectedFiles = new Set([
       "LICENSE",

@@ -1,4 +1,5 @@
 use super::*;
+use crate::router::http::{map_operational_error, ok_json, parse_canonical_index};
 
 fn atomic_task_land_requested_ref(payload: &JsonValue) -> Result<String, String> {
     payload
@@ -30,6 +31,19 @@ pub(in super::super) async fn native_repository_authority_task_land(
     Path(repo_id): Path<String>,
     Json(payload): Json<JsonValue>,
 ) -> Result<impl IntoResponse, ApiError> {
+    if payload.get("contract").and_then(JsonValue::as_str)
+        == Some(ait_server_core::foundation::workflow_package_contract::PACKAGE_FINISH_CONTRACT)
+    {
+        ait_server_core::foundation::workflow_package_contract::PackageFinishRequest::parse(
+            &payload,
+        )
+        .map_err(ApiError::bad_request)?;
+        let repository_index = parse_canonical_index(&repo_id, "repository_index")?;
+        let operational = state.operational_binary.clone();
+        return task::spawn_blocking(move||operational.finish_workflow_package(repository_index,&payload))
+            .await.map_err(|error|ApiError::internal(format!("Package finish worker failed: {error}")))?
+            .map(ok_json).map_err(|error| if error.kind()==ait_server_core::foundation::remote_binary_db::BinaryDbErrorKind::InvalidDomainData {ApiError::conflict(error.to_string())} else {map_operational_error(error)});
+    }
     let routed = state.workflow_service.clone();
     let runtime = state.runtime_service.clone();
     let delivery_runtime = runtime.clone();

@@ -1,4 +1,5 @@
 use crate::foundation::remote_binary_db::sync_filesystem_directory;
+use crate::foundation::server_repository_scope::ServerRepositoryScope;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -31,6 +32,7 @@ pub struct ServerBinaryLifecycleConfig {
     pub activation_pointer: PathBuf,
     pub lifecycle_lock: PathBuf,
     pub runtime_lease_replica: PathBuf,
+    pub repository_scope: ServerRepositoryScope,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -83,7 +85,22 @@ impl ServerBinaryLifecycleConfig {
             generations_root,
             activation_pointer,
             runtime_lease_replica,
+            repository_scope: ServerRepositoryScope::from_environment()?,
         })
+    }
+
+    pub fn validate_repository_scope(&self) -> Result<(), String> {
+        if !self.repository_scope.has_exclusions() {
+            return Ok(());
+        }
+        let Some(active) = self.activation()? else {
+            return self.repository_scope.validate_known(&[]);
+        };
+        let registry = crate::foundation::server_operational_repository_registry::ServerOperationalRepositoryRegistry::new(
+            active.generation_root.join("global"), active.generation_root.join("repositories"),
+        ).map_err(|error| error.to_string())?;
+        self.repository_scope
+            .validate_known(&registry.list().map_err(|error| error.to_string())?)
     }
 
     pub fn ensure_layout(&self) -> Result<(), String> {
@@ -186,6 +203,77 @@ impl ServerBinaryLifecycleConfig {
             )
         })?;
         result
+    }
+
+    pub fn with_exclusive_admission<T>(
+        &self,
+        action: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        reject_non_regular_if_present(&self.lifecycle_lock)?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&self.lifecycle_lock)
+            .map_err(|error| error.to_string())?;
+        lock.try_lock_exclusive()
+            .map_err(|error| format!("Binary lifecycle startup admission is busy: {error}"))?;
+        action()
+    }
+
+    /// Caller holds exclusive lifecycle admission and the quiesced source locks.
+    pub fn activate_staged_generation(
+        &self,
+        expected: &ServerBinaryActivation,
+        staged: &Path,
+    ) -> Result<ServerBinaryActivation, String> {
+        if self.activation()?.as_ref() != Some(expected) {
+            return Err("Binary activation changed during generation admission".into());
+        }
+        let staged = canonical_real_directory(staged)?;
+        if staged.parent() != Some(canonical_real_directory(&self.generations_root)?.as_path()) {
+            return Err(
+                "Converted generation must be directly beneath the managed generations root".into(),
+            );
+        }
+        let completion = read_regular_file(
+            &staged.join(SERVER_LEGACY_CONVERSION_COMPLETION_FILE),
+            MAX_COMPLETION_BYTES,
+        )
+        .map_err(|error| error.to_string())?;
+        let pointer = ActivationPointer {
+            schema: SERVER_BINARY_ACTIVATION_SCHEMA.into(),
+            layout_id: SERVER_BINARY_LAYOUT_ID,
+            generation: staged
+                .to_str()
+                .ok_or("Generation path is not UTF-8")?
+                .into(),
+            completion_sha256: sha256(&completion),
+        };
+        let mut bytes = serde_json::to_vec_pretty(&pointer).map_err(|error| error.to_string())?;
+        bytes.push(b'\n');
+        let mut random = [0; 16];
+        getrandom::fill(&mut random).map_err(|error| error.to_string())?;
+        let temporary = self
+            .binary_root
+            .join(format!(".active.json.tmp-{}", hex(&random)));
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| error.to_string())?;
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|error| error.to_string())?;
+        if self.activation()?.as_ref() != Some(expected) {
+            let _ = fs::remove_file(&temporary);
+            return Err("Binary activation changed before atomic publication".into());
+        }
+        fs::rename(&temporary, &self.activation_pointer).map_err(|error| error.to_string())?;
+        sync_filesystem_directory(&self.binary_root).map_err(|error| error.to_string())?;
+        self.activation()?
+            .ok_or_else(|| "Binary activation disappeared after generation upgrade".into())
     }
 
     fn ensure_fresh_activation_locked<F>(
@@ -298,7 +386,7 @@ fn ensure_real_directory(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn canonical_real_directory(path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn canonical_real_directory(path: &Path) -> Result<PathBuf, String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("failed to inspect directory {}: {error}", path.display()))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -441,7 +529,7 @@ fn path_is_within(path: &Path, root: &Path) -> bool {
     }
 }
 
-fn sha256(bytes: &[u8]) -> String {
+pub(crate) fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 

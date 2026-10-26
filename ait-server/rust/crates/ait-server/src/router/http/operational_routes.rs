@@ -1,6 +1,8 @@
 use super::*;
 use crate::repository_retirement::REMOTE_AUTHORITY_FILE_MEDIA_TYPE;
 use ait_server_core::foundation::remote_binary_db::{BinaryDbError, BinaryDbErrorKind};
+use ait_server_core::foundation::workflow_binary_v0_adapter::UserActorIdentity;
+use axum::http::{header, HeaderName};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct OperationalWorkerJobsQuery {
@@ -19,6 +21,20 @@ pub(super) struct OperationalRepositoryRegistration {
     repository_name: String,
     namespace: String,
     policy_flags: u8,
+    #[serde(default, deserialize_with = "registration_present_value")]
+    repository_index: Option<u32>,
+    #[serde(default, deserialize_with = "registration_present_value")]
+    user_name: Option<String>,
+    #[serde(default, deserialize_with = "registration_present_value")]
+    user_email: Option<String>,
+}
+
+fn registration_present_value<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 pub(super) async fn native_operational_capabilities(
@@ -66,12 +82,25 @@ pub(super) async fn native_register_operational_repository_authority(
     Json(request): Json<OperationalRepositoryRegistration>,
 ) -> Result<impl IntoResponse, ApiError> {
     let namespace_ascii = parse_namespace_ascii(&request.namespace)?;
+    let identity = match (&request.user_name, &request.user_email) {
+        (None, None) => None,
+        (Some(name), Some(email)) => {
+            Some(UserActorIdentity::new(name, email).map_err(ApiError::bad_request)?)
+        }
+        _ => {
+            return Err(ApiError::bad_request(
+                "user_name and user_email must be provided together",
+            ))
+        }
+    };
     let runtime = require_operational_runtime(&state)?;
     let result = task::spawn_blocking(move || {
-        runtime.register_repository(
+        runtime.register_repository_with_actor(
             &request.repository_name,
             namespace_ascii,
             request.policy_flags,
+            request.repository_index,
+            identity.as_ref(),
         )
     })
     .await
@@ -91,7 +120,8 @@ pub(super) async fn native_register_operational_repository_authority(
         }
         Err(error)
             if error.kind() == BinaryDbErrorKind::InvalidDomainData
-                && error.contains("already owned") =>
+                && (error.contains("already owned")
+                    || error.contains("registration metadata conflict")) =>
         {
             Err(ApiError::conflict(error.to_string()))
         }
@@ -287,17 +317,86 @@ pub(super) async fn native_operational_worker_jobs(
 pub(super) async fn native_operational_worker_job(
     State(state): State<ServerState>,
     Path((repository_index, worker_job_index)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiError> {
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
     let repository_index = parse_canonical_index(&repository_index, "repository_index")?;
     let worker_job_index = parse_canonical_index(&worker_job_index, "worker_job_index")?;
     let runtime = require_operational_runtime(&state)?;
+    use ait_server_core::foundation::workflow_package_contract::{
+        parse_package_hash, PACKAGE_CONTENT_TYPE,
+    };
+    if headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        == Some(PACKAGE_CONTENT_TYPE)
+    {
+        let hash_text = headers
+            .get("x-ait-package-sha256")
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| ApiError::bad_request("Package download requires X-Ait-Package-Sha256"))?
+            .to_string();
+        let hash = parse_package_hash(&hash_text).map_err(ApiError::bad_request)?;
+        let attempt_text = package_download_header(&headers, "x-ait-worker-attempt-count")?;
+        let attempt_count = attempt_text
+            .parse::<u16>()
+            .ok()
+            .filter(|value| *value > 0 && value.to_string() == attempt_text)
+            .ok_or_else(|| {
+                ApiError::bad_request(
+                    "Package download requires a canonical positive u16 worker attempt count",
+                )
+            })?;
+        let token = ait_server_core::foundation::server_operational_runtime_leases::RuntimeLeaseToken::parse_hex(
+            package_download_header(&headers, "x-ait-worker-lease-token")?,
+        ).map_err(map_operational_error)?;
+        let bytes = task::spawn_blocking(move || {
+            runtime.worker_job_package(repository_index, worker_job_index, hash, attempt_count, token)
+        })
+        .await
+        .map_err(|error| ApiError::internal(format!("Package download worker failed: {error}")))?
+        .map_err(|error| {
+            use ait_server_core::foundation::server_operational_runtime_leases::RuntimePackageDownloadError;
+            match error {
+                RuntimePackageDownloadError::Ownership(error) => map_operational_error(error),
+                RuntimePackageDownloadError::Source(error) if error.kind() == BinaryDbErrorKind::InvalidDomainData => ApiError::conflict(error.to_string()),
+                RuntimePackageDownloadError::Source(error) => map_operational_error(error),
+            }
+        })?
+        .ok_or_else(|| ApiError::not_found("The original managed package source is unavailable"))?;
+        return Ok((
+            [
+                (header::CONTENT_TYPE, PACKAGE_CONTENT_TYPE.to_string()),
+                (HeaderName::from_static("x-ait-package-sha256"), hash_text),
+            ],
+            bytes,
+        )
+            .into_response());
+    }
     let result =
         task::spawn_blocking(move || runtime.worker_job(repository_index, worker_job_index))
             .await
             .map_err(|error| {
                 ApiError::internal(format!("Binary Worker Job read worker failed: {error}"))
             })?;
-    map_operational_result(result)
+    map_operational_result(result).map(IntoResponse::into_response)
+}
+
+fn package_download_header<'a>(
+    headers: &'a HeaderMap,
+    name: &'static str,
+) -> Result<&'a str, ApiError> {
+    let mut values = headers.get_all(name).iter();
+    let value = values
+        .next()
+        .ok_or_else(|| ApiError::bad_request(format!("Package download requires {name}")))?;
+    if values.next().is_some() {
+        return Err(ApiError::bad_request(format!(
+            "Package download rejects duplicate {name}"
+        )));
+    }
+    value
+        .to_str()
+        .map_err(|_| ApiError::bad_request(format!("Package download requires a valid {name}")))
 }
 
 pub(super) async fn native_operational_worker_job_action(
@@ -306,6 +405,59 @@ pub(super) async fn native_operational_worker_job_action(
     Json(payload): Json<JsonValue>,
 ) -> Result<impl IntoResponse, ApiError> {
     let repository_index = parse_canonical_index(&repository_index, "repository_index")?;
+    if !worker_job_action.contains(':') {
+        let worker_job_index = parse_canonical_index(&worker_job_action, "worker_job_index")?;
+        if payload.get("contract").and_then(JsonValue::as_str)
+            == Some(
+                ait_server_core::foundation::workflow_package_contract::PACKAGE_ABANDON_CONTRACT,
+            )
+        {
+            ait_server_core::foundation::workflow_package_contract::PackageAbandonRequest::parse(
+                &payload,
+            )
+            .map_err(ApiError::bad_request)?;
+            let runtime = require_operational_runtime(&state)?;
+            let (value, done) = task::spawn_blocking(move || {
+                runtime.abandon_workflow_package(repository_index, worker_job_index, &payload)
+            })
+            .await
+            .map_err(|error| {
+                ApiError::internal(format!("Package abandonment worker failed: {error}"))
+            })?
+            .map_err(|error| {
+                if error.kind() == BinaryDbErrorKind::InvalidDomainData {
+                    ApiError::conflict(error.to_string())
+                } else {
+                    map_operational_error(error)
+                }
+            })?;
+            return Ok((
+                if done {
+                    StatusCode::OK
+                } else {
+                    StatusCode::ACCEPTED
+                },
+                Json(value),
+            ));
+        }
+        ait_server_core::foundation::workflow_package_contract::PackageEvidenceRequest::parse(
+            &payload,
+        )
+        .map_err(ApiError::bad_request)?;
+        let runtime = require_operational_runtime(&state)?;
+        let result = task::spawn_blocking(move || {
+            runtime.accept_workflow_package_evidence(repository_index, worker_job_index, &payload)
+        })
+        .await
+        .map_err(|error| ApiError::internal(format!("Package evidence worker failed: {error}")))?;
+        return result.map(ok_json).map_err(|error| {
+            if error.kind() == BinaryDbErrorKind::InvalidDomainData {
+                ApiError::conflict(error.to_string())
+            } else {
+                map_operational_error(error)
+            }
+        });
+    }
     let (worker_job_index, operation) = parse_worker_job_action(&worker_job_action)?;
     let runtime = require_operational_runtime(&state)?;
     let result = task::spawn_blocking(move || match operation.as_str() {

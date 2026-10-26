@@ -8,12 +8,11 @@ fn run_auth(repo: RepoRuntime, command: AuthCommand) -> Result<(), String> {
                     repo_name: args.repo,
                 },
             )?;
-            emit_result(
-                "ait-cli auth whoami",
-                &payload,
-                args.json,
-                &["identity", "mode", "repo_name"],
-            )?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!("{}", crate::binding_output::format_auth_whoami(&payload)?);
+            }
         }
         AuthCommand::Grant(args) => {
             let payload = auth_grant_cmd(
@@ -25,12 +24,11 @@ fn run_auth(repo: RepoRuntime, command: AuthCommand) -> Result<(), String> {
                     roles: args.role,
                 },
             )?;
-            emit_result(
-                "ait-cli auth grant",
-                &payload,
-                args.json,
-                &["repo_name", "actor_identity", "roles"],
-            )?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!("{}", crate::binding_output::format_auth_grant(&payload)?);
+            }
         }
         AuthCommand::Bindings(args) => {
             let payload = auth_bindings_cmd(
@@ -54,6 +52,8 @@ fn run_config(repo: RepoRuntime, command: ConfigCommand) -> Result<(), String> {
         }
         ConfigCommand::Set(args) => {
             let request = ConfigSetRequest {
+                agent_teams: args.agent_teams,
+                agent_team_size: args.agent_team_size,
                 plan_language: args.plan_language,
                 plan_style: args.plan_style,
                 default_author_mode: args
@@ -62,9 +62,7 @@ fn run_config(repo: RepoRuntime, command: ConfigCommand) -> Result<(), String> {
                 default_model: args.default_model,
                 task_review: args.task_review.map(|value| value.as_str().to_string()),
                 task_worktree_alias_root: args.task_worktree_alias_root,
-                task_worktree_main_seed_ram_max_bytes: args
-                    .task_worktree_main_seed_ram_max_bytes,
-                workflow_mode: args.workflow_mode.map(|value| value.as_str().to_string()),
+                task_worktree_main_seed_ram_max_bytes: args.task_worktree_main_seed_ram_max_bytes,
                 id_namespace_prefix: args.id_namespace_prefix,
                 sprint: args.sprint.map(|value| value.as_str().to_string()),
                 user_name: args.user_name,
@@ -72,8 +70,18 @@ fn run_config(repo: RepoRuntime, command: ConfigCommand) -> Result<(), String> {
                 post_finish_hooks: args.post_finish_hooks,
             };
             let keys = request.updated_keys();
-            let payload = config_set_cmd(&repo, &request)?;
-            emit_config_mutation_result("ait-cli config set", &payload, args.json, &keys)?;
+            let payload = crate::config_surface::config_set_with_team_bootstrap(&repo, &request)?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!(
+                    "{}",
+                    crate::binding_output::format_configuration_with_keys(&payload, &keys)?
+                );
+            }
+            if let Some(error) = crate::config_surface::team_setup_error(&payload) {
+                return Err(error);
+            }
         }
         ConfigCommand::Unset(args) => {
             let key = args.key.into_config_key();
@@ -93,6 +101,11 @@ fn emit_config_show_result(payload: &JsonValue, json_output: bool) -> Result<(),
     if json_output {
         return print_json(payload);
     }
+    println!("{}", config_show_text(payload)?);
+    Ok(())
+}
+
+pub(crate) fn config_show_text(payload: &JsonValue) -> Result<String, String> {
     let task_review = payload
         .get("task_review")
         .and_then(JsonValue::as_object)
@@ -103,7 +116,7 @@ fn emit_config_show_result(payload: &JsonValue, json_output: bool) -> Result<(),
     } else {
         "not_applicable".to_string()
     };
-    print_key_values(
+    let mut output = crate::render::key_values_text(
         "ait-cli config show",
         &[
             ("repo_name", string_field(payload.get("repo_name"))),
@@ -134,13 +147,17 @@ fn emit_config_show_result(payload: &JsonValue, json_output: bool) -> Result<(),
                 "task_review_source",
                 string_field(task_review.get("source")),
             ),
-            (
-                "automatic_task_reviewer",
-                automatic_task_reviewer,
-            ),
+            ("automatic_task_reviewer", automatic_task_reviewer),
         ],
     );
-    Ok(())
+    if let Some(count) = payload["agent_team"]["configured_member_count"].as_u64() {
+        output.push('\n');
+        output.push_str(&crate::render::key_values_text(
+            "Agent team",
+            &[("members", count.to_string())],
+        ));
+    }
+    Ok(output)
 }
 
 fn config_preference_label(payload: &JsonValue, key: &str) -> String {
@@ -160,32 +177,40 @@ fn emit_config_mutation_result(
     if json_output {
         return print_json(payload);
     }
+    println!("{}", config_mutation_text(title, payload, keys)?);
+    Ok(())
+}
+
+pub(crate) fn config_mutation_text(
+    title: &str,
+    payload: &JsonValue,
+    keys: &[&str],
+) -> Result<String, String> {
     let owned_rows = keys
         .iter()
-        .map(|key| {
-            (
-                (*key).to_string(),
-                config_effective_value(payload, key),
-            )
-        })
+        .map(|key| ((*key).to_string(), config_effective_value(payload, key)))
         .collect::<Vec<_>>();
     let rows = owned_rows
         .iter()
         .map(|(key, value)| (key.as_str(), value.clone()))
         .collect::<Vec<_>>();
-    print_key_values(title, &rows);
-    Ok(())
+    Ok(crate::render::key_values_text(title, &rows))
 }
 
 fn config_effective_value(payload: &JsonValue, key: &str) -> String {
     let value = match key {
-        "plan-language" => payload.get("plan_language").and_then(|value| value.get("value")),
-        "plan-style" => payload.get("plan_style").and_then(|value| value.get("value")),
-        "workflow-mode" => payload.get("workflow_mode").and_then(|value| value.get("value")),
+        "plan-language" => payload
+            .get("plan_language")
+            .and_then(|value| value.get("value")),
+        "plan-style" => payload
+            .get("plan_style")
+            .and_then(|value| value.get("value")),
         "sprint" => payload.get("sprint").and_then(|value| value.get("value")),
         "default-author-mode" => payload.get("effective_author_mode"),
         "default-model" => payload.get("effective_model"),
-        "task-review" => payload.get("task_review").and_then(|value| value.get("value")),
+        "task-review" => payload
+            .get("task_review")
+            .and_then(|value| value.get("value")),
         "task-worktree-alias-root" => payload
             .get("task_worktree")
             .and_then(|value| value.get("alias_root"))
@@ -241,19 +266,32 @@ fn run_diff(repo: RepoRuntime, args: DiffArgs) -> Result<(), String> {
 }
 
 fn emit_diff_name_only(payload: &JsonValue) -> Result<(), String> {
+    print!("{}", workspace_diff_name_only_stdout(payload)?);
+    Ok(())
+}
+
+pub(crate) fn workspace_diff_name_only_stdout(payload: &JsonValue) -> Result<String, String> {
+    let mut output = String::new();
     let paths = payload
         .get("changed_paths")
         .and_then(JsonValue::as_array)
         .ok_or_else(|| "diff payload is missing changed_paths".to_string())?;
     for path in paths {
         if let Some(text) = path.as_str() {
-            println!("{text}");
+            output.push_str(text);
+            output.push('\n');
         }
     }
-    Ok(())
+    Ok(output)
 }
 
 fn emit_diff_stat(payload: &JsonValue) -> Result<(), String> {
+    print!("{}", workspace_diff_stat_stdout(payload)?);
+    Ok(())
+}
+
+pub(crate) fn workspace_diff_stat_stdout(payload: &JsonValue) -> Result<String, String> {
+    let mut output = String::new();
     let files = payload
         .get("files")
         .and_then(JsonValue::as_array)
@@ -273,12 +311,20 @@ fn emit_diff_stat(payload: &JsonValue) -> Result<(), String> {
             .and_then(|value| value.get("deletions"))
             .map(|value| string_field(Some(value)))
             .unwrap_or_else(|| "0".to_string());
-        println!("{path}\t+{insertions}\t-{deletions}\t{file_status}");
+        output.push_str(&format!(
+            "{path}\t+{insertions}\t-{deletions}\t{file_status}\n"
+        ));
     }
-    Ok(())
+    Ok(output)
 }
 
 fn emit_diff_text(payload: &JsonValue) -> Result<(), String> {
+    print!("{}", workspace_diff_text_stdout(payload)?);
+    Ok(())
+}
+
+pub(crate) fn workspace_diff_text_stdout(payload: &JsonValue) -> Result<String, String> {
+    let mut output = String::new();
     let files = payload
         .get("files")
         .and_then(JsonValue::as_array)
@@ -299,82 +345,46 @@ fn emit_diff_text(payload: &JsonValue) -> Result<(), String> {
             .and_then(JsonValue::as_str)
             .unwrap_or("");
         if !text.is_empty() {
-            println!("{}", text.trim_end());
+            output.push_str(text.trim_end());
+            output.push('\n');
         } else if !path.is_empty() {
-            println!("diff --ait {path}");
-            println!("# {file_status}: {diff_status}");
+            output.push_str(&format!("diff --ait {path}\n"));
+            output.push_str(&format!("# {file_status}: {diff_status}\n"));
         }
     }
-    Ok(())
+    Ok(output)
 }
-
 fn run_pull(repo: RepoRuntime, args: PullArgs) -> Result<(), String> {
-    let payload = run_locked_workspace_command(&repo, "ait-cli pull", || {
-        pull_cmd(
-            &repo,
-            args.remote.as_deref(),
-            args.line.as_deref(),
-            args.merge,
-            args.restore,
-            args.force,
-        )
-    })?;
-    let mut output = payload.clone();
+    let payload = crate::binding_services::pull_repository(
+        &repo,
+        &crate::binding_services::PullRequest {
+            remote_name: args.remote,
+            line_name: args.line,
+            merge: args.merge,
+            restore: args.restore,
+            force: args.force,
+        },
+    )?;
     if args.json {
-        if let Some(object) = output.as_object_mut() {
-            object.remove("phase_timings_ms");
-            object.remove("remote_sync_metrics");
-        }
+        print_json(&crate::binding_output::project_remote_sync(&payload))
+    } else {
+        println!("{}", crate::binding_output::format_pull(&payload)?);
+        Ok(())
     }
-    emit_result(
-        "ait-cli pull",
-        &output,
-        args.json,
-        &[
-            "remote",
-            "repo_name",
-            "mode",
-            "line",
-            "relationship",
-            "action",
-            "local_line_present",
-            "local_line_head_snapshot_id",
-            "imported_snapshots",
-            "head_snapshot_id",
-            "line_head_updated",
-            "workspace_restored",
-            "restore_applied",
-        ],
-    )
 }
 
 fn run_push(repo: RepoRuntime, args: PushArgs) -> Result<(), String> {
-    let payload = run_locked_workspace_command(&repo, "ait-cli push", || {
-        push_cmd(&repo, args.remote.as_deref(), args.line.as_deref())
-    })?;
-    let mut output = payload.clone();
+    let payload = crate::binding_services::push_repository(
+        &repo,
+        &crate::binding_services::RemoteSyncRequest {
+            remote_name: args.remote,
+            line_name: args.line,
+        },
+    )?;
     if args.json {
-        if let Some(object) = output.as_object_mut() {
-            object.remove("phase_timings_ms");
-            object.remove("remote_sync_metrics");
-        }
+        print_json(&crate::binding_output::project_remote_sync(&payload))
+    } else {
+        println!("{}", crate::binding_output::format_push(&payload)?);
+        Ok(())
     }
-    emit_result(
-        "ait-cli push",
-        &output,
-        args.json,
-        &[
-            "remote",
-            "repo_name",
-            "line",
-            "pushed_snapshots",
-            "checked_snapshots",
-            "uploaded_snapshots",
-            "skipped_snapshots",
-            "head_snapshot_id",
-            "sync_scope",
-            "sync_reason",
-            "bounded_by_snapshot_id",
-        ],
-    )
 }

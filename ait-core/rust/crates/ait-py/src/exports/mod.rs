@@ -1,16 +1,5 @@
-use ait_agent_core::{
-    agent_management_binding_json,
-    event_loop::{
-        agent_telegram_message_delivery_execute_json, agent_telegram_turn_input_plan_json,
-        agent_telegram_workflow_notification_format_json, agent_telegram_workflow_query_plan_json,
-    },
-    language_binding_info_json,
-    transport_config::agent_env_file_load_json,
-    web_runtime::agent_web_runtime_execute_json,
-};
-use ait_agent_worker::{
-    agent_worker_capabilities_binding_json, agent_worker_transaction_binding_json,
-};
+use ait_agent_core::language_binding_info_json;
+use ait_agent_core::language_bindings::CHAT_INTEGRATIONS_RETIRED_MESSAGE;
 use ait_cli::auth_surface::{
     auth_bindings as rust_task_workflow_auth_bindings, auth_grant as rust_task_workflow_auth_grant,
     auth_whoami as rust_task_workflow_auth_whoami, AuthGrantRequest, AuthRemoteRequest,
@@ -65,7 +54,7 @@ use ait_core::diagnostics::{
     normalize_plan_diagnostics_readiness_payload_json,
     normalize_plan_diagnostics_request_payload_json,
 };
-use ait_core::json_support::{json, JsonMap as Map, JsonNumber as Number, JsonValue};
+use ait_core::json_support::{json, JsonNumber as Number, JsonValue};
 use ait_core::object_diff::{
     artifact_blob_id, diff_snapshot_manifests, snapshot_diff_from_manifests,
     DEFAULT_SNAPSHOT_DIFF_MAX_BYTES,
@@ -226,12 +215,7 @@ use ait_core::workflow_closeout_facts::{
     workflow_landed_facts as build_rust_workflow_landed_facts,
     workflow_ready_facts as build_rust_workflow_ready_facts,
 };
-use ait_core::workflow_closeout_read_model::{
-    project_workflow_land_full_read_model as project_rust_workflow_land_full_read_model,
-    project_workflow_land_phase_read_model as project_rust_workflow_land_phase_read_model,
-    project_workflow_landed_read_model as project_rust_workflow_landed_read_model,
-    project_workflow_ready_read_model as project_rust_workflow_ready_read_model,
-};
+use ait_core::workflow_closeout_read_model::project_workflow_land_phase_read_model as project_rust_workflow_land_phase_read_model;
 use ait_core::workflow_closeout_remote::{
     workflow_remote_action_mutation_receipts as rust_workflow_remote_action_mutation_receipts,
     workflow_remote_mutation_receipt as rust_workflow_remote_mutation_receipt,
@@ -248,34 +232,48 @@ use ait_core::workflow_primitives::{
     task_status_details, task_status_value, workflow_error_envelope, workflow_id_matches,
     workflow_id_matches_any_namespace_prefix, workflow_id_namespace_prefix_candidates,
     workflow_id_namespace_prefix_for_value, workflow_id_token, workflow_id_tokens,
-    workflow_mode_value, workflow_origin_namespace_prefix, workflow_success_envelope,
-    WorkflowResultEnvelope, WorkflowStatusDetails, DEFAULT_ID_NAMESPACE_PREFIX,
-    LOCAL_WORKFLOW_ID_NAMESPACE_PREFIX, REMOTE_WORKFLOW_ID_NAMESPACE_PREFIX, WORKFLOW_ID_FAMILIES,
+    workflow_origin_namespace_prefix, workflow_success_envelope, WorkflowResultEnvelope,
+    WorkflowStatusDetails, DEFAULT_ID_NAMESPACE_PREFIX, LOCAL_WORKFLOW_ID_NAMESPACE_PREFIX,
+    REMOTE_WORKFLOW_ID_NAMESPACE_PREFIX, WORKFLOW_ID_FAMILIES,
     WORKFLOW_TASK_CHANGE_ORIGIN_NAMESPACE_PREFIXES,
 };
 use pyo3::exceptions::{PyFileNotFoundError, PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyList, PyTuple};
 use pyo3::wrap_pyfunction;
-use sha2::{Digest, Sha256};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 mod task_workflow_shell_support;
 
-use self::task_workflow_shell_support::{
-    effective_task_review as rust_effective_task_review,
-    task_review_enabled as rust_task_review_enabled,
-    workflow_closeout_wait_hint as rust_workflow_closeout_wait_hint,
-    workflow_land_command_hints as rust_workflow_land_command_hints,
-    workflow_ready_command_hints as rust_workflow_ready_command_hints,
-};
-
 include!("remote_clients.rs");
 include!("agent_runtime.rs");
 include!("plan_http.rs");
 include!("task_workflow.rs");
+include!("binding_operations.rs");
+include!("binding_plans.rs");
+include!("binding_workflows.rs");
+include!("binding_snapshots.rs");
+include!("binding_lines.rs");
+include!("binding_repositories.rs");
+include!("binding_changes.rs");
+include!("binding_stash.rs");
+include!("binding_tags.rs");
+include!("binding_review.rs");
+include!("binding_governance.rs");
+include!("binding_inspection.rs");
+include!("binding_sync.rs");
+include!("binding_worktrees.rs");
+include!("binding_git.rs");
+include!("binding_maintenance.rs");
+include!("binding_source_cache.rs");
+include!("binding_release.rs");
+include!("binding_external.rs");
+include!("binding_binary_db.rs");
+include!("binding_recovery.rs");
+include!("binding_team.rs");
+include!("binding_output.rs");
 include!("plan_store.rs");
 include!("workflow_policy.rs");
 include!("plan_filesystem_storage.rs");
@@ -285,6 +283,43 @@ include!("registration.rs");
 #[cfg(test)]
 mod callback_boundary_tests {
     const EXPORT_SOURCES: &[(&str, &str)] = &[
+        ("binding_recovery.rs", include_str!("binding_recovery.rs")),
+        ("binding_binary_db.rs", include_str!("binding_binary_db.rs")),
+        ("binding_external.rs", include_str!("binding_external.rs")),
+        ("binding_team.rs", include_str!("binding_team.rs")),
+        ("binding_release.rs", include_str!("binding_release.rs")),
+        ("binding_output.rs", include_str!("binding_output.rs")),
+        (
+            "binding_operations.rs",
+            include_str!("binding_operations.rs"),
+        ),
+        ("binding_plans.rs", include_str!("binding_plans.rs")),
+        ("binding_workflows.rs", include_str!("binding_workflows.rs")),
+        ("binding_snapshots.rs", include_str!("binding_snapshots.rs")),
+        ("binding_lines.rs", include_str!("binding_lines.rs")),
+        ("binding_changes.rs", include_str!("binding_changes.rs")),
+        ("binding_stash.rs", include_str!("binding_stash.rs")),
+        ("binding_tags.rs", include_str!("binding_tags.rs")),
+        ("binding_review.rs", include_str!("binding_review.rs")),
+        (
+            "binding_governance.rs",
+            include_str!("binding_governance.rs"),
+        ),
+        (
+            "binding_inspection.rs",
+            include_str!("binding_inspection.rs"),
+        ),
+        ("binding_sync.rs", include_str!("binding_sync.rs")),
+        ("binding_worktrees.rs", include_str!("binding_worktrees.rs")),
+        ("binding_git.rs", include_str!("binding_git.rs")),
+        (
+            "binding_maintenance.rs",
+            include_str!("binding_maintenance.rs"),
+        ),
+        (
+            "binding_repositories.rs",
+            include_str!("binding_repositories.rs"),
+        ),
         ("agent_runtime.rs", include_str!("agent_runtime.rs")),
         (
             "plan_filesystem_storage.rs",
@@ -398,5 +433,102 @@ mod telegram_message_delivery_export_tests {
         let mut leaked_text = delivery;
         leaked_text["plain_text_exposed"] = json!(true);
         assert!(validate_telegram_message_delivery_export(&leaked_text).is_err());
+    }
+}
+
+#[cfg(test)]
+mod chat_binding_retirement_tests {
+    use super::*;
+    use pyo3::types::PyDict;
+    use std::ffi::CString;
+
+    #[test]
+    fn registered_chat_exports_reject_without_request_conversion_or_effects() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "ait_py").expect("native module");
+            register_agent_runtime(py, &module).expect("register native exports");
+            let locals = PyDict::new(py);
+            locals.set_item("binding", module).expect("binding local");
+            let script = CString::new(
+                r#"
+import inspect
+import pathlib
+import socket
+import tempfile
+
+message = "Chat integrations are retired in AIT 1.2.0"
+metadata = binding.language_binding_info()
+assert metadata["contract"] == "ait.language.binding.v1"
+assert metadata["supported_surfaces"] == ["ait-core"]
+assert metadata["runtime_authority"] == "rust"
+assert metadata["process_transport_allowed"] is False
+assert binding.transport_envelope_ir_version()
+assert binding.transport_envelope_schema()
+assert binding.runtime_binding_state_default_payload()
+assert binding.worker_manifest_default_config()
+
+class Unconvertible:
+    def __str__(self):
+        raise AssertionError("retired call converted its request")
+
+with tempfile.TemporaryDirectory(prefix="ait-chat-retired-") as directory:
+    root = pathlib.Path(directory)
+    user_data = root / "user-data"
+    user_data.write_bytes(b"preserve user data\x00")
+    env_file = root / "chat.env"
+    env_file.write_text("AIT_TEST_SECRET=retired-test\n")
+    worker = root / "worker"
+    worker.write_text('#!/bin/sh\nprintf invoked > "$0.called"\n')
+    worker.chmod(0o700)
+    before = {p.name: p.read_bytes() for p in root.iterdir()}
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.setblocking(False)
+        request = {
+            "operation": "start", "name": "retired", "transport": "telegram",
+            "repo_root": directory, "cwd": directory,
+            "manifest_path": str(root / "workers.json"),
+            "worker_binary": str(worker), "path": str(env_file),
+            "env_file": str(env_file), "state_path": str(user_data),
+            "url": "http://127.0.0.1:%d/" % listener.getsockname()[1],
+        }
+        for name, error_type in [
+            ("ait_agent_worker_capabilities", RuntimeError),
+            ("ait_agent_management", RuntimeError),
+            ("ait_agent_worker_transaction", RuntimeError),
+            ("ait_agent_web_runtime_execute", ValueError),
+            ("ait_agent_env_file_load", ValueError),
+            ("ait_agent_telegram_workflow_notification_format", ValueError),
+            ("ait_agent_telegram_turn_input_plan", ValueError),
+            ("ait_agent_telegram_message_delivery_execute", ValueError),
+            ("ait_agent_telegram_workflow_query_plan", ValueError),
+        ]:
+            function = getattr(binding, name)
+            inputs = [None] if name.endswith("capabilities") else [request, Unconvertible()]
+            for value in inputs:
+                args = {} if name.endswith("capabilities") else {"request": value}
+                inspect.signature(function).bind(**args)
+                try:
+                    function(**args)
+                except error_type as error:
+                    assert str(error) == message, (name, error)
+                else:
+                    raise AssertionError(name + " unexpectedly succeeded")
+        try:
+            connection, _ = listener.accept()
+        except BlockingIOError:
+            pass
+        else:
+            connection.close()
+            raise AssertionError("retired chat export used network")
+    assert {p.name: p.read_bytes() for p in root.iterdir()} == before
+"#,
+            )
+            .expect("test script");
+            py.run(script.as_c_str(), Some(&locals), Some(&locals))
+                .expect("native retirement contract");
+        });
     }
 }

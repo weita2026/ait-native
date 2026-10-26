@@ -25,7 +25,7 @@ fn fixture_repo(port: u16) -> tempfile::TempDir {
     fs::create_dir_all(temp.path().join(".ait/agent-runtime")).expect("runtime dir");
     fs::write(
         temp.path().join(".ait/config.json"),
-        r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
+        r#"{"repo_name":"fixture"}"#,
     )
     .expect("repo config");
     fs::write(

@@ -196,6 +196,36 @@ fn policy_gate_evaluation_includes_ci_rollout_suite_failures() {
 }
 
 #[test]
+fn policy_gate_counts_bot_approvals_only_for_generic_requirements() {
+    let mut input = json!({
+        "effective_requirements": {"require_attestation": false, "require_tests": false},
+        "requires_code_review_summary": false,
+        "review_summary": {"approval_count": 1, "human_approval_count": 0}
+    });
+    let evaluate =
+        |input: &JsonValue| JsonValue::Object(policy_gate_evaluation(input.as_object().unwrap()));
+    assert_eq!(evaluate(&input)["decision"], "pass");
+    input["effective_requirements"]["require_human_review"] = json!(true);
+    assert_eq!(
+        check_status(&evaluate(&input), "required_human_review"),
+        "pending"
+    );
+    input["review_summary"]["human_approval_count"] = json!(1);
+    assert_eq!(evaluate(&input)["decision"], "pass");
+    input["review_summary"]["human_approval_count"] = JsonValue::Null;
+    assert_eq!(
+        check_status(&evaluate(&input), "required_human_review"),
+        "pending"
+    );
+    input["effective_requirements"]["require_human_review"] = json!(false);
+    input["attestation"] = json!({"require_human_review": true});
+    assert_eq!(
+        check_status(&evaluate(&input), "required_human_review"),
+        "pending"
+    );
+}
+
+#[test]
 fn active_waiver_rules_filters_expired_rows_and_dedupes() {
     let payload = json!({
         "now": "2026-07-08T00:00:00+00:00",

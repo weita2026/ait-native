@@ -48,9 +48,22 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 1
+          fetch-depth: 0
           path: control
           persist-credentials: false
+
+      - name: Require source in the reviewed main history before executing it
+        shell: bash
+        working-directory: control
+        env:
+          AIT_CONTROL_REF: ${{ github.ref }}
+          AIT_SOURCE_GIT_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          test "${AIT_CONTROL_REF}" = refs/heads/main
+          [[ "${AIT_SOURCE_GIT_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || exit 65
+          git cat-file -e "${AIT_SOURCE_GIT_COMMIT}^{commit}"
+          git merge-base --is-ancestor "${AIT_SOURCE_GIT_COMMIT}" HEAD
 
       - name: Check out the exact public source commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -76,7 +89,7 @@ jobs:
           coordinator_snapshot="${AIT_DISPATCH_COORDINATOR_SNAPSHOT}"
           [[ "${coordinator_snapshot}" =~ ^SNP-[0-9A-F]{12}$ ]]
           [[ "${AIT_CONTROL_GIT_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${AIT_SOURCE_GIT_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${AIT_SOURCE_GIT_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || exit 65
           test "$(git -C "${AIT_CONTROL_ROOT}" rev-parse HEAD)" = \
             "${AIT_CONTROL_GIT_COMMIT}"
           test "$(git -C "${AIT_PUBLIC_SOURCE_ROOT}" rev-parse HEAD)" = \
@@ -407,7 +420,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check 'maturin==1.13.3'
+          python -m pip install --no-cache-dir --disable-pip-version-check 'maturin==1.13.3'
           test "$(maturin --version)" = 'maturin 1.13.3'
 
       - name: Install the pinned Linux manylinux linker
@@ -415,13 +428,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check 'ziglang==0.15.2'
+          python -m pip install --no-cache-dir --disable-pip-version-check 'ziglang==0.15.2'
           test "$(python -m ziglang version)" = '0.15.2'
 
       - name: Install Node.js for the public receipt builder
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
+          package-manager-cache: false
 
       - name: Build the Git-commit-bound component receipt
         shell: bash

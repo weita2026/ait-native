@@ -1,0 +1,42 @@
+{
+  "version": "ait.binary-db.cross-repo-parity-manifest.v1",
+  "substrate_fixture": {
+    "version": "ait.binary-db.conformance-vectors.v2",
+    "sha256": "98cb6f0eb09037bd88b42c9f984426d353c44ab81e19564510e0a8fa43c66866"
+  },
+  "plan_fixture": {
+    "version": "ait.plan-binary-db.golden-bytes.v1",
+    "sha256": "feeb856eba66b4040b85b6a462b7342a94f978798052b8097b526e2cbcae0d96"
+  },
+  "required_vector_categories": [
+    "record",
+    "transaction",
+    "secondary_index",
+    "overwrite",
+    "path_family_binding",
+    "multi_file_transaction",
+    "plan_golden_bytes"
+  ],
+  "required_extended_operations": [
+    "variable_index_round_trip",
+    "fixed_index_plus_one_round_trip",
+    "overwrite_commit",
+    "overwrite_abort",
+    "overwrite_sync_failure",
+    "parent_path_rejected",
+    "unauthorized_plan_family_rejected",
+    "authorized_plan_family_commit",
+    "multi_file_commit",
+    "multi_file_abort",
+    "multi_file_sync_failure",
+    "multi_file_lock_cleanup_failure"
+  ],
+  "required_plan_cases": [
+    "plan_record",
+    "plan_payload",
+    "plan_revision_record",
+    "plan_revision_payload",
+    "plan_item_record",
+    "plan_item_payload"
+  ]
+}

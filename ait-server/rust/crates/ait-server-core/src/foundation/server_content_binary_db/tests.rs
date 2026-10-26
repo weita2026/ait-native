@@ -16,6 +16,12 @@ type TestSnapshotStore = ServerBinaryDbSnapshotStore<TestDb, 1>;
 type FutureLineStore = ServerBinaryDbLineStore<TestDb, 99>;
 type FutureSnapshotStore = ServerBinaryDbSnapshotStore<TestDb, 99>;
 
+#[path = "tests/object_pack_batch.rs"]
+mod object_pack_batch;
+
+#[path = "tests/tree_pack_batch.rs"]
+mod tree_pack_batch;
+
 #[derive(Clone, Default)]
 struct RecordingFsyncPolicy {
     events: Rc<RefCell<Vec<String>>>,
@@ -232,6 +238,7 @@ fn remote_sync_write_set_is_journaled_in_one_durable_batch() -> StoreResult<()> 
 
 fn snapshot_record(hash48: u64) -> ServerBinarySnapshotRecord {
     ServerBinarySnapshotRecord {
+        actor_index_plus1: 0,
         snapshot_meta: 0,
         history_flags: 0,
         payload_len: 0,
@@ -273,6 +280,7 @@ fn canonical_line_and_snapshot_codecs_match_core_golden_bytes() -> StoreResult<(
     );
 
     let snapshot = ServerBinarySnapshotRecord {
+        actor_index_plus1: 0,
         snapshot_meta: ServerBinarySnapshotRecord::META_HAS_ROOT_LOCATOR,
         history_flags: 0,
         payload_len: 8,
@@ -453,11 +461,8 @@ fn server_content_persisted_layout_errors_are_typed_and_fail_closed() -> StoreRe
         SERVER_CONTENT_BINARY_LAYOUT_ID.to_le_bytes(),
     )
     .expect("header-only line file");
-    fs::write(
-        empty_root.join(SERVER_SNAPSHOT_BIN),
-        SERVER_CONTENT_BINARY_LAYOUT_ID.to_le_bytes(),
-    )
-    .expect("header-only snapshot file");
+    fs::write(empty_root.join(SERVER_SNAPSHOT_BIN), 2u32.to_le_bytes())
+        .expect("header-only snapshot file");
     let empty_db = test_db(&empty_root);
     let empty_read = BinaryDbReadTxn::new(&empty_db);
     assert!(FutureLineStore::new(empty_db.clone())

@@ -136,6 +136,72 @@ pub fn runner_hint_text(payload: &JsonValue) -> Option<String> {
     Some(format!("runner: {detail}\nRun `{command}`"))
 }
 
+pub fn ci_diagnostic_text(payload: &JsonValue) -> Option<String> {
+    let ci = payload.get("patchset_ci_status")?;
+    let tests = ci
+        .get("tests_status")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("unknown");
+    let job = ci.get("latest_job").map(job_state).unwrap_or_default();
+    let status = if matches!(tests, "fail" | "failed" | "hard_fail" | "soft_fail") {
+        "tests failed; CI gate remains closed"
+    } else if job == "failed" {
+        "execution failed; CI gate remains closed"
+    } else if job == "running" {
+        "running; awaiting the selected Patchset result"
+    } else if job == "queued" {
+        "queued; awaiting a worker claim"
+    } else if tests == "pass" {
+        "tests passed; remaining review and policy gates still apply"
+    } else {
+        "pending or unavailable; no passing result is inferred"
+    };
+    let patchset = payload
+        .pointer("/patchset/patchset_id")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("unknown");
+    let revision = payload
+        .pointer("/patchset/revision_snapshot_id")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("unknown");
+    Some(format!(
+        "CI: {status}\n- Patchset: {patchset}; revision: {revision}"
+    ))
+}
+
+/// Absence of an advisory hint says nothing about whether CI was queued.
+pub fn no_runner_hint_outcome(payload: &JsonValue, remote_name: Option<&str>) -> JsonValue {
+    let pending = payload_waits_for_ci(payload);
+    let patchset = payload
+        .pointer("/patchset/patchset_id")
+        .and_then(JsonValue::as_str);
+    let command = patchset.map(|id| {
+        let parts = id.split('/').collect::<Vec<_>>();
+        let public_id = match parts.as_slice() {
+            [task, change, patch] if change.starts_with("C-") && patch.starts_with("P-") => {
+                format!("{task}/{patch}")
+            }
+            _ => id.to_string(),
+        };
+        format!(
+            "ait patchset ci-status {public_id}{}",
+            remote_name
+                .map(|name| format!(" --remote {name}"))
+                .unwrap_or_default(),
+        )
+    });
+    json!({
+        "status": "skipped",
+        "reason": if pending { "no_runner_hint" } else { "no_pending_ci" },
+        "detail": if pending {
+            "CI remains pending. No one-shot runner hint could be resolved; a worker may already be running or job metadata may be unavailable. Inspect the exact Patchset CI status before retrying; no CI result or readiness is inferred."
+        } else {
+            "The selected workflow is not waiting for CI; no one-shot runner was started."
+        },
+        "command": command,
+    })
+}
+
 /// Locate `ait-runner`: a sibling of the running `ait` executable first, then
 /// the PATH lookup the hint command itself relies on.
 pub fn resolve_runner_executable() -> PathBuf {
@@ -240,6 +306,23 @@ pub fn ci_runner_once_text(payload: &JsonValue) -> Option<String> {
             .or_else(|| result.get("error").and_then(JsonValue::as_str))
         {
             line.push_str(&format!("\nci runner output: {tail}"));
+            let lower = tail.to_ascii_lowercase();
+            if lower.contains("inspect repository ci entrypoint")
+                && (lower.contains("no such file") || lower.contains("not found"))
+            {
+                line.push_str("\nMissing repository CI entrypoint: include executable ci/run.sh (Unix) or ci/run.ps1 (Windows) in the candidate Snapshot. ci/patch_ci.json alone does not supply the executable entrypoint. CI remains failed; prepare a corrected candidate before requesting CI again.");
+            }
+        }
+        if let Some(detail) = result.get("detail").and_then(JsonValue::as_str) {
+            line.push_str(&format!("\n{detail}"));
+        }
+        if let Some(command) = result.get("command").and_then(JsonValue::as_str) {
+            let label = if status == "skipped" {
+                "Inspect with"
+            } else {
+                "Runner invocation"
+            };
+            line.push_str(&format!("\n{label}: `{command}`"));
         }
     }
     Some(line)
@@ -326,5 +409,51 @@ mod tests {
             &json!({"next_action": {"code": "waiting_for_ci"}})
         ));
         assert!(!payload_waits_for_ci(&json!({"apply_status": "done"})));
+    }
+
+    #[test]
+    fn missing_hint_preserves_pending_ci_and_exact_inspection_command() {
+        let pending = json!({"next_action": {"code": "waiting_for_ci"}, "patchset": {"patchset_id": "RT-1/P-02"}});
+        let result = no_runner_hint_outcome(&pending, Some("review-origin"));
+        assert_eq!(result["reason"], json!("no_runner_hint"));
+        assert_eq!(
+            result["command"],
+            json!("ait patchset ci-status RT-1/P-02 --remote review-origin")
+        );
+        assert!(result["detail"]
+            .as_str()
+            .unwrap()
+            .contains("CI remains pending"));
+        let internal = json!({"next_action":{"code":"waiting_for_ci"},"patchset":{"patchset_id":"RT-1/C-01/P-02"}});
+        assert_eq!(
+            no_runner_hint_outcome(&internal, None)["command"],
+            json!("ait patchset ci-status RT-1/P-02")
+        );
+        assert_eq!(
+            no_runner_hint_outcome(&json!({"apply_status":"done"}), None)["reason"],
+            json!("no_pending_ci")
+        );
+    }
+
+    #[test]
+    fn ci_diagnostics_distinguish_worker_state_from_test_failure() {
+        for (job, tests, expected) in [
+            ("queued", "pending", "queued"),
+            ("running", "pending", "running"),
+            ("succeeded", "fail", "tests failed"),
+            ("failed", "none", "execution failed"),
+        ] {
+            let text = ci_diagnostic_text(&json!({"patchset":{"patchset_id":"RT-1/P-02","revision_snapshot_id":"SNP-CANDIDATE"},"patchset_ci_status":{"tests_status":tests,"latest_job":{"state":job}}})).unwrap();
+            assert!(text.contains(expected), "{text}");
+            assert!(text.contains("SNP-CANDIDATE"), "{text}");
+        }
+    }
+
+    #[test]
+    fn missing_entrypoint_output_explains_candidate_repair_without_bypassing_ci() {
+        let text = ci_runner_once_text(&json!({CI_RUNNER_ONCE_PAYLOAD_KEY:{"status":"failed","exit_code":1,"stderr_tail":"inspect repository CI entrypoint ci/run.sh: No such file or directory (os error 2)"}})).unwrap();
+        assert!(text.contains("Missing repository CI entrypoint"), "{text}");
+        assert!(text.contains("CI remains failed"), "{text}");
+        assert!(text.contains("ci/patch_ci.json alone"), "{text}");
     }
 }

@@ -1,4 +1,4 @@
-# ait-native
+# AIT 1.2.0
 
 **[English](README.md)** · [简体中文](README_CN.md) · [繁體中文](README_ZH.md)
 
@@ -40,12 +40,16 @@ or the [workflow diagram, with Traditional Chinese labels](https://ait-native.de
 Start in a fresh example folder. You need your own coding agent and Node.js 22+
 for this small example; Node.js is not an AIT repository requirement.
 
-**1. Install AIT.**
+**1. Install AIT 1.2.0.**
+
+Choose the native package for your platform from the [v1.2.0 release](https://github.com/weita2026/ait-native/releases/tag/v1.2.0)
+or the [install guide](https://ait-native.dev/local-quickstart/). Then check the installed version:
 
 ```sh
-python -m pip install ait-native==1.1.4
 ait --version
 ```
+
+The version must be 1.2.0. Python and JavaScript CLI frontends are available through the language packages below.
 
 Other package channels are in the [install guide](https://ait-native.dev/local-quickstart/).
 
@@ -78,9 +82,9 @@ when the session starts. Give the agent this request:
 > focused tests. Do not edit checks/, remove existing tests or add dependencies.
 > Run the existing tests and node checks/first-task.mjs before finishing the Task.
 
-The agent records the sprint item, works in the returned Task worktree, implements
-the change and runs the checks. The generated instruction block supplies the exact
-commands and completion requirements for that repository.
+The agent follows the generated route, records a sprint item when required,
+works in the returned Task worktree and runs the checks. The generated block
+supplies the installed version's exact commands and completion requirements.
 
 If your tool does not load repository instructions automatically, configure its
 instruction-file integration or ask it to read the generated file before retrying.
@@ -260,23 +264,42 @@ the task lifecycle and enforces the applicable workflow conditions.
 
 `ait init` establishes the local `.ait` authority and generates managed workflow
 blocks in `AGENTS.md` and `CLAUDE.md`. The generated block is the source of truth for the
-effective commands; local work never needs a running `ait-server`.
+effective commands; local repository initialization does not need a running `ait-server`.
 
-AIT has two workflow presets: `solo_local` keeps work and Task finish local;
-`solo_remote` adds an explicitly selected server and reviewed completion.
-The agent follows the generated instructions for `ait task start`, intermediate
-`ait snapshot create` checkpoints, Markdown lineage through `ait plan sync`, and
-the applicable `ait task finish` or `ait workflow finish` closeout.
+In AIT 1.2.0, Agent Teams, sprint binding and Local/Remote scope are independent.
+Fresh `ait init` enables Agent Teams; existing repositories retain their settings.
+A supported agent host must still prepare usable sessions. `ait team contacts --json`
+reports bindings and native availability. `ait team session ensure` prepares an
+existing member; assignment and desktop execution status remain separate.
+Preparing a Reviewer session requires server registration.
+
+Agent Teams and configuration reference:
+[Agent Teams contacts and sessions](https://ait-native.dev/development/1.2.0/agent-teams/) ·
+[Init and configuration](https://ait-native.dev/development/1.2.0/config/).
+
+Follow generated instructions for `ait task start`, `ait snapshot create`
+checkpoints, Markdown lineage through `ait plan sync`, and the applicable
+`ait task finish` or `ait workflow finish` closeout. In a team, the assigned
+independent Reviewer owns the required review and finish. Remote `ait workflow ready`
+checks readiness; `--apply` prepares the candidate. Preserve the returned exact
+identity through CI and guarded finish. After a preformal Server restart, explicit
+ready apply may reprepare the same sealed content/mode with a new Job, CI and
+required review. Accepted formal retries reuse their original acceptance.
 
 - [Git import, export and exit](https://ait-native.dev/technical/cli/reference/git/)
 - [Feature workflow](https://ait-native.dev/technical/workflows/feature/) and [regression repair](https://ait-native.dev/technical/workflows/regression/)
 - [Components](https://ait-native.dev/components/) and [release status](https://ait-native.dev/proof/)
 
-Current public release: **v1.1.4**. Use the immutable release tag for
-its exact source; `ait-monorepo-source.json` records the component Snapshot
-mapping. Documentation on `main` can advance between releases.
+Release source: **v1.1.4**. `ait-monorepo-source.json` records
+the exported component Snapshots. See [release status](https://ait-native.dev/proof/)
+for package-channel availability.
 
-Checked 2026-10-07: stable 1.1.4 is published through GitHub, PyPI, npm, Homebrew, APT and GHCR, with stable aliases read back. [WinGet 1.1.4 PR 448064](https://github.com/microsoft/winget-pkgs/pull/448064) has merged; fresh public-source discovery and Windows x64 installation passed. [Installation evidence](https://github.com/weita2026/ait-native/actions/runs/37589427613). Windows users can use the [verified 1.1.4 release archives](https://github.com/weita2026/ait-native/releases/tag/v1.1.4). See [release status](https://ait-native.dev/proof/) for changes after this checkpoint.
+<details>
+<summary>Historical 1.1.4 release verification (2026-10-07)</summary>
+
+Checked 2026-10-07: stable 1.1.4 is published through GitHub, PyPI, npm, Homebrew, APT and GHCR, with stable aliases read back. [WinGet 1.1.4 PR 448064](https://github.com/microsoft/winget-pkgs/pull/448064) has merged; fresh public-source discovery and Windows x64 installation passed. [Installation evidence](https://github.com/weita2026/ait-native/actions/runs/37589427613). The [verified 1.1.4 release archives](https://github.com/weita2026/ait-native/releases/tag/v1.1.4) retain that historical release. See [release status](https://ait-native.dev/proof/) for changes after this checkpoint.
+
+</details>
 
 The website's technical reference and PDFs preserve the archived 1.1.1 source and command receipts. Use the [current Quickstart](https://ait-native.dev/local-quickstart/) for installation and the AGENTS.md generated by your installed version for workflow commands. Recorded demonstrations and benchmark campaigns retain their original version and date.
 
@@ -285,10 +308,12 @@ The website's technical reference and PDFs preserve the archived 1.1.1 source an
 <details>
 <summary>Package contents and historical version differences</summary>
 
-| Route | Installed surface |
+Package contents in AIT 1.2.0:
+
+| Route | Declared surface |
 | --- | --- |
-| PyPI `ait-native` | `ait`, an inactive-by-default `ait-server`, and the direct `ait-python` binding. |
-| npm `@wa120/ait-native` | `ait` and the direct in-process Node-API binding; it does not install `ait-server`. |
+| PyPI `ait-native` | The Python `ait` frontend and PyO3 binding. No standalone native CLI, Server or Runner executable. |
+| npm `@wa120/ait-native` | The JavaScript `ait` frontend and Node-API binding. No standalone native CLI, Server or Runner executable. |
 | Homebrew and WinGet | The 1.1.4 product bundle contains native `ait`, `ait-server` and `ait-runner`. Installation starts neither background process. Check release status for channel availability. |
 | APT | In 1.1.4, `ait-native` owns all three commands; `ait-runner` is a dependency-only transition alias. The packaged service remains server-only. |
 | OCI | Separate `ait-server` and `ait-runner` images. |
@@ -302,13 +327,37 @@ for exact assets.
 
 </details>
 
+## Install the Python or JavaScript CLI
+
+Choose one package for the `ait` command, then check `ait --version`:
+
+```sh
+python -m pip install ait-native==1.2.0
+npm install --global @wa120/ait-native@1.2.0
+```
+
+The Python `ait` frontend parses commands in Python and calls typed PyO3
+operations. The npm `ait` frontend parses commands in JavaScript and calls
+typed Node-API operations. Neither relays arguments to a Rust CLI parser or
+a separate executable.
+Use the native distribution channels for the standalone CLI, Server and Runner.
+
+## Moving to 1.2.0
+
+The new public family excludes the standalone chat commands `ait-agent` and
+`ait-agent-worker`. Agent Teams and core Python/Node bindings remain. Existing
+chat binding symbols stay importable and return an explicit retirement error
+when called. Preserve settings, repository data and manually installed files;
+package upgrades use that channel's recorded ownership rather than deleting
+commands found on PATH.
+
 ## Upgrading from 0.x
 
 There is no `ait install` command in 1.x. Upgrade through your package manager
 and check `ait --version`. Preserve an existing `.ait` authority and consult
 the transition instructions for the exact version before migration. New-authority
 setup and an upgrade of existing history are different operations.
-See the [transition contract](ait-core/docs/distribution.md#public-0x-to-10-transition)
+See the [transition contract](docs/distribution.md#public-0x-to-10-transition)
 and [Git exit reference](https://ait-native.dev/technical/cli/reference/git/).
 
 ## Build this source tree
@@ -329,15 +378,15 @@ On Windows PowerShell:
 ```
 
 The build produces the local native commands, a direct PyO3 Python wheel,
-the portable JS/TS package, and the current host's direct Node-API addon
+the portable JS/TS package, and the current host's Node-API addon
 under `dist/source-build/`. These source-build outputs and their receipts
 are explicitly non-publishable; protected release CI promotes only
 separately admitted family artifacts.
 
-For Node.js, `import { NativeRuntime, AgentClient } from
+For Node.js, `import { NativeRuntime } from
 "@wa120/ait-native"` loads the package-owned `native/ait_napi.node` in the
-current process. The npm `ait` command calls the same Rust binding through
-`NativeRuntime.runCli()`; it does not locate or launch a child executable.
+current process. The npm `ait` JavaScript frontend calls typed binding
+operations; it does not locate or launch a child executable.
 
 </details>
 

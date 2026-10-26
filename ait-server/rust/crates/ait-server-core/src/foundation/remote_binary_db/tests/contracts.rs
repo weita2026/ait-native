@@ -19,7 +19,7 @@ fn file_ids_carry_core_compatible_layout_metadata() {
         task.relative_path().as_path(),
         std::path::Path::new("task.bin")
     );
-    assert_eq!(task.layout_id(), 1);
+    assert_eq!(task.layout_id(), 2);
     assert_eq!(
         task.record_size(),
         crate::foundation::workflow_binary_v0::TASK_RECORD_SIZE
@@ -150,7 +150,11 @@ fn command_scopes_use_ait_core_lock_family_shape() {
     );
     assert_eq!(
         BinaryDbCommandScope::ServerLand.lock_file_names(),
-        &["server-content.write.lock", "server-workflow.write.lock"]
+        &[
+            "server-content.write.lock",
+            "server-queue.write.lock",
+            "server-workflow.write.lock"
+        ]
     );
     assert_eq!(
         BinaryDbCommandScope::ServerRemoteSyncCommit.lock_file_names(),
@@ -206,7 +210,11 @@ fn command_scopes_authorize_exact_server_file_families() {
         ),
         (
             BinaryDbCommandScope::ServerLand,
-            &[BinaryDbFileFamily::Workflow, BinaryDbFileFamily::Content],
+            &[
+                BinaryDbFileFamily::Workflow,
+                BinaryDbFileFamily::Content,
+                BinaryDbFileFamily::Queue,
+            ],
         ),
         (
             BinaryDbCommandScope::ServerRemoteSyncCommit,

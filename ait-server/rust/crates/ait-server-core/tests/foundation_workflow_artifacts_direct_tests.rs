@@ -472,6 +472,7 @@ fn review_summary_matches_reference_counts_for_current_patchset() {
             "review_id": 4,
             "patchset_id": "RSEP-1",
             "reviewer": "Bob",
+            "reviewer_kind": "user",
             "action": "approve",
             "comment": "ship it",
             "blocking": false
@@ -480,6 +481,7 @@ fn review_summary_matches_reference_counts_for_current_patchset() {
             "review_id": 5,
             "patchset_id": "RSEP-1",
             "reviewer": "Bob",
+            "reviewer_kind": "user",
             "action": "code_review_summary",
             "comment": "1. Reviewed files\nsrc/lib.rs\n2. Findings\nnone\n3. Risks\nlow\n4. Tests\ncargo test\n5. Recommendation\nland",
             "blocking": false
@@ -556,4 +558,44 @@ fn review_summary_matches_reference_counts_for_current_patchset() {
     );
     assert!(value.get("reference_module").is_none());
     assert_eq!(value["summary"], JsonValue::Object(summary));
+}
+
+#[test]
+fn review_summary_preserves_actor_kind_and_independent_human_identity() {
+    let mut rows = vec![
+        json!({"review_id": 1, "patchset_id": "P-1", "reviewer": "Einstein", "reviewer_kind": "user", "action": "task_approve"}),
+        json!({"review_id": 2, "patchset_id": "P-1", "reviewer": "Einstein", "reviewer_kind": "bot", "action": "approve"}),
+        json!({"review_id": 3, "patchset_id": "P-1", "reviewer": "Einstein", "reviewer_kind": "bot", "action": "code_review_summary", "comment": "Reviewed files; Findings; Risks; Tests; Recommendation"}),
+        json!({"review_id": 4, "patchset_id": "P-OLD", "reviewer": "Other", "reviewer_kind": "user", "action": "approve"}),
+    ];
+    let summarize = |rows: &[JsonValue]| {
+        run(
+            "review-summary",
+            json!({"patchset_id": "P-1", "reviews": rows}),
+        )["summary"]
+            .clone()
+    };
+    let summary = summarize(&rows);
+    assert_eq!(summary["approval_count"], 2);
+    assert_eq!(summary["human_approval_count"], 1);
+    assert_eq!(summary["independent_human_approval_count"], 1);
+    assert_eq!(summary["independent_task_approval_count"], 1);
+    rows.push(json!({"review_id": 5, "patchset_id": "P-1", "reviewer": "Einstein", "reviewer_kind": "bot", "action": "request_changes"}));
+    let summary = summarize(&rows);
+    assert_eq!(summary["approval_count"], 1);
+    assert_eq!(summary["human_approval_count"], 1);
+    assert_eq!(summary["task_approval_count"], 1);
+}
+
+#[test]
+fn review_summary_does_not_infer_humans_from_names_or_missing_kinds() {
+    let reviews = ["bot", "team", "service_account", "automation", "unknown"]
+        .into_iter()
+        .map(|kind| json!({"reviewer": kind, "reviewer_kind": kind, "action": "approve"}))
+        .chain([json!({"reviewer": "Named legacy row without kind", "action": "task_approve"})])
+        .collect::<Vec<_>>();
+    let result = run("review-summary", json!({"reviews": reviews}));
+    assert_eq!(result["summary"]["approval_count"], 6);
+    assert_eq!(result["summary"]["human_approval_count"], 0);
+    assert_eq!(result["summary"]["human_task_approval_count"], 0);
 }

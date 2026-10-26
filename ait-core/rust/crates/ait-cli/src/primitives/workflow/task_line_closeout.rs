@@ -147,37 +147,19 @@ fn task_land_expected_revision_snapshot_id(
 }
 
 fn task_land_selected_patchset_id(output: &JsonValue) -> Result<String, String> {
-    let selected = output
-        .get("change")
-        .and_then(|change| string_field(change, "selected_patchset_id"));
-    let projected = output
+    let id = output
         .get("patchset")
-        .and_then(|patchset| string_field(patchset, "patchset_id"))
-        .or_else(|| string_field(output, "patchset_id"));
-    if let (Some(selected), Some(projected)) = (selected.as_deref(), projected.as_deref()) {
-        if selected != projected {
-            return Err(format!(
-                "Task finish selected Patchset `{selected}`, but the finish result names `{projected}`."
-            ));
-        }
+        .and_then(|row| string_field(row, "patchset_id"))
+        .or_else(|| string_field(output, "patchset_id"))
+        .ok_or("Task finish has no accepted Patchset identity")?;
+    if output
+        .get("land")
+        .and_then(|row| string_field(row, "patchset_id"))
+        .is_some_and(|accepted| accepted != id)
+    {
+        return Err("Task receipt accepted a different Patchset".into());
     }
-    selected.or(projected).ok_or_else(|| {
-        "Task finish completed, but its selected Patchset identity is unavailable for feature-Line closeout."
-            .to_string()
-    })
-}
-
-fn task_land_change_identity(output: &JsonValue) -> Result<(String, String), String> {
-    let change = output
-        .get("change")
-        .filter(|value| value.is_object())
-        .ok_or_else(|| {
-            "Task finish completed, but its recorded Change is unavailable for feature-Line cleanup."
-                .to_string()
-        })?;
-    let change_id = required_string_field(change, "change_id")?;
-    let change_ref = change_reference_from_payload(change, None)?;
-    Ok((change_id, change_ref))
+    Ok(id)
 }
 
 pub(in crate::primitives) fn task_land_selected_patchset_revision_with_closeout_remote<R>(
@@ -198,12 +180,16 @@ where
         );
     }
     let patchset_id = task_land_selected_patchset_id(output)?;
-    let (change_id, change_ref) = task_land_change_identity(output)?;
+    let task_id = string_field(output, "task_id")
+        .or_else(|| string_field(&output["task"], "task_id"))
+        .ok_or("Task finish has no Task identity")?;
+    let change_ref = string_field(output, "change_ref")
+        .or_else(|| string_field(&output["change"], "change_ref"));
     let patchset = workflow_land_patchset_read_with_closeout_remote(
         closeout_remote,
         repo_name,
         &patchset_id,
-        Some(&change_ref),
+        change_ref.as_deref(),
     )?;
     let returned_patchset_id = required_string_field(&patchset, "patchset_id")?;
     if returned_patchset_id != patchset_id {
@@ -211,10 +197,15 @@ where
             "Selected Patchset lookup for `{patchset_id}` returned `{returned_patchset_id}`."
         ));
     }
-    if !payload_belongs_to_change(&patchset, &change_id, &change_ref) {
-        return Err(format!(
-            "Selected Patchset `{patchset_id}` does not belong to authoritative Change `{change_ref}`."
-        ));
+    ait_core::workflow_expected_identity::validate_patchset_reference_owner(
+        &patchset_id,
+        &task_id,
+        change_ref.as_deref(),
+    )?;
+    if string_field(&patchset, "task_id").as_deref() != Some(&task_id)
+        || string_field(&patchset, "change_ref") != change_ref
+    {
+        return Err("Accepted Patchset does not belong to the exact Task/optional Change".into());
     }
     string_field(&patchset, "revision_snapshot_id").ok_or_else(|| {
         format!("Selected Patchset `{patchset_id}` does not expose its accepted revision Snapshot.")

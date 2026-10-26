@@ -7,13 +7,17 @@ fn bound_change_context_rejects_a_mismatched_derived_reference() {
         base_url: "http://127.0.0.1:1/".to_string(),
         ..TaskWorkflowHttpClientConfig::default()
     };
-    let mut task_remote = HttpTaskRemote::new(config.clone()).unwrap();
+    let mut task_remote = HttpTaskRemote::new(config.clone())
+        .unwrap()
+        .with_resolved_test_actor(0);
     let task_error = task_remote
         .set_bound_change_identity_context(Some("T-1"), Some("C-01"), Some("T-2/C-01"))
         .unwrap_err();
     assert!(task_error.contains("does not match derived `T-1/C-01`"));
 
-    let mut closeout_remote = HttpWorkflowCloseoutRemote::new(config).unwrap();
+    let mut closeout_remote = HttpWorkflowCloseoutRemote::new(config)
+        .unwrap()
+        .with_resolved_test_actor(0);
     let closeout_error = closeout_remote
         .set_bound_change_identity_context(Some("T-1"), Some("C-01"), Some("T-2/C-01"))
         .unwrap_err();
@@ -28,7 +32,9 @@ fn explicit_change_ref_does_not_inherit_an_unrelated_bound_task() {
         "status": "open"
     });
     let (config, server) = serve_task_workflow_json_once(response);
-    let mut remote = HttpTaskRemote::new(config).unwrap();
+    let mut remote = HttpTaskRemote::new(config)
+        .unwrap()
+        .with_resolved_test_actor(0);
     remote
         .set_bound_change_identity_context(Some("T-1"), Some("C-01"), Some("T-1/C-01"))
         .unwrap();
@@ -54,7 +60,9 @@ fn closeout_recovery_scopes_duplicate_short_change_ids_by_repository_and_task() 
             "result": {"target_line": "main"}
         });
         let (config, server) = serve_task_workflow_json_once(response);
-        let mut remote = HttpWorkflowCloseoutRemote::new(config).unwrap();
+        let mut remote = HttpWorkflowCloseoutRemote::new(config)
+            .unwrap()
+            .with_resolved_test_actor(0);
         remote
             .set_bound_change_identity_context(Some(task_id), Some("C-01"), None)
             .unwrap();

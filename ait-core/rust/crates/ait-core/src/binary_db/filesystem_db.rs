@@ -3,6 +3,14 @@
 use super::*;
 use std::collections::HashMap;
 
+/// Owns a private decoded directory and publishes its durable checkpoints.
+/// Ordinary Binary DB directories do not need this outer storage adapter.
+pub trait BinaryDbDurableDirectory: std::fmt::Debug + Send + Sync {
+    fn verify_authority(&self) -> StoreResult<()>;
+    fn require_writable(&self) -> StoreResult<()>;
+    fn checkpoint(&self) -> StoreResult<()>;
+}
+
 /// Filesystem adapter for local authority Binary DB storage.
 #[derive(Clone, Debug)]
 pub struct LocalBinaryDbFs<S = FilesystemFileIoStore> {
@@ -16,6 +24,7 @@ pub struct LocalBinaryDbFs<S = FilesystemFileIoStore> {
     admission_error: Option<String>,
     generation_guard: Option<std::sync::Arc<std::sync::Mutex<BinaryDbReadLockSet>>>,
     detached_generation_without_locks: bool,
+    durable_directory: Option<std::sync::Arc<dyn BinaryDbDurableDirectory>>,
 }
 
 impl LocalBinaryDbFs<FilesystemFileIoStore> {
@@ -57,6 +66,7 @@ where
             admission_error: None,
             generation_guard: None,
             detached_generation_without_locks: false,
+            durable_directory: None,
         }
     }
 
@@ -73,6 +83,22 @@ where
     pub fn with_admission_error(mut self, error: Option<String>) -> Self {
         self.admission_error = error;
         self
+    }
+
+    pub fn with_durable_directory(
+        mut self,
+        directory: std::sync::Arc<dyn BinaryDbDurableDirectory>,
+    ) -> Self {
+        self.durable_directory = Some(directory);
+        self
+    }
+
+    /// Called only after the inner transaction has flushed and released locks.
+    pub fn checkpoint_directory(&self) -> StoreResult<()> {
+        if let Some(directory) = &self.durable_directory {
+            directory.checkpoint()?;
+        }
+        Ok(())
     }
 
     pub fn with_generation_guard(
@@ -93,6 +119,9 @@ where
     }
 
     fn ensure_admitted(&self) -> StoreResult<()> {
+        if let Some(directory) = &self.durable_directory {
+            directory.verify_authority()?;
+        }
         match &self.admission_error {
             Some(error) => Err(BinaryDbError::invalid_domain_data(error.clone())),
             None => Ok(()),
@@ -216,10 +245,15 @@ where
         Ok(payload_size / u64::from(record_size))
     }
 
-    fn validate_index_file_layout(&self, path: &Path, expected_layout_id: u32) -> StoreResult<()> {
+    fn validate_index_file_layout(
+        &self,
+        path: &Path,
+        expected_layout_id: u32,
+        metadata_len: u64,
+    ) -> StoreResult<()> {
         let data = self
             .files
-            .read_bytes(path)
+            .read_range(path, 0, metadata_len.min(4) as u32)
             .map_err(|e| file_io_error_to_binary("read index file", e))?;
         Self::validate_index_file_bytes(path, expected_layout_id, &data)
     }
@@ -257,10 +291,19 @@ where
             return Ok(None);
         }
         self.ensure_binary_file_valid(&path, file.layout_id(), file.record_size())?;
-        self.files
+        let bytes = self
+            .files
             .read_bytes(&path)
-            .map(Some)
-            .map_err(|e| file_io_error_to_binary("read fixed record file", e))
+            .map_err(|e| file_io_error_to_binary("read fixed record file", e))?;
+        #[cfg(test)]
+        crate::binary_db::read_profile::note(
+            format!(
+                "full_record:{}",
+                path.file_name().unwrap().to_string_lossy()
+            ),
+            bytes.len() as u64,
+        );
+        Ok(Some(bytes))
     }
 
     fn record_from_file_bytes(
@@ -312,6 +355,11 @@ where
             .files
             .read_bytes(&path)
             .map_err(|e| file_io_error_to_binary("read index file", e))?;
+        #[cfg(test)]
+        crate::binary_db::read_profile::note(
+            format!("full_index:{}", path.file_name().unwrap().to_string_lossy()),
+            bytes.len() as u64,
+        );
         Self::validate_index_file_bytes(&path, index.layout_id(), &bytes)?;
         Ok(Some(bytes))
     }
@@ -560,7 +608,7 @@ where
         } else {
             let len = metadata_len
                 .unwrap_or_else(|| unreachable!("initialized index files have metadata"));
-            self.validate_index_file_layout(&path, index.layout_id())?;
+            self.validate_index_file_layout(&path, index.layout_id(), len)?;
             len
         };
 
@@ -650,11 +698,18 @@ where
         &self.authority_root
     }
 
+    fn publish_directory_checkpoint(&self) -> StoreResult<()> {
+        self.checkpoint_directory()
+    }
+
     fn acquire_command_lock(
         &self,
         command_scope: BinaryDbCommandScope,
     ) -> StoreResult<BinaryDbCommandLockSet> {
         self.ensure_admitted()?;
+        if let Some(directory) = &self.durable_directory {
+            directory.require_writable()?;
+        }
         if self.detached_generation_without_locks {
             return Ok(BinaryDbCommandLockSet::detached_generation_noop(
                 command_scope,
@@ -691,12 +746,22 @@ where
     }
 
     fn sync_file(&self, path: &Path) -> StoreResult<()> {
+        // A decoded cache is never persistent authority. Its successful commit
+        // flushes the complete outer container below. External dependencies
+        // still use their physical fsync before that publication.
+        if self.durable_directory.is_some() && path.parent() == Some(self.authority_root.as_path())
+        {
+            return Ok(());
+        }
         self.files.sync_file(path).map_err(|e| {
             file_io_error_to_binary(format!("sync Binary DB file {}", path.display()), e)
         })
     }
 
     fn sync_directory(&self, path: &Path) -> StoreResult<()> {
+        if self.durable_directory.is_some() && path == self.authority_root.as_path() {
+            return Ok(());
+        }
         self.files.sync_dir(path).map_err(|e| {
             file_io_error_to_binary(format!("sync Binary DB directory {}", path.display()), e)
         })
@@ -980,6 +1045,25 @@ where
             .map_err(|e| file_io_error_to_binary("overwrite fixed record", e))
     }
 
+    fn overwrite_record_marker(
+        &self,
+        file: BinaryFileId,
+        record_index: u32,
+        marker: u8,
+        write: &mut BinaryWriteContext,
+    ) -> StoreResult<()> {
+        write.ensure_authorized_path(file.relative_path())?;
+        if file.record_size() == 0 || record_index >= self.record_count(file.clone())? {
+            return Err(BinaryDbError::missing_data("commit marker record absent"));
+        }
+        let path = self.file_path_for_binary_record(&file)?;
+        let offset = u64::from(BIN_FILE_HEADER_BYTES)
+            + u64::from(record_index) * u64::from(file.record_size());
+        self.files
+            .overwrite_range(&path, offset, &[marker])
+            .map_err(|e| file_io_error_to_binary("overwrite fixed record commit marker", e))
+    }
+
     fn read_payload(
         &self,
         file: BinaryPayloadFileId,
@@ -1079,10 +1163,6 @@ where
         cache: &mut BinaryDbReadCache,
     ) -> StoreResult<Vec<u32>> {
         let path = self.file_path_for_index(&index)?;
-        if !cache.index_files.contains_key(&index) {
-            let bytes = self.read_index_file_bytes(&index)?;
-            cache.index_files.insert(index.clone(), bytes);
-        }
         if let Some(key_size) = index.fixed_key_size() {
             let key_size = usize::try_from(key_size)
                 .map_err(|_| format!("fixed index key size overflows usize: {key_size}"))?;
@@ -1094,6 +1174,10 @@ where
             }
         }
         if !cache.parsed_index_candidates.contains_key(&index) {
+            if !cache.index_files.contains_key(&index) {
+                let bytes = self.read_index_file_bytes(&index)?;
+                cache.index_files.insert(index.clone(), bytes);
+            }
             let parsed = {
                 let bytes = cache
                     .index_files

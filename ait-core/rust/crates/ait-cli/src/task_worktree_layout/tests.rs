@@ -573,6 +573,39 @@ fn explicit_task_edit_root_uses_the_exact_safe_absolute_path() {
     assert!(!location.ephemeral_enabled);
 }
 
+#[cfg(windows)]
+#[test]
+fn explicit_task_edit_root_inspects_complete_windows_drive_roots() {
+    use std::path::Prefix;
+
+    let (_repo_temp, repo) = repo_with_task_worktree(json!({}));
+    let outside = TempDir::new().unwrap();
+    let verbatim = outside.path().canonicalize().unwrap().join("task-root");
+    let Some(Component::Prefix(prefix)) = verbatim.components().next() else {
+        panic!("canonical Windows path must have a prefix: {verbatim:?}");
+    };
+    let Prefix::VerbatimDisk(drive) = prefix.kind() else {
+        panic!("test requires a drive-qualified temp directory: {verbatim:?}");
+    };
+    let normal_root = PathBuf::from(format!("{}:\\", char::from(drive)));
+    let mut normal = normal_root.clone();
+    normal.extend(verbatim.components().skip(2).map(|part| part.as_os_str()));
+    for requested in [&normal, &verbatim] {
+        let location = resolve_explicit_task_worktree_location(&repo, requested).unwrap();
+        assert_eq!(location.target_path, verbatim);
+        assert_eq!(location.preferred_path, verbatim);
+        assert!(!requested.exists());
+    }
+
+    let verbatim_root = verbatim.components().take(2).collect::<PathBuf>();
+    for root in [&normal_root, &verbatim_root] {
+        let error = resolve_explicit_task_worktree_location(&repo, root).unwrap_err();
+        assert!(error.contains("canonical repository"), "{error}");
+    }
+    let bare_prefix = Path::new(prefix.as_os_str());
+    assert!(resolve_explicit_task_worktree_location(&repo, bare_prefix).is_err());
+}
+
 #[test]
 fn explicit_task_edit_root_rejects_relative_overlap_and_non_directory_paths() {
     let (_repo_temp, repo) = repo_with_task_worktree(json!({}));
@@ -602,10 +635,30 @@ fn explicit_task_edit_root_rejects_relative_overlap_and_non_directory_paths() {
     assert_eq!(fs::read_to_string(file_path).unwrap(), "preserve\n");
 }
 
-#[cfg(unix)]
+#[test]
+fn explicit_task_edit_root_rejects_non_directory_ancestors() {
+    let (_repo_temp, repo) = repo_with_task_worktree(json!({}));
+    let outside = TempDir::new().unwrap();
+    let file_path = outside.path().canonicalize().unwrap().join("plain-file");
+    fs::write(&file_path, "preserve\n").unwrap();
+
+    let error =
+        resolve_explicit_task_worktree_location(&repo, &file_path.join("task-root")).unwrap_err();
+
+    assert!(
+        error.contains("path component is not a directory"),
+        "{error}"
+    );
+    assert_eq!(fs::read_to_string(file_path).unwrap(), "preserve\n");
+}
+
+#[cfg(any(unix, windows))]
 #[test]
 fn explicit_task_edit_root_rejects_symbolic_link_components() {
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir as symlink;
 
     let (_repo_temp, repo) = repo_with_task_worktree(json!({}));
     let outside = TempDir::new().unwrap();

@@ -1,0 +1,810 @@
+{
+  "schema": "ait.language-cli-binding-map/v1",
+  "commands": [
+    {
+      "command": "init",
+      "operation": "initializeRepository",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "binary-db upgrade-u64-seconds",
+      "operation": "binaryDbUpgradeU64Seconds",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "binary-db agent-pool50",
+      "operation": "binaryDbAgentPool50",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "line list",
+      "operation": "lineInventory",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "line create",
+      "operation": "taskWorkflowLineCreate",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "line switch",
+      "operation": "taskWorkflowLineSwitch",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "line show",
+      "operation": "lineShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "line archive",
+      "operation": "taskWorkflowLineArchive",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "line rename",
+      "operation": "taskWorkflowLineRename",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "line delete",
+      "operation": "taskWorkflowLineDelete",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "line merge",
+      "operation": "lineMerge",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "line cleanup",
+      "operation": "taskWorkflowLineCleanup",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "git migrate",
+      "operation": "gitMigrate",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "git recover",
+      "operation": "gitRecover",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "git import",
+      "operation": "gitImport",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "git export",
+      "operation": "gitExport",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "git restore",
+      "operation": "gitRestore",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "git mirror",
+      "operation": "gitMirror",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "blame",
+      "operation": "taskWorkflowBlame",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "doctor memory-root",
+      "operation": "doctorMemoryRoot",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "doctor runtime-root",
+      "operation": "taskWorkflowDoctorRuntimeRoot",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "doctor plan-authority",
+      "operation": "doctorPlanAuthority",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "queue summary",
+      "operation": "queueSummary",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "remote add",
+      "operation": "taskWorkflowRemoteAdd",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "remote list",
+      "operation": "taskWorkflowRemoteList",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "remote recover-head",
+      "operation": "remoteRecoverHead",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "current-source-cache run-cli",
+      "operation": null,
+      "classification": "native_maintenance_only"
+    },
+    {
+      "command": "current-source-cache contract",
+      "operation": "currentSourceNativeCacheContract",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "current-source-cache mark-building",
+      "operation": "currentSourceCacheMarkBuilding",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "current-source-cache activate",
+      "operation": "currentSourceCacheActivate",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "current-source-cache release-lease",
+      "operation": "currentSourceCacheReleaseLease",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "current-source-cache prune",
+      "operation": "currentSourceCachePrune",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "current-source-cache seed-canonical",
+      "operation": "currentSourceCacheSeedCanonical",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "current-source-cache extension-fresh",
+      "operation": "currentSourceCacheExtensionFresh",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "current-source-cache binary-fresh",
+      "operation": "currentSourceCacheBinaryFresh",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "current-source-cache core-fingerprint",
+      "operation": "currentSourceCacheCoreFingerprint",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "current-source-cache server-fingerprint",
+      "operation": "currentSourceCacheServerFingerprint",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "current-source-cache core-mtime",
+      "operation": "currentSourceCacheCoreMtime",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "current-source-cache server-mtime",
+      "operation": "currentSourceCacheServerMtime",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "release adapter check",
+      "operation": "releaseAdapterCheck",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "release adapter build",
+      "operation": "releaseAdapterBuild",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "release candidate create",
+      "operation": "releaseCandidateCreate",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "release check",
+      "operation": "releaseCheck",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "release build",
+      "operation": "releaseBuild",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "release native-source",
+      "operation": "releaseNativeSource",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "release native-bundle",
+      "operation": "releaseNativeBundle",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "release package",
+      "operation": "releasePackage",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "release formula",
+      "operation": "releaseFormula",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "release show",
+      "operation": "releaseShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "release publish",
+      "operation": "releasePublish",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "release promote",
+      "operation": "releasePromote",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "repo show",
+      "operation": "repositoryShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "repo retire",
+      "operation": "repositoryRetire",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "repo restore",
+      "operation": "repositoryRestore",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "repo jobs",
+      "operation": "repositoryJobs",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "repo ci-capabilities",
+      "operation": "repositoryCiCapabilities",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "auth whoami",
+      "operation": "taskWorkflowAuthWhoami",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "auth grant",
+      "operation": "taskWorkflowAuthGrant",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "auth bindings",
+      "operation": "taskWorkflowAuthBindings",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "config show",
+      "operation": "taskWorkflowConfigShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "config set",
+      "operation": "configureRepository",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "config unset",
+      "operation": "unsetConfiguration",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "team session acknowledge",
+      "operation": "teamSessionAcknowledge",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "team session ensure",
+      "operation": "teamSessionEnsure",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "team contacts",
+      "operation": "teamContacts",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "external update",
+      "operation": "externalUpdate",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "external status",
+      "operation": "externalStatus",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "external doctor",
+      "operation": "externalDoctor",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "external link",
+      "operation": "externalLink",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "external unlink",
+      "operation": "externalUnlink",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "status",
+      "operation": "taskWorkflowStatus",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "diff",
+      "operation": "workspaceDiff",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "pull",
+      "operation": "pullRepository",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "push",
+      "operation": "pushRepository",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "gc stats",
+      "operation": "gcStats",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "gc validate",
+      "operation": "gcValidate",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "gc prune",
+      "operation": "gcPrune",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "stash save",
+      "operation": "stashSave",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "stash list",
+      "operation": "taskWorkflowStashList",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "stash show",
+      "operation": "taskWorkflowStashShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "stash apply",
+      "operation": "stashApply",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "stash pop",
+      "operation": "stashPop",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "stash drop",
+      "operation": "stashDrop",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "plan list",
+      "operation": "planList",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "plan show",
+      "operation": "planShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "plan revisions",
+      "operation": "planRevisions",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "plan items",
+      "operation": "planItems",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "plan candidates",
+      "operation": "planCandidates",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "plan inspect",
+      "operation": "planInspect",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "plan sync",
+      "operation": "planSync",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "task start",
+      "operation": "taskStart",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "task quick",
+      "operation": "taskQuick",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "task list",
+      "operation": "taskWorkflowTaskList",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "task show",
+      "operation": "taskWorkflowTaskShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "task audit",
+      "operation": "taskAudit",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "task finish",
+      "operation": "taskFinish",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "task abandon",
+      "operation": "taskAbandon",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "change create",
+      "operation": "changeCreate",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "change list",
+      "operation": "taskWorkflowChangeList",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "change show",
+      "operation": "changeShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "change revert",
+      "operation": "changeRevert",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "change replay",
+      "operation": "changeReplay",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "change close",
+      "operation": "changeClose",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "change publish",
+      "operation": "changePublish",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "snapshot create",
+      "operation": "snapshotCapture",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "snapshot list",
+      "operation": "taskWorkflowSnapshotList",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "snapshot show",
+      "operation": "inspectSnapshot",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "snapshot diff",
+      "operation": "snapshotDiff",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "snapshot restore-lines",
+      "operation": "taskWorkflowSnapshotRestoreLines",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "snapshot revert",
+      "operation": "snapshotRevert",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "snapshot replay",
+      "operation": "snapshotReplay",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "snapshot ancestry",
+      "operation": "snapshotAncestry",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "snapshot is-ancestor",
+      "operation": "snapshotIsAncestor",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "snapshot merge-base",
+      "operation": "snapshotMergeBase",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "commit",
+      "operation": "snapshotCapture",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "tag create",
+      "operation": "tagCreate",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "tag list",
+      "operation": "tagList",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "tag show",
+      "operation": "tagShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "tag delete",
+      "operation": "tagDelete",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "patchset publish",
+      "operation": "patchsetPublish",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "patchset list",
+      "operation": "patchsetList",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "patchset show",
+      "operation": "taskWorkflowPatchsetShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "patchset select",
+      "operation": "taskWorkflowPatchsetSelect",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "patchset ci-status",
+      "operation": "taskWorkflowPatchsetCiStatus",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "patchset rerun-ci",
+      "operation": "taskWorkflowPatchsetRerunCi",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "review show",
+      "operation": "reviewShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "review team request",
+      "operation": "reviewTeamRequest",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "review team approve",
+      "operation": "reviewTeamApprove",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "review team request-changes",
+      "operation": "reviewTeamRequestChanges",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "review team comment",
+      "operation": "reviewTeamComment",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "review team defer",
+      "operation": "reviewTeamDefer",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "review task approve",
+      "operation": "reviewTaskApprove",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "review task request-changes",
+      "operation": "reviewTaskRequestChanges",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "review task comment",
+      "operation": "reviewTaskComment",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "review task defer",
+      "operation": "reviewTaskDefer",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "review code submit",
+      "operation": "reviewCodeSubmit",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "review code template",
+      "operation": "taskWorkflowReviewCodeTemplate",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "attest put",
+      "operation": "taskWorkflowAttestPut",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "attest show",
+      "operation": "taskWorkflowAttestShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "policy eval",
+      "operation": "taskWorkflowPolicyEval",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "policy show",
+      "operation": "taskWorkflowPolicyShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "policy waive",
+      "operation": "taskWorkflowPolicyWaive",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree status",
+      "operation": "taskWorkflowWorktreeStatus",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree restore",
+      "operation": "worktreeRestore",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree show",
+      "operation": "worktreeShow",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree path",
+      "operation": "worktreePath",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree doctor",
+      "operation": "taskWorkflowWorktreeDoctor",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree cleanup-candidates",
+      "operation": "taskWorkflowWorktreeCleanupCandidates",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree cleanup",
+      "operation": "worktreeCleanup",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree prune-stale",
+      "operation": "worktreePruneStale",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree list",
+      "operation": "taskWorkflowWorktreeList",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree sync",
+      "operation": "worktreeSync",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree recreate",
+      "operation": "worktreeRecreate",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree recover-task",
+      "operation": "worktreeRecoverTask",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree restore-owned-head",
+      "operation": "worktreeRestoreOwnedHead",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree rebase",
+      "operation": "worktreeRebase",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "worktree remove",
+      "operation": "worktreeRemove",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "workflow guide",
+      "operation": "workflowGuide",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "workflow reconcile",
+      "operation": "workflowReconcile",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "workflow ready",
+      "operation": "workflowReady",
+      "classification": "concrete_binding"
+    },
+    {
+      "command": "workflow finish",
+      "operation": "workflowFinish",
+      "classification": "concrete_binding"
+    }
+  ]
+}

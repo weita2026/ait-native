@@ -1,10 +1,95 @@
 use super::*;
 use crate::foundation::server_content_binary_db::ServerBinaryTreeReadCache;
+use crate::foundation::snapshot_materialization::write_snapshot_tree_file;
+use crate::foundation::workflow_package::{WorkflowPackage, WorkflowPackageBaseContent};
+
+struct PackageBase<'a, D: ServerRemoteBinaryDb> {
+    service: &'a BinaryDbNativeRepositoryService<D>,
+    repository: &'a str,
+}
+
+impl<D> WorkflowPackageBaseContent for PackageBase<'_, D>
+where
+    D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone,
+{
+    fn snapshot(&self, id: &str) -> Result<JsonValue, String> {
+        self.service
+            .latest_snapshot_value(self.repository, id)
+            .map_err(|error| error.to_string())
+    }
+    fn root_tree(&self, pack: &str, ordinal: u32) -> Result<String, String> {
+        let read =
+            BinaryDbReadTxn::new_bounded_for_scope(&self.service.db, BinaryDbReadScope::CONTENT);
+        let content = self.service.repository_content();
+        let pack = content
+            .tree_pack_with_read(&read, pack)
+            .map_err(|error| error.to_string())?
+            .ok_or("Main-seed root tree pack is missing")?;
+        content
+            .tree_for_pack_entry_ordinal_with_read(&read, &pack, ordinal)
+            .map(|tree| tree.tree_id)
+            .map_err(|error| error.to_string())
+    }
+    fn tree(&self, id: &str) -> Result<JsonValue, String> {
+        let read =
+            BinaryDbReadTxn::new_bounded_for_scope(&self.service.db, BinaryDbReadScope::CONTENT);
+        let content = self.service.repository_content();
+        content
+            .tree_with_read(&read, id)
+            .map_err(|error| error.to_string())?
+            .ok_or("Main-seed tree is missing")?;
+        let entries = content
+            .tree_entries_with_read(&read, id)
+            .map_err(|error| error.to_string())?;
+        Ok(JsonValue::Array(
+            entries
+                .into_iter()
+                .map(|entry| {
+                    json!({
+                        "entry_name":entry.entry_name,"entry_type":entry.entry_type,
+                        "target_id":entry.target_id,"size_bytes":entry.size_bytes,"mode":entry.mode,
+                    })
+                })
+                .collect(),
+        ))
+    }
+    fn blob(&self, id: &str) -> Result<Vec<u8>, String> {
+        self.service
+            .read_binary_blob_content_with_session(id, &mut BinaryBlobReadSession::default())
+            .map_err(|error| error.to_string())
+    }
+}
 
 impl<D> BinaryDbNativeRepositoryService<D>
 where
     D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone,
 {
+    pub(in super::super) fn validate_workflow_package_closure(
+        &self,
+        repository: &str,
+        package: &WorkflowPackage,
+    ) -> Result<(), String> {
+        package.validate_content_closure(&PackageBase {
+            service: self,
+            repository,
+        })
+    }
+
+    pub fn materialize_workflow_package(
+        &self,
+        repository: &str,
+        package: &WorkflowPackage,
+        destination: &Path,
+    ) -> Result<(), String> {
+        package.materialize_final_tree(
+            destination,
+            &PackageBase {
+                service: self,
+                repository,
+            },
+        )
+    }
+
     pub(in super::super) fn snapshot_files_for_value(
         &self,
         value: &JsonValue,
@@ -177,51 +262,15 @@ where
             }) {
                 continue;
             }
-            let relative = validated_materialized_relative_path(&path)?;
+            validated_materialized_relative_path(&path)?;
             let blob_id =
                 required_json_text(object, "blob_id").map_err(NativeRepositoryError::internal)?;
             let bytes = self.read_binary_blob_content_with_session(&blob_id, &mut read_session)?;
             validate_canonical_file_bytes(object, &bytes)?;
-            let output = destination.join(relative);
-            if let Some(parent) = output.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| {
-                    NativeRepositoryError::internal(format!(
-                        "failed to create snapshot parent {}: {error}",
-                        parent.display()
-                    ))
-                })?;
-            }
-            if output
-                .symlink_metadata()
-                .is_ok_and(|metadata| metadata.file_type().is_symlink())
-            {
-                return Err(NativeRepositoryError::bad_request(format!(
-                    "snapshot output {} is a symbolic link",
-                    output.display()
-                )));
-            }
-            std::fs::write(&output, &bytes).map_err(|error| {
-                NativeRepositoryError::internal(format!(
-                    "failed to write snapshot file {}: {error}",
-                    output.display()
-                ))
-            })?;
-            #[cfg(unix)]
-            if let Some(mode) = object
-                .get("mode")
-                .and_then(JsonValue::as_str)
-                .and_then(snapshot_file_permissions_mode)
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&output, std::fs::Permissions::from_mode(mode)).map_err(
-                    |error| {
-                        NativeRepositoryError::internal(format!(
-                            "failed to set snapshot file mode {}: {error}",
-                            output.display()
-                        ))
-                    },
-                )?;
-            }
+            let mode =
+                required_json_text(object, "mode").map_err(NativeRepositoryError::internal)?;
+            write_snapshot_tree_file(destination, path.as_str(), &mode, &bytes)
+                .map_err(NativeRepositoryError::internal)?;
             written_files += 1;
             written_bytes = written_bytes
                 .checked_add(bytes.len() as u64)
@@ -345,12 +394,4 @@ fn validated_materialized_relative_path(path: &str) -> Result<PathBuf, NativeRep
         )));
     }
     Ok(relative)
-}
-
-#[cfg(unix)]
-fn snapshot_file_permissions_mode(mode: &str) -> Option<u32> {
-    let text = mode.trim().trim_start_matches("0o");
-    u32::from_str_radix(text, 8)
-        .ok()
-        .map(|value| value & 0o7777)
 }

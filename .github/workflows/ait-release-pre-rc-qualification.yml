@@ -1,4 +1,5 @@
 name: ait pre-RC qualification
+run-name: ${{ inputs.windows_qa_only && 'Native retained-source QA' || 'AIT pre-RC qualification' }} / ${{ inputs.source_commit }}
 
 on:
   workflow_dispatch:
@@ -7,6 +8,15 @@ on:
         description: Exact untagged public repair commit to qualify before any next-RC work
         required: true
         type: string
+      windows_qa_only:
+        description: Run native Windows QA and its Unix owner negative without release qualification output
+        required: false
+        default: false
+        type: boolean
+
+env:
+  AIT_SOURCE_COMMIT: ${{ inputs.source_commit }}
+  AIT_CONTROL_COMMIT: ${{ github.sha }}
 
 permissions:
   contents: read
@@ -24,7 +34,7 @@ jobs:
       - name: Check out the exact repair source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.source_commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           path: source
           persist-credentials: false
@@ -34,20 +44,26 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
-          [[ '${{ inputs.source_commit }}' =~ ^[0-9a-f]{40}$ ]]
-          test "$(git rev-parse HEAD)" = '${{ inputs.source_commit }}'
-          test '${{ github.sha }}' = '${{ inputs.source_commit }}'
+          [[ "${AIT_SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || exit 65
+          test "$(git rev-parse HEAD)" = "${AIT_SOURCE_COMMIT}"
+          test "${AIT_CONTROL_COMMIT}" = "${AIT_SOURCE_COMMIT}"
           test -z "$(git status --porcelain --untracked-files=all)"
           if git tag --points-at HEAD | grep -Eq '^v[0-9]'; then
             printf 'pre-RC qualification source already has a release tag\n' >&2
             exit 65
           fi
+          if [[ "${GITHUB_REF_NAME}" == qa/native-retained-source-lnat-0021 ]]; then
+            test '${{ inputs.windows_qa_only }}' = true
+          fi
           jq -e '.public_publish == false' ci/native_bootstrap_matrix.json >/dev/null
           jq -e '.public_publish == false' ci/release_repository_authorities.json >/dev/null
-          node build-release.mjs --validate-only --git-commit '${{ inputs.source_commit }}'
+          if [[ '${{ inputs.windows_qa_only }}' != true ]]; then
+            node build-release.mjs --validate-only --git-commit "${AIT_SOURCE_COMMIT}"
+          fi
 
   core-quality:
     name: Canonical core quality gate
+    if: ${{ !inputs.windows_qa_only }}
     needs: contract
     runs-on: ubuntu-22.04
     timeout-minutes: 120
@@ -55,7 +71,7 @@ jobs:
       - name: Check out the exact repair source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.source_commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           path: source
           persist-credentials: false
@@ -85,7 +101,7 @@ jobs:
       - name: Check out the exact repair source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.source_commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           path: source
           persist-credentials: false
@@ -94,6 +110,7 @@ jobs:
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
+          package-manager-cache: false
 
       - name: Install the pinned Rust toolchain
         shell: bash
@@ -105,20 +122,84 @@ jobs:
           rustup default "${toolchain}"
 
       - name: Run release-order, export, command, and environment controls
+        if: ${{ !inputs.windows_qa_only }}
         shell: bash
         working-directory: source
         run: |
           set -euo pipefail
           bash ci/release_operator_test.sh
           bash ci/release_pre_rc_qualification_test.sh
+          node ci/release_windows_retained_source_test.mjs
           bash ci/release_winget_submit_test.sh
           node ci/release_closeout_test.mjs
           cargo test --locked --manifest-path ait-core/rust/Cargo.toml \
             -p ait-core --test environment_contract
-          cargo test --locked --manifest-path ait-core/rust/Cargo.toml \
-            -p ait-cli root_command_inventory_is_frozen
-          cargo test --locked --manifest-path ait-core/rust/Cargo.toml \
-            -p ait-cli --test agent_cli root_ait_agent_namespace_is_absent
+          node --input-type=module <<'NODE'
+          import { runSingleCargoCase } from "./ci/release_windows_retained_source.mjs";
+          const manifest = ["--manifest-path", "ait-core/rust/Cargo.toml", "-p", "ait-cli"];
+          runSingleCargoCase([...manifest, "--lib"], "main_app::tests::root_command_inventory_is_frozen");
+          runSingleCargoCase([...manifest, "--test", "agent_cli"], "root_ait_agent_namespace_is_absent");
+          NODE
+
+      - name: Run the single reviewed Unix foreign-owner negative as real root
+        if: ${{ inputs.windows_qa_only }}
+        shell: bash
+        working-directory: source
+        run: |
+          set -euo pipefail
+          qa_output="$RUNNER_TEMP/ait-unix-owner-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$qa_output"
+          uname -s >"$qa_output/platform.stdout"
+          test "$(cat "$qa_output/platform.stdout")" = Linux
+          rustc -vV >"$qa_output/rust-host.stdout"
+          grep -Fx 'host: x86_64-unknown-linux-gnu' "$qa_output/rust-host.stdout"
+          sudo -n id -u >"$qa_output/euid.stdout" 2>"$qa_output/euid.stderr"
+          test "$(cat "$qa_output/euid.stdout")" = 0
+          qa_target="$qa_output-cargo-target"
+          export CARGO_BUILD_BUILD_DIR="$qa_output-cargo-build"
+          cargo test --locked --manifest-path ait-server/rust/Cargo.toml \
+            -p ait-server --lib --features ait-server-core/patch-ci-harness \
+            --target-dir "$qa_target" --no-run --message-format=json \
+            >"$qa_output/build.stdout" 2>"$qa_output/build.stderr"
+          node --input-type=module - "$qa_output/build.stdout" "$qa_target" "$CARGO_BUILD_BUILD_DIR" \
+            >"$qa_output/test-executable.stdout" <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync, realpathSync, lstatSync } from "node:fs";
+          import path from "node:path";
+          const rows = readFileSync(process.argv[2], "utf8").trim().split("\n").map(line => JSON.parse(line));
+          const tests = rows.filter(row => row.reason === "compiler-artifact" && row.target?.name === "ait_server" &&
+            row.target.kind.includes("lib") && row.profile?.test === true && row.executable);
+          assert.equal(tests.length, 1, "require the exact compiled Server unit-test executable");
+          const executable = realpathSync(tests[0].executable);
+          const roots = process.argv.slice(3).map(root => realpathSync(root) + path.sep);
+          assert(roots.some(root => executable.startsWith(root)) && lstatSync(executable).isFile());
+          process.stdout.write(executable + "\n");
+          NODE
+          qa_test_exe=$(cat "$qa_output/test-executable.stdout")
+          "$qa_test_exe" --list >"$qa_output/cases.stdout" 2>"$qa_output/cases.stderr"
+          node --input-type=module - "$qa_output/cases.stdout" >"$qa_output/selected-case.stdout" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { selectNativeCase } from "./ci/release_windows_retained_source.mjs";
+          process.stdout.write(selectNativeCase(readFileSync(process.argv[2], "utf8"),
+            "retained_reprepare_rejects_foreign_uid_root_even_when_server_can_write") + "\n");
+          NODE
+          qa_case=$(cat "$qa_output/selected-case.stdout")
+          sudo -n -- "$qa_test_exe" "$qa_case" --ignored --exact --test-threads=1 --color never \
+            >"$qa_output/root-case.stdout" 2>"$qa_output/root-case.stderr"
+          node --input-type=module - "$qa_output/root-case.stdout" "$qa_case" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { requirePassedCase } from "./ci/release_windows_retained_source.mjs";
+          requirePassedCase(readFileSync(process.argv[2], "utf8"), process.argv[3]);
+          NODE
+
+      - name: Retain original Unix owner diagnostics
+        if: ${{ always() && inputs.windows_qa_only }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-unix-owner-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ait-unix-owner-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 90
 
   windows-lifecycle:
     name: Windows lifecycle / ${{ matrix.target }}
@@ -129,15 +210,17 @@ jobs:
         include:
           - runner: windows-11-arm
             target: aarch64-pc-windows-msvc
+            node_arch: arm64
           - runner: windows-2025
             target: x86_64-pc-windows-msvc
+            node_arch: x64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
       - name: Check out the exact repair source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.source_commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           path: source
           persist-credentials: false
@@ -154,19 +237,59 @@ jobs:
             throw "Rust host $hostTriple does not match ${{ matrix.target }}"
           }
 
+      - name: Select the native Node.js runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          architecture: ${{ matrix.node_arch }}
+          package-manager-cache: false
+
       - name: Execute fresh core and server initialization
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo test --locked --manifest-path source/ait-core/rust/Cargo.toml `
-            -p ait-cli --test init_cli init_cli_creates_then_reinitializes_the_agent_contract
-          cargo test --locked --manifest-path source/ait-server/rust/Cargo.toml `
-            -p ait-server --test installed_lifecycle init_is_idempotent_and_creates_only_an_empty_runtime_root
-          cargo test --locked --manifest-path source/ait-server/rust/Cargo.toml `
-            -p ait-server --test installed_lifecycle installed_run_initializes_then_serves_from_an_explicit_root
+          @'
+          import { runSingleCargoCase } from "./source/ci/release_windows_retained_source.mjs";
+          const cases = [
+            ["ait-core", "ait-cli", "init_cli", "init_cli_creates_then_reinitializes_the_agent_contract"],
+            ["ait-server", "ait-server", "installed_lifecycle", "init_is_idempotent_and_creates_only_an_empty_runtime_root"],
+            ["ait-server", "ait-server", "installed_lifecycle", "direct_start_initializes_then_serves_from_an_explicit_root"],
+          ];
+          for (const [repository, packageName, binary, name] of cases) {
+            runSingleCargoCase(["--manifest-path", `source/${repository}/rust/Cargo.toml`,
+              "-p", packageName, "--test", binary], name);
+          }
+          '@ | node --input-type=module
+          if ($LASTEXITCODE -ne 0) { throw 'Native initialization case did not execute and pass' }
+
+      - name: Run native retained-source regressions for the selected family
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'ait-retained-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}'
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP 'ait-retained-ci-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}'
+          New-Item -ItemType Directory -Path $runtimeRoot -ErrorAction Stop | Out-Null
+          $env:TEST_SERVER_CI_RAM_ROOT = $runtimeRoot
+          if ('${{ inputs.windows_qa_only }}' -eq 'true') {
+            node --input-type=module -e 'import { runNativeWindowsQa } from "./ci/release_windows_retained_source.mjs"; try { runNativeWindowsQa({ target: process.argv[1], root: process.cwd(), logs: process.argv[2] }); } catch (error) { console.error(error.message); process.exitCode = 75; }' '${{ matrix.target }}' $output
+          } else {
+            node ci/release_windows_retained_source.mjs --target '${{ matrix.target }}' --source-root (Get-Location).Path --output $output
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Retain original Windows regression diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-windows-retained-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ait-retained-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 90
 
   qualify:
     name: Freeze non-release qualification evidence
+    if: ${{ !inputs.windows_qa_only }}
     needs:
       - contract
       - core-quality
@@ -181,8 +304,8 @@ jobs:
           set -euo pipefail
           mkdir qualification
           jq -S -n \
-            --arg commit '${{ inputs.source_commit }}' \
-            --arg control_commit '${{ github.sha }}' '
+            --arg commit "${AIT_SOURCE_COMMIT}" \
+            --arg control_commit "${AIT_CONTROL_COMMIT}" '
               {
                 contract: "ait.release.pre-rc-qualification/v1",
                 status: "qualified",

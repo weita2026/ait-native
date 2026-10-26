@@ -1,25 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from ait_python import AgentCapabilities, AgentClient, NativeProtocolError
-
-
-def test_capabilities_come_from_real_rust_binding() -> None:
-    capabilities = AgentClient().capabilities()
-
-    assert capabilities.contract == "ait.agent.worker.capabilities.v1"
-    assert capabilities.version
-    assert set(capabilities.supported_transports) == {
-        "telegram",
-        "discord",
-        "slack",
-        "line",
-    }
-    assert capabilities.default_event_loop_backend in capabilities.event_loop_backends
-    assert capabilities.raw["python_worker_execution_allowed"] is False
 
 
 @pytest.mark.parametrize(
@@ -50,40 +33,54 @@ def test_capabilities_fail_closed(
         AgentCapabilities.from_payload(payload)
 
 
-def test_management_lists_empty_manifest_through_real_binding(
-    tmp_path: Path,
+class UnexpectedRuntime:
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"retired facade resolved runtime method {name}")
+
+
+@pytest.mark.parametrize(
+    ("method", "args", "kwargs"),
+    [
+        ("capabilities", (), {}),
+        ("manage", ({"operation": "add"},), {}),
+        ("add", ({"name": "main"},), {}),
+        ("list_workers", ("telegram",), {}),
+        ("status", ("telegram",), {}),
+        ("start", ("telegram", "main"), {}),
+        ("stop", ("telegram", "main"), {}),
+        ("restart", ("telegram", "main"), {}),
+        ("remove", ("telegram", "main"), {}),
+        ("logs", ("telegram", "main"), {}),
+        ("worker_transaction", ("slack-command", {}), {}),
+        ("slack_command", ({},), {}),
+        ("discord_interaction", ({},), {}),
+        ("reply_provider", ({},), {}),
+        # Retirement precedes legacy validation and environment/path coercion.
+        ("list_workers", ("email",), {"repo_root": object()}),
+        ("start", ("telegram", " "), {}),
+        ("logs", ("telegram", "main"), {"lines": -1}),
+        ("worker_transaction", ("run-command", {}), {}),
+    ],
+)
+def test_retired_facades_fail_without_resolving_runtime(
+    method: str, args: tuple[object, ...], kwargs: dict[str, object]
 ) -> None:
-    (tmp_path / ".ait").mkdir()
-    manifest_path = tmp_path / ".ait" / "agent-workers.json"
+    client = AgentClient(UnexpectedRuntime())
 
-    assert (
-        AgentClient().list_workers(
-            "telegram",
-            repo_root=tmp_path,
-            manifest_path=manifest_path,
-        )
-        == []
-    )
+    with pytest.raises(RuntimeError, match=r"Chat integrations are retired in AIT 1\.2\.0"):
+        getattr(client, method)(*args, **kwargs)
 
 
-def test_reply_provider_uses_real_worker_transaction_binding() -> None:
-    result = AgentClient().reply_provider({"contract": "unsupported"})
-
-    assert result["contract"] == "ait.agent.gateway_reply_provider_response.v1"
-    assert result["error"]["kind"] == "provider_request_contract"
-
-
-def test_agent_input_validation_happens_before_native_call() -> None:
-    client = AgentClient()
-
-    with pytest.raises(ValueError, match="unsupported agent transport"):
-        client.list_workers("email")
-    with pytest.raises(ValueError, match="worker name"):
-        client.start("telegram", " ")
-    with pytest.raises(ValueError, match="unsupported worker operation"):
-        client.worker_transaction("run-command", {})
-    with pytest.raises(ValueError, match="unsupported worker operation"):
-        client.worker_transaction("graph-watch", {})
-    assert not hasattr(client, "telegram_graph_watch")
-    with pytest.raises(TypeError, match="unsupported agent context"):
-        client.list_workers("telegram", command_args=[])
+def test_legacy_payload_parser_remains_available() -> None:
+    payload = {
+        "contract": "ait.agent.worker.capabilities.v1",
+        "binary": "ait-agent-worker",
+        "version": "1.1.4",
+        "platform": "test",
+        "architecture": "test",
+        "supported_transports": ["telegram"],
+        "event_loop_backends": ["portable_poll"],
+        "default_event_loop_backend": "portable_poll",
+        "python_worker_execution_allowed": False,
+    }
+    assert AgentCapabilities.from_payload(payload).supported_transports == ("telegram",)

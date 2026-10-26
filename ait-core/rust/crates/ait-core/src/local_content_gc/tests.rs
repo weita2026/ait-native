@@ -108,7 +108,7 @@ fn write_readable_full_pack(temp: &TempDir, pack_id: &str, blob_id: &str, data: 
 fn binary_db_prune_revalidation_rejects_catalog_change_before_mutation() {
     let temp = TempDir::new().unwrap();
     let content = local_content(&temp);
-    let plan = binary_db_verified_orphan_pack_prune_plan(&content).unwrap();
+    let plan = binary_db_verified_orphan_pack_prune_plan(&content, &BTreeSet::new()).unwrap();
 
     let pack_hash = 0x7172_7374_7576;
     let pack_id = object_pack_id_from_hash48(pack_hash);
@@ -146,9 +146,12 @@ fn binary_db_prune_revalidation_rejects_catalog_change_before_mutation() {
             BinaryDbNoopFsyncPolicy,
         )
         .unwrap();
-    let error =
-        binary_db_require_unchanged_orphan_pack_prune_plan::<TEST_LAYOUT, _>(&revalidation, &plan)
-            .unwrap_err();
+    let error = binary_db_require_unchanged_orphan_pack_prune_plan::<TEST_LAYOUT, _>(
+        &revalidation,
+        &plan,
+        &BTreeSet::new(),
+    )
+    .unwrap_err();
     revalidation.abort().unwrap();
     assert!(error.contains("content catalog changed"));
     assert!(temp.path().join(pack_path).is_file());
@@ -438,6 +441,30 @@ fn binary_db_prune_restores_older_blob_before_removing_duplicate_repair_pack() {
             .unwrap();
     }
     write.commit().unwrap();
+
+    // An optional Git owner pins the duplicate's physical ordinal. Content
+    // deduplication must keep that pack rather than tombstone or remap its FK.
+    let git_root = temp.path().join(".ait/git-interop/v1/binary-v0");
+    fs::create_dir_all(&git_root).unwrap();
+    let mut pinned = 1u32.to_le_bytes().to_vec();
+    pinned.extend_from_slice(
+        &crate::git_binary_db::GitObjectRecord {
+            kind: crate::git_binary_db::GitObjectKind::Blob,
+            repository_index: 0,
+            content_blob_index: 1,
+            object_id: crate::git_binary_db::git_object_id(
+                crate::git_binary_db::GitObjectKind::Blob,
+                blob_bytes,
+            ),
+        }
+        .encode(),
+    );
+    fs::write(git_root.join("git_object.bin"), &pinned).unwrap();
+    let pinned_result = content.prune_orphan_packs().unwrap();
+    assert_eq!(pinned_result["removed_orphan_pack_count"], 0);
+    assert_eq!(fs::read(git_root.join("git_object.bin")).unwrap(), pinned);
+    assert!(temp.path().join(&repair_path).is_file());
+    fs::remove_dir_all(git_root).unwrap();
 
     let result = content.prune_orphan_packs().unwrap();
     assert_eq!(result["removed_orphan_pack_count"], 1);

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+operation_owner=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)/release_operation_owner.mjs
+if [[ $# -gt 0 ]]; then
+  if [[ -z ${AIT_RELEASE_OPERATION_TOKEN:-} ]]; then exec node "${operation_owner}" --shell "$0" "$@"; fi
+  node "${operation_owner}" --check "${AIT_RELEASE_OPERATION_ROOT:?}" || exit 75
+fi
+
 if [[ $# -ne 4 ]]; then
   printf '%s\n' \
     'usage: release_candidate_promote.sh <endpoint-config> <protected-evidence> <aggregate-root> <candidate-root>' >&2

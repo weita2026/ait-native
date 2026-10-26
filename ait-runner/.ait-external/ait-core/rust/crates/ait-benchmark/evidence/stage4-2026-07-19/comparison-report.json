@@ -1,0 +1,91 @@
+{
+  "contract": "ait-vcs-benchmark-comparison/v1",
+  "generated_at": "2026-07-19T05:14:51.064201+00:00",
+  "budget_id": "ait-stage4-vcs-engineering",
+  "budget_revision": "2026-07-19.1",
+  "baseline_benchmark_id": "ait-stage4-focused-status-baseline-2026-07-19",
+  "candidate_benchmark_id": "ait-stage4-focused-status-candidate-2026-07-19",
+  "baseline_claim_eligible": false,
+  "candidate_claim_eligible": false,
+  "environment_comparable": true,
+  "environment_differences": [],
+  "matrix_complete": true,
+  "budget_passed": false,
+  "promotion_ready": false,
+  "cells": [
+    {
+      "cell_key": "small/status_clean/warm/local",
+      "fixture_scale": "small",
+      "operation": "status_clean",
+      "temperature": "warm",
+      "sample_class": "local",
+      "baseline_cell_id": "small-status-clean-warm-local",
+      "candidate_cell_id": "small-status-clean-warm-local",
+      "baseline_ait_p50_ns": 68172479.0,
+      "baseline_ait_p95_ns": 75828045.65,
+      "candidate_ait_p50_ns": 42438979.5,
+      "candidate_ait_p95_ns": 43239052.45,
+      "p50_reduction_percent": 37.74763640324712,
+      "p95_change_percent": -42.97749324889794,
+      "baseline_ait_git_p50_ratio": 1.5517830134013568,
+      "baseline_ait_git_p95_ratio": 1.4581109996464023,
+      "candidate_ait_git_p50_ratio": 0.9565649238636929,
+      "candidate_ait_git_p95_ratio": 0.9341968586000258
+    }
+  ],
+  "budget_results": [
+    {
+      "rule_id": "small-warm-status",
+      "cell_key": "small/status_clean/warm/local",
+      "status": "failed",
+      "reasons": [
+        "p50 reduction percent 37.748 is below minimum 40.000"
+      ]
+    },
+    {
+      "rule_id": "small-incremental-snapshot",
+      "cell_key": null,
+      "status": "missing",
+      "reasons": [
+        "no before/after cell matches this budget rule"
+      ]
+    },
+    {
+      "rule_id": "small-first-snapshot",
+      "cell_key": null,
+      "status": "missing",
+      "reasons": [
+        "no before/after cell matches this budget rule"
+      ]
+    },
+    {
+      "rule_id": "small-first-push",
+      "cell_key": null,
+      "status": "missing",
+      "reasons": [
+        "no before/after cell matches this budget rule"
+      ]
+    },
+    {
+      "rule_id": "small-incremental-push",
+      "cell_key": null,
+      "status": "missing",
+      "reasons": [
+        "no before/after cell matches this budget rule"
+      ]
+    }
+  ],
+  "blockers": [
+    "baseline ait-stage4-focused-status-baseline-2026-07-19 is not claim eligible (scope focused_slice, evidence class focused_measured)",
+    "candidate ait-stage4-focused-status-candidate-2026-07-19 is not claim eligible (scope focused_slice, evidence class focused_measured)",
+    "one or more ratified budget rules failed or lack evidence"
+  ],
+  "limitations": [
+    "Focused status-only campaign; it does not satisfy the full 45-cell release matrix.",
+    "Full Stage 4 promotion additionally requires every protocol-v1 matrix cell and all acceptance gates.",
+    "Remote-sync improvements are structurally tested but are not included in this local-status slice.",
+    "Synthetic small fixture only; the declared real fixture was not executed.",
+    "The AIT baseline is rebuilt from Snapshot SNP-2B2362FA553E; Git is the pinned system binary.",
+    "These are engineering promotion budgets, not a universal claim that AIT is faster than Git."
+  ]
+}

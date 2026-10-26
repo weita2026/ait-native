@@ -5,13 +5,13 @@ use crate::json_support::{
 use ait_core::local_snapshot::{
     LocalSnapshotBlobReadStore, LocalSnapshotTreeReadStore, SnapshotAuthoringOptions,
 };
-use ait_core::tag_store::{new_tag_record, FilesystemTagStore, TagStore};
+use ait_core::tag_store::{new_tag_record, TagStore};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::{Builder as TempBuilder, TempDir};
 
@@ -22,6 +22,7 @@ const OBJECT_FORMAT_SHA1: &str = "sha1";
 const ZERO_SHA1: &str = "0000000000000000000000000000000000000000";
 
 mod mirror;
+mod native;
 pub use mirror::git_mirror;
 
 #[derive(Clone, Debug)]
@@ -120,6 +121,14 @@ struct InteropStore {
 }
 
 impl InteropStore {
+    fn has_native_authority(&self) -> bool {
+        self.root.join("binary-v0").is_dir()
+            || self
+                .root
+                .parent()
+                .and_then(Path::parent)
+                .is_some_and(|ait| fs::symlink_metadata(ait.join("git/interop.tar.zst")).is_ok())
+    }
     fn new(repo: &RepoRuntime) -> Self {
         Self {
             root: repo
@@ -167,6 +176,9 @@ impl InteropStore {
     }
 
     fn write_operation(&self, operation_id: &str, payload: &JsonValue) -> Result<(), String> {
+        if self.has_native_authority() {
+            return Err("native Git history cannot write legacy operation JSON".into());
+        }
         atomic_write_json(&self.operation_path(operation_id), payload)
     }
 
@@ -214,6 +226,9 @@ impl InteropStore {
     }
 
     fn write_mapping(&self, mut payload: JsonValue) -> Result<(String, bool), String> {
+        if self.has_native_authority() {
+            return Err("native Git history cannot write legacy mapping JSON".into());
+        }
         let recorded_at_unix_nanos = unix_time_nanos()?;
         {
             let object = payload
@@ -670,11 +685,226 @@ fn selected_import_refs(
     Ok((selected_heads, selected_tags))
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ImportedBlobMetadata {
+    size: usize,
+    lfs_pointer: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct GitBatchHeader {
+    object_type: String,
+    size: usize,
+}
+
+fn parse_git_batch_header(header: &[u8], expected_oid: &str) -> Result<GitBatchHeader, String> {
+    let text = std::str::from_utf8(header)
+        .map_err(|_| "Git cat-file batch header is not UTF-8.".to_string())?;
+    let fields = text.trim_end_matches('\n').split(' ').collect::<Vec<_>>();
+    if fields.first().copied() != Some(expected_oid) {
+        return Err("Git cat-file batch response object ID differs from the request.".to_string());
+    }
+    if fields.get(1).copied() == Some("missing") {
+        return Err(format!(
+            "Git cat-file batch object {expected_oid} is missing."
+        ));
+    }
+    if fields.len() != 3 || !matches!(fields[1], "blob" | "tree" | "commit" | "tag") {
+        return Err("Malformed Git cat-file batch response header.".to_string());
+    }
+    let size = fields[2]
+        .parse::<usize>()
+        .map_err(|_| "Invalid Git cat-file batch object size.".to_string())?;
+    Ok(GitBatchHeader {
+        object_type: fields[1].to_string(),
+        size,
+    })
+}
+
+fn read_git_batch_payload(reader: &mut impl Read, size: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(size)
+        .map_err(|error| format!("Cannot reserve Git object content: {error}"))?;
+    bytes.resize(size, 0);
+    reader
+        .read_exact(&mut bytes)
+        .map_err(|error| format!("Incomplete Git object content: {error}"))?;
+    let mut separator = [0];
+    reader
+        .read_exact(&mut separator)
+        .map_err(|error| format!("Missing Git object separator: {error}"))?;
+    if separator != [b'\n'] {
+        return Err("Invalid Git object content separator.".to_string());
+    }
+    Ok(bytes)
+}
+
+// Each process is owned by this plan read, including on error. Stderr goes to
+// an anonymous temporary file so a diagnostic cannot deadlock the stdout pipe.
+struct GitBatchProcess {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+    stderr: fs::File,
+}
+
+impl GitBatchProcess {
+    fn new(git_dir: &Path, mode: &str) -> Result<Self, String> {
+        let stderr = tempfile::tempfile()
+            .map_err(|error| format!("Failed to create Git batch stderr: {error}"))?;
+        let stderr_handle = stderr
+            .try_clone()
+            .map_err(|error| format!("Failed to clone Git batch stderr: {error}"))?;
+        let mut child = Command::new("git")
+            .arg(format!("--git-dir={}", git_dir.display()))
+            .args(["cat-file", mode])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(stderr_handle))
+            .spawn()
+            .map_err(|error| format!("Failed to start Git cat-file batch: {error}"))?;
+        // Piped handles are present after a successful spawn.
+        let stdin = child.stdin.take();
+        let stdout = BufReader::new(child.stdout.take().expect("piped Git batch stdout"));
+        Ok(Self {
+            child,
+            stdin,
+            stdout,
+            stderr,
+        })
+    }
+
+    fn stop(&mut self) {
+        self.stdin.take();
+        // A protocol error may leave unread content blocking the child. Killing
+        // this exact owned process before waiting also handles that error path.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
+    fn failure(&mut self, detail: impl std::fmt::Display) -> String {
+        self.stop();
+        let mut diagnostics = Vec::new();
+        let _ = self.stderr.seek(SeekFrom::Start(0));
+        let _ = Read::by_ref(&mut self.stderr)
+            .take(64 * 1024)
+            .read_to_end(&mut diagnostics);
+        format!(
+            "Git cat-file batch failed: {detail}; {}",
+            String::from_utf8_lossy(&diagnostics).trim()
+        )
+    }
+
+    fn read_exact(&mut self, bytes: &mut [u8]) -> Result<(), String> {
+        match self.stdout.read_exact(bytes) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.failure(error)),
+        }
+    }
+
+    fn request(&mut self, oid: &str) -> Result<GitBatchHeader, String> {
+        if oid.len() != 40 || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("Git batch requests require a complete SHA-1 object ID.".to_string());
+        }
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "Git batch process is closed.".to_string())?;
+        if let Err(error) = writeln!(stdin, "{oid}") {
+            return Err(self.failure(error));
+        }
+        let mut header = Vec::new();
+        loop {
+            let mut byte = [0];
+            self.read_exact(&mut byte)?;
+            header.push(byte[0]);
+            if byte[0] == b'\n' {
+                break;
+            }
+            if header.len() >= 256 {
+                return Err(self.failure("oversized response header"));
+            }
+        }
+        parse_git_batch_header(&header, oid).map_err(|error| self.failure(error))
+    }
+
+    fn content(
+        &mut self,
+        oid: &str,
+        expected_type: &str,
+    ) -> Result<(GitBatchHeader, Vec<u8>), String> {
+        let header = self.request(oid)?;
+        if header.object_type != expected_type {
+            return Err(self.failure("response object type differs from the request"));
+        }
+        let bytes = read_git_batch_payload(&mut self.stdout, header.size)
+            .map_err(|error| self.failure(error))?;
+        Ok((header, bytes))
+    }
+}
+
+impl Drop for GitBatchProcess {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+// This cache belongs to one retained Git repository and one invocation only.
+// No cached metadata survives a source change, dry-run, import or another repo.
+struct GitImportObjectReader {
+    info: GitBatchProcess,
+    contents: GitBatchProcess,
+    blobs: BTreeMap<String, ImportedBlobMetadata>,
+}
+
+impl GitImportObjectReader {
+    fn new(git_dir: &Path) -> Result<Self, String> {
+        Ok(Self {
+            info: GitBatchProcess::new(git_dir, "--batch-check")?,
+            contents: GitBatchProcess::new(git_dir, "--batch")?,
+            blobs: BTreeMap::new(),
+        })
+    }
+
+    fn content(&mut self, oid: &str, object_type: &str) -> Result<Vec<u8>, String> {
+        self.contents
+            .content(oid, object_type)
+            .map(|(_, bytes)| bytes)
+    }
+
+    fn blob_metadata(&mut self, oid: &str) -> Result<ImportedBlobMetadata, String> {
+        if let Some(metadata) = self.blobs.get(oid) {
+            return Ok(*metadata);
+        }
+        let info = self.info.request(oid)?;
+        if info.object_type != "blob" {
+            return Err(self.info.failure("expected blob metadata"));
+        }
+        let lfs_pointer = if info.size <= 1024 {
+            let (header, bytes) = self.contents.content(oid, "blob")?;
+            if header.size != info.size {
+                return Err(self.contents.failure("object size changed during read"));
+            }
+            bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n")
+        } else {
+            false
+        };
+        let metadata = ImportedBlobMetadata {
+            size: info.size,
+            lfs_pointer,
+        };
+        self.blobs.insert(oid.to_string(), metadata);
+        Ok(metadata)
+    }
+}
+
 fn load_import_commit_plan(
     git_dir: &Path,
     heads: &[ImportedRef],
     tags: &[ImportedRef],
 ) -> Result<(Vec<CommitData>, Vec<TagData>), String> {
+    let mut objects = GitImportObjectReader::new(git_dir)?;
     let mut tag_rows = Vec::new();
     let mut roots = heads
         .iter()
@@ -684,15 +914,18 @@ fn load_import_commit_plan(
         let object_type = git_repo_text(git_dir, ["cat-file", "-t", tag.object_id.as_str()])?
             .trim()
             .to_string();
-        let peeled_commit_id = git_repo_text(
-            git_dir,
-            ["rev-parse", &format!("{}^{{commit}}", tag.object_id)],
-        )?
-        .trim()
-        .to_string();
-        roots.push(peeled_commit_id.clone());
+        let peeled = git_repo_text(git_dir, ["rev-parse", &format!("{}^{{}}", tag.object_id)])?
+            .trim()
+            .to_string();
+        let peeled_commit_id =
+            if git_repo_text(git_dir, ["cat-file", "-t", &peeled])?.trim() == "commit" {
+                roots.push(peeled.clone());
+                peeled
+            } else {
+                String::new()
+            };
         let raw_bytes = if object_type == "tag" {
-            git_repo_bytes(git_dir, ["cat-file", "tag", tag.object_id.as_str()])?
+            objects.content(&tag.object_id, "tag")?
         } else {
             Vec::new()
         };
@@ -734,13 +967,17 @@ fn load_import_commit_plan(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        commits.push(read_commit_data(git_dir, object_id)?);
+        commits.push(read_commit_data(git_dir, object_id, &mut objects)?);
     }
     Ok((commits, tag_rows))
 }
 
-fn read_commit_data(git_dir: &Path, object_id: &str) -> Result<CommitData, String> {
-    let raw_bytes = git_repo_bytes(git_dir, ["cat-file", "commit", object_id])?;
+fn read_commit_data(
+    git_dir: &Path,
+    object_id: &str,
+    objects: &mut GitImportObjectReader,
+) -> Result<CommitData, String> {
+    let raw_bytes = objects.content(object_id, "commit")?;
     let header_end = find_subslice(&raw_bytes, b"\n\n").unwrap_or(raw_bytes.len());
     let header = &raw_bytes[..header_end];
     let header_text = String::from_utf8_lossy(header);
@@ -792,15 +1029,11 @@ fn read_commit_data(git_dir: &Path, object_id: &str) -> Result<CommitData, Strin
             return Err(format!("Malformed Git tree row in commit {object_id}."));
         }
         if object_type == "blob" {
-            let size = git_repo_text(git_dir, ["cat-file", "-s", entry_object_id])?
-                .trim()
-                .parse::<usize>()
-                .map_err(|_| format!("Invalid Git blob size for {entry_object_id}."))?;
-            if size <= 1024 {
-                let bytes = git_repo_bytes(git_dir, ["cat-file", "blob", entry_object_id])?;
-                if bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n") {
-                    lfs_pointer_count += 1;
-                }
+            let metadata = objects.blob_metadata(entry_object_id)?;
+            // Classification is cached by immutable OID, but the public count
+            // retains its original per-path, per-commit occurrence semantics.
+            if metadata.size <= 1024 && metadata.lfs_pointer {
+                lfs_pointer_count += 1;
             }
         }
         files.push(GitTreeEntry {
@@ -1116,7 +1349,32 @@ pub fn git_import(
     all_branches_and_tags: bool,
     dry_run: bool,
 ) -> Result<JsonValue, String> {
-    let source_info = inspect_source(source)?;
+    if dry_run {
+        return git_import_with_generation(repo, source, all_branches_and_tags, true, None);
+    }
+    crate::import_workspace_bootstrap::preflight(repo)?;
+    let mut result = git_import_with_generation(repo, source, all_branches_and_tags, false, None)?;
+    let setup = crate::import_workspace_bootstrap::complete(repo).map_err(|error| format!(
+        "Git source import completed or was replayed, but workspace setup is incomplete: {error}. Re-run the same import source/selection to fill missing setup without rewriting history."
+    ))?;
+    if setup["mutated"].as_bool() == Some(true) {
+        result["mutated"] = JsonValue::Bool(true);
+    }
+    result["workspace_bootstrap"] = setup;
+    Ok(result)
+}
+
+fn git_import_with_generation(
+    repo: &RepoRuntime,
+    source: &str,
+    all_branches_and_tags: bool,
+    dry_run: bool,
+    generation_override: Option<&str>,
+) -> Result<JsonValue, String> {
+    let mut source_info = inspect_source(source)?;
+    if let Some(generation) = generation_override {
+        source_info.generation_id = generation.into();
+    }
     let format_blocked = source_info.object_format != OBJECT_FORMAT_SHA1;
     if format_blocked {
         let report = json!({
@@ -1159,10 +1417,15 @@ pub fn git_import(
             "Git import stopped before changing AIT history: {replace_ref_count} replace ref(s) are unsupported. Remove the replace refs or expand their replacement history, then retry."
         ));
     }
+    if notes_ref_count > 0 && !dry_run {
+        return Err(format!(
+            "Git import stopped before changing AIT history: {notes_ref_count} notes ref(s) are unsupported by native storage. Preserve the source notes and remove them from the import source, then retry."
+        ));
+    }
 
     let interop = InteropStore::new(repo);
     let mut dry_temp = None;
-    let git_dir = if dry_run {
+    let git_dir = if dry_run || native::admit_fresh(repo)? {
         let temp = TempBuilder::new()
             .prefix("ait-git-import-inspect-")
             .tempdir()
@@ -1219,6 +1482,13 @@ pub fn git_import(
         .map(|commit| commit.lfs_pointer_count)
         .sum::<usize>();
     let mut blockers = Vec::new();
+    if notes_ref_count > 0 {
+        blockers.push(json!({
+            "kind": "notes_refs",
+            "count": notes_ref_count,
+            "disposition": "fail_closed",
+        }));
+    }
     if replace_ref_count > 0 {
         blockers.push(json!({
             "kind": "replace_refs",
@@ -1256,7 +1526,7 @@ pub fn git_import(
         {
             "kind": "notes_refs",
             "count": notes_ref_count,
-            "disposition": "preserved_git_only",
+            "disposition": "unsupported",
         },
         {
             "kind": "lfs_pointers",
@@ -1320,6 +1590,21 @@ pub fn git_import(
         ));
     }
 
+    if native::admit_fresh(repo)? {
+        return native::import(
+            repo,
+            native::ImportPlan {
+                git_dir: &git_dir,
+                source: &source_info,
+                heads: &selected_heads,
+                tags: &selected_tags,
+                commits: &commits,
+                operation: &operation_id,
+                plan: &plan_hash,
+                classifications,
+            },
+        );
+    }
     let (completed, mut next_commit_index, mut next_ref_index) =
         existing_operation_result(&interop, &operation_id, &plan_hash)?;
     if let Some(mut result) = completed {
@@ -1461,8 +1746,7 @@ pub fn git_import(
     let line_store = repo
         .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
         .lines();
-    let tag_store =
-        FilesystemTagStore::new(repo.authoritative_repo_root().to_string_lossy().as_ref())?;
+    let tag_store = crate::tag_surface::tag_store(repo)?;
     let mut ref_index = 0_usize;
     let mut imported_lines = Vec::new();
     for head in &selected_heads {
@@ -1706,6 +1990,18 @@ pub fn git_import(
     Ok(result)
 }
 
+pub fn git_recover(repo: &RepoRuntime, apply: bool) -> Result<JsonValue, String> {
+    native::recover(repo, apply)
+}
+
+pub fn git_migrate(
+    repo: &RepoRuntime,
+    staging_root: &Path,
+    apply: bool,
+) -> Result<JsonValue, String> {
+    native::migration::migrate(repo, staging_root, apply)
+}
+
 pub fn git_export(
     repo: &RepoRuntime,
     target: &str,
@@ -1737,6 +2033,9 @@ pub fn git_export(
             "Git export blocked: target object format {:?} is unsupported; this build supports sha1 only.",
             target_info.object_format
         ));
+    }
+    if native::exists(repo) || native::admit_fresh(repo)? {
+        return native::export_current(repo, target, all_lines_and_tags, dry_run);
     }
     let export_refs = selected_export_refs(repo, all_lines_and_tags)?;
     if export_refs.is_empty() {
@@ -2163,6 +2462,29 @@ pub fn git_export(
     Ok(result)
 }
 
+pub fn git_export_selection(
+    repo: &RepoRuntime,
+    target: &str,
+    all_lines_and_tags: bool,
+    dry_run: bool,
+    generation: Option<&str>,
+    object: Option<&str>,
+) -> Result<JsonValue, String> {
+    if generation.is_some() || object.is_some() {
+        return native::export(repo, target, generation, object, dry_run);
+    }
+    git_export(repo, target, all_lines_and_tags, dry_run)
+}
+
+pub fn git_restore(
+    repo: &RepoRuntime,
+    generation: &str,
+    object: &str,
+    target: &Path,
+) -> Result<JsonValue, String> {
+    native::restore(repo, generation, object, target)
+}
+
 fn inspect_target(target: &str) -> Result<TargetInfo, String> {
     let requested = target.trim();
     if requested.is_empty() {
@@ -2296,9 +2618,7 @@ fn selected_export_refs(
                 created_at: line.created_at,
             });
         }
-        let tags =
-            FilesystemTagStore::new(repo.authoritative_repo_root().to_string_lossy().as_ref())?
-                .list_tags()?;
+        let tags = crate::tag_surface::tag_store(repo)?.list_tags()?;
         for tag in tags {
             refs.push(ExportRef {
                 git_ref_name: format!("refs/tags/{}", tag.name),
@@ -2890,6 +3210,115 @@ fn git_update_ref(
     }
     git_repo_bytes(git_dir, args)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod import_object_reader_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn repository() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        assert!(Command::new("git")
+            .args(["init", "--bare"])
+            .arg(dir.path())
+            .output()
+            .unwrap()
+            .status
+            .success());
+        dir
+    }
+
+    fn blob(dir: &Path, bytes: &[u8]) -> String {
+        String::from_utf8(
+            git_repo_bytes_os(
+                dir,
+                vec!["hash-object".into(), "-w".into(), "--stdin".into()],
+                &[],
+                Some(bytes),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .trim()
+        .to_string()
+    }
+
+    #[test]
+    fn git_batch_header_requires_exact_identity_type_size_and_complete_response() {
+        let oid = "1234567890123456789012345678901234567890";
+        assert_eq!(
+            parse_git_batch_header(format!("{oid} blob 5\n").as_bytes(), oid)
+                .unwrap()
+                .size,
+            5
+        );
+        for text in [
+            format!("{oid} missing\n"),
+            format!("{ZERO_SHA1} blob 5\n"),
+            format!("{oid} blob -1\n"),
+            format!("{oid} unknown 5\n"),
+            format!("{oid} blob 5 extra\n"),
+        ] {
+            assert!(parse_git_batch_header(text.as_bytes(), oid).is_err());
+        }
+        assert!(parse_git_batch_header(&[255, b'\n'], oid).is_err());
+    }
+
+    #[test]
+    fn git_batch_payload_preserves_binary_and_does_not_split_at_content_newlines() {
+        let bytes = b"a\0b\nc\n";
+        let mut input = Cursor::new(bytes);
+        assert_eq!(read_git_batch_payload(&mut input, 5).unwrap(), b"a\0b\nc");
+        assert!(read_git_batch_payload(&mut Cursor::new(b"abcX"), 3).is_err());
+        assert!(read_git_batch_payload(&mut Cursor::new(b"ab"), 3).is_err());
+        assert!(read_git_batch_payload(&mut Cursor::new(b"abc"), 3).is_err());
+        assert_eq!(
+            read_git_batch_payload(&mut Cursor::new(b"\n"), 0).unwrap(),
+            b""
+        );
+        assert!(read_git_batch_payload(&mut Cursor::new(b""), usize::MAX).is_err());
+    }
+
+    #[test]
+    fn git_batch_real_objects_cache_metadata_per_invocation_and_source() {
+        let source = repository();
+        let binary = (0..=255).collect::<Vec<u8>>();
+        let binary_oid = blob(source.path(), &binary);
+        let pointer = b"version https://git-lfs.github.com/spec/v1\noid sha256:fixture\nsize 123\n";
+        let pointer_oid = blob(source.path(), pointer);
+        let mut reader = GitImportObjectReader::new(source.path()).unwrap();
+        assert_eq!(reader.content(&binary_oid, "blob").unwrap(), binary);
+        assert!(!reader.blob_metadata(&binary_oid).unwrap().lfs_pointer);
+        for _ in 0..20 {
+            assert!(reader.blob_metadata(&pointer_oid).unwrap().lfs_pointer);
+        }
+        assert_eq!(reader.blobs.len(), 2);
+        let changed = blob(source.path(), b"different bytes");
+        assert!(!reader.blob_metadata(&changed).unwrap().lfs_pointer);
+        assert_eq!(reader.blobs.len(), 3);
+        let another_source = repository();
+        assert_eq!(blob(another_source.path(), pointer), pointer_oid);
+        let mut another = GitImportObjectReader::new(another_source.path()).unwrap();
+        assert!(another.blobs.is_empty());
+        assert!(another.blob_metadata(&pointer_oid).unwrap().lfs_pointer);
+        assert_eq!(another.blobs.len(), 1);
+    }
+
+    #[test]
+    fn git_batch_missing_and_child_exit_fail_closed_and_reap_owned_process() {
+        let source = repository();
+        let mut reader = GitImportObjectReader::new(source.path()).unwrap();
+        assert!(reader
+            .blob_metadata(ZERO_SHA1)
+            .unwrap_err()
+            .contains("missing"));
+        assert!(reader.info.child.try_wait().unwrap().is_some());
+        reader.contents.child.kill().unwrap();
+        reader.contents.child.wait().unwrap();
+        assert!(reader.content(ZERO_SHA1, "blob").is_err());
+        assert!(reader.contents.child.try_wait().unwrap().is_some());
+    }
 }
 
 #[cfg(test)]

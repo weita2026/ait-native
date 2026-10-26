@@ -1,6 +1,7 @@
 use super::schema::{
     PlanItemPayload, PlanItemRecord, PlanRecord, PlanRevisionPayload, PlanRevisionRecord,
     PLAN_ITEM_RECORD_SIZE, PLAN_LAYOUT_ID, PLAN_RECORD_SIZE, PLAN_REVISION_RECORD_SIZE,
+    REMOTE_PLAN_LAYOUT_ID, REMOTE_PLAN_RECORD_SIZE, REMOTE_PLAN_REVISION_RECORD_SIZE,
 };
 
 pub(super) struct ServerPlanCodec<const LAYOUT: u32>;
@@ -8,12 +9,28 @@ pub(super) struct ServerPlanCodec<const LAYOUT: u32>;
 impl<const LAYOUT: u32> ServerPlanCodec<LAYOUT> {
     pub(super) fn encode_record(record: &PlanRecord) -> Result<Vec<u8>, String> {
         ensure_supported_codec_layout(LAYOUT)?;
-        encode_plan_record(record)
+        let mut bytes = encode_plan_record(record)?;
+        if LAYOUT == REMOTE_PLAN_LAYOUT_ID {
+            bytes.extend(record.actor_index_plus1.to_le_bytes());
+        } else if record.actor_index_plus1 != 0 {
+            return Err("layout1 Plan cannot store Actor attribution".into());
+        }
+        Ok(bytes)
     }
 
     pub(super) fn decode_record(raw: &[u8]) -> Result<PlanRecord, String> {
         ensure_supported_codec_layout(LAYOUT)?;
-        decode_plan_record(raw)
+        let width = if LAYOUT == REMOTE_PLAN_LAYOUT_ID {
+            REMOTE_PLAN_RECORD_SIZE
+        } else {
+            PLAN_RECORD_SIZE
+        };
+        require_raw_len(raw, width as usize, "Remote Plan record")?;
+        let mut record = decode_plan_record(&raw[..PLAN_RECORD_SIZE as usize])?;
+        if LAYOUT == REMOTE_PLAN_LAYOUT_ID {
+            record.actor_index_plus1 = u32::from_le_bytes(raw[48..52].try_into().unwrap());
+        }
+        Ok(record)
     }
 
     pub(super) fn decode_title_payload(raw: Vec<u8>) -> Result<String, String> {
@@ -27,12 +44,28 @@ pub(super) struct ServerPlanRevisionCodec<const LAYOUT: u32>;
 impl<const LAYOUT: u32> ServerPlanRevisionCodec<LAYOUT> {
     pub(super) fn encode_record(record: &PlanRevisionRecord) -> Result<Vec<u8>, String> {
         ensure_supported_codec_layout(LAYOUT)?;
-        encode_plan_revision_record(record)
+        let mut bytes = encode_plan_revision_record(record)?;
+        if LAYOUT == REMOTE_PLAN_LAYOUT_ID {
+            bytes.extend(record.actor_index_plus1.to_le_bytes());
+        } else if record.actor_index_plus1 != 0 {
+            return Err("layout1 Plan revision cannot store Actor attribution".into());
+        }
+        Ok(bytes)
     }
 
     pub(super) fn decode_record(raw: &[u8]) -> Result<PlanRevisionRecord, String> {
         ensure_supported_codec_layout(LAYOUT)?;
-        decode_plan_revision_record(raw)
+        let width = if LAYOUT == REMOTE_PLAN_LAYOUT_ID {
+            REMOTE_PLAN_REVISION_RECORD_SIZE
+        } else {
+            PLAN_REVISION_RECORD_SIZE
+        };
+        require_raw_len(raw, width as usize, "Remote Plan revision record")?;
+        let mut record = decode_plan_revision_record(&raw[..PLAN_REVISION_RECORD_SIZE as usize])?;
+        if LAYOUT == REMOTE_PLAN_LAYOUT_ID {
+            record.actor_index_plus1 = u32::from_le_bytes(raw[56..60].try_into().unwrap());
+        }
+        Ok(record)
     }
 
     pub(super) fn encode_payload(payload: &PlanRevisionPayload) -> Result<Vec<u8>, String> {
@@ -74,6 +107,7 @@ impl<const LAYOUT: u32> ServerPlanItemCodec<LAYOUT> {
 pub(super) fn decode_plan_record_for_layout(layout: u32, raw: &[u8]) -> Result<PlanRecord, String> {
     match layout {
         PLAN_LAYOUT_ID => ServerPlanCodec::<PLAN_LAYOUT_ID>::decode_record(raw),
+        REMOTE_PLAN_LAYOUT_ID => ServerPlanCodec::<REMOTE_PLAN_LAYOUT_ID>::decode_record(raw),
         _ => unsupported_codec_layout(layout),
     }
 }
@@ -84,6 +118,9 @@ pub(super) fn decode_plan_revision_record_for_layout(
 ) -> Result<PlanRevisionRecord, String> {
     match layout {
         PLAN_LAYOUT_ID => ServerPlanRevisionCodec::<PLAN_LAYOUT_ID>::decode_record(raw),
+        REMOTE_PLAN_LAYOUT_ID => {
+            ServerPlanRevisionCodec::<REMOTE_PLAN_LAYOUT_ID>::decode_record(raw)
+        }
         _ => unsupported_codec_layout(layout),
     }
 }
@@ -129,6 +166,7 @@ pub(super) fn decode_plan_record(raw: &[u8]) -> Result<PlanRecord, String> {
         created_at_s: cursor.take_u64("created_at_s")?,
         updated_at_s: cursor.take_u64("updated_at_s")?,
         published_at_s: cursor.take_u64("published_at_s")?,
+        actor_index_plus1: 0,
     })
 }
 
@@ -178,6 +216,7 @@ pub(super) fn decode_plan_revision_record(raw: &[u8]) -> Result<PlanRevisionReco
         root_entry_ordinal: cursor.take_u32("root_entry_ordinal")?,
         created_at_s: cursor.take_u64("created_at_s")?,
         published_at_s: cursor.take_u64("published_at_s")?,
+        actor_index_plus1: 0,
     })
 }
 
@@ -325,7 +364,7 @@ pub(super) fn decode_utf8(bytes: Vec<u8>, label: &str) -> Result<String, String>
 }
 
 fn ensure_supported_codec_layout(layout: u32) -> Result<(), String> {
-    if layout == PLAN_LAYOUT_ID {
+    if matches!(layout, PLAN_LAYOUT_ID | REMOTE_PLAN_LAYOUT_ID) {
         return Ok(());
     }
     unsupported_codec_layout(layout)

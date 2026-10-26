@@ -190,6 +190,16 @@ pub trait BinaryDb: private::BinaryDbJournalIo {
         key: BinaryIndexKeyRef<'_>,
     ) -> StoreResult<Vec<u32>>;
 
+    /// Sorted fixed indexes may overwrite their existing prefix on insertion.
+    /// Preserve those bytes through the existing journal before-image format.
+    fn index_rollback_image(&self, index: &BinaryIndexId) -> StoreResult<Option<Vec<u8>>> {
+        let path = store_path_for(self.authority_root(), index.relative_path())?;
+        match self.metadata_len(&path)? {
+            Some(_) => ServerBinaryDbFilesystemStore.read_bytes(&path).map(Some),
+            None => Ok(None),
+        }
+    }
+
     /// Looks up several keys from one logical index snapshot.
     ///
     /// Backends should override this when a single-key lookup has a fixed

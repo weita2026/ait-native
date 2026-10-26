@@ -2,15 +2,15 @@ use sha2::{Digest, Sha256};
 use std::{io::ErrorKind, path::PathBuf, sync::OnceLock};
 
 const BINARY_DB_V0_SHA256: &str =
-    "668ee2276e51d962223c18a418b6591aa8f813b95d5a526547d2f277d08e4817";
+    "5c2f0255af1b7d17117bbf6d4654757550d942e78f047296fcbedb6695d1b63c";
 const PATCHSET_RECORD_LAYOUT: &str = r#"SERVER_PATCHSET_RECORD_SIZE = 65
 
 ServerPatchsetRecord — patchset.bin:
 u8  patchset_meta
 u8  patch_ordinal
-u8  change_ordinal
+u8  change_ordinal_plus1
 u8  reserved0
-u32 change_index
+u32 task_index
 u32 previous_task_patchset_index_plus1
 u32 previous_change_patchset_index_plus1
 u32 base_snapshot_index
@@ -102,7 +102,7 @@ u16 reserved1
 u64 payload_offset
 u32 task_index
 u32 previous_change_index_plus1
-u32 selected_patchset_index_plus1
+u32 reserved_selected_patchset
 u32 fork_snapshot_index_plus1
 u64 created_at_s
 u64 updated_at_s
@@ -180,9 +180,9 @@ const LOCAL_LAND_RECORD_LAYOUT: &str = r#"LOCAL_LAND_RECORD_SIZE = 44
 LocalLandRecord — land.bin:
 u8  land_meta
 u8  land_ordinal
-u8  change_ordinal
+u8  change_ordinal_plus1
 u8  failure_kind
-u32 change_index
+u32 task_index
 u32 previous_task_land_index_plus1
 u32 previous_change_land_index_plus1
 u32 pre_land_target_snapshot_index_plus1
@@ -195,9 +195,9 @@ const SERVER_LAND_RECORD_LAYOUT: &str = r#"SERVER_LAND_RECORD_SIZE = 48
 ServerLandRecord — land.bin:
 u8  land_meta
 u8  land_ordinal
-u8  change_ordinal
+u8  change_ordinal_plus1
 u8  failure_kind
-u32 change_index
+u32 task_index
 u32 patchset_index
 u32 previous_task_land_index_plus1
 u32 previous_change_land_index_plus1
@@ -282,7 +282,7 @@ const GIT_RECORD_LAYOUT_MARKERS: &[&str] = &[
     "GIT_REPOSITORY_RECORD_SIZE = 28\n\nGitRepositoryRecord — git_repository.bin:",
     "GIT_GENERATION_RECORD_SIZE = 20\n\nGitGenerationRecord — git_generation.bin:",
     "GIT_IDENTITY_RECORD_SIZE = 24\n\nGitIdentityRecord — git_identity.bin:",
-    "GIT_COMMIT_MAPPING_RECORD_SIZE = 96\n\nGitCommitMappingRecord — git_commit_mapping.bin:",
+    "GIT_COMMIT_MAPPING_RECORD_SIZE = 100\n\nGitCommitMappingRecord — git_commit_mapping.bin:",
     "GIT_COMMIT_PARENT_RECORD_SIZE = 28\n\nGitCommitParentRecord — git_commit_parent.bin:",
     "GIT_FILE_MAPPING_RECORD_SIZE = 52\n\nGitFileMappingRecord — git_file_mapping.bin:",
     "GIT_REF_MAPPING_RECORD_SIZE = 80\n\nGitRefMappingRecord — git_ref_mapping.bin:",
@@ -557,12 +557,12 @@ fn binary_db_v0_uses_the_owner_approved_u64_second_widths_without_layout_renamin
         "LOCAL_LAND_RECORD_SIZE = 44",
         "SERVER_LAND_RECORD_SIZE = 48",
         "CONTENT_SNAPSHOT_RECORD_SIZE = 88",
-        "AUTHORITATIVE_SNAPSHOT_LINK_RECORD_SIZE = 40",
-        "REMOTE_MIRROR_SNAPSHOT_LINK_RECORD_SIZE = 52",
+        "AUTHORITATIVE_SNAPSHOT_LINK_RECORD_SIZE = 22",
+        "REMOTE_MIRROR_SNAPSHOT_LINK_RECORD_SIZE = 34",
         "TREE_PACK_RECORD_SIZE = 32",
         "OBJECT_PACK_RECORD_SIZE = 32",
         "BLOB_RECORD_SIZE = 64",
-        "GIT_COMMIT_MAPPING_RECORD_SIZE = 96",
+        "GIT_COMMIT_MAPPING_RECORD_SIZE = 100",
         "GIT_REF_MAPPING_RECORD_SIZE = 80",
         "GIT_TAG_MAPPING_RECORD_SIZE = 48",
         "GIT_OPERATION_CHECKPOINT_RECORD_SIZE = 44",
@@ -779,6 +779,30 @@ fn binary_db_v0_defines_the_global_registry_and_repository_local_jobs() {
 }
 
 #[test]
+fn binary_db_v0_admits_only_the_exact_git_object_document_amendment() {
+    use ait_core::git_binary_db::{
+        GIT_COMMIT_MAPPING_RECORD_SIZE, GIT_DOCUMENT_VERSION_DESCRIPTOR_SIZE,
+        GIT_OBJECT_RECORD_SIZE,
+    };
+    let authority = std::str::from_utf8(binary_db_v0_bytes_or_skip!()).unwrap();
+    assert_eq!(GIT_OBJECT_RECORD_SIZE, 32);
+    assert_eq!(GIT_COMMIT_MAPPING_RECORD_SIZE, 100);
+    assert_eq!(GIT_DOCUMENT_VERSION_DESCRIPTOR_SIZE, 48);
+    for layout in [
+        "GitObjectRecord — git_object.bin:\nu8  object_type_kind\nu8  object_format_kind\nu16 reserved0\nu32 repository_index\nu32 content_blob_index\nu8  git_object_id[20]",
+        "GitDocumentVersionDescriptor — existing Blob body, no .bin header:\nu32 plan_revision_index\nu16 git_mode\nu16 reserved0\nu64 raw_body_length\nu8  raw_body_sha256[32]",
+        "u64 created_at_s\nu32 document_set_tree_index",
+        "GitObjectIndexRecord — git_object.idx (29 bytes):\nu32 repository_index\nu8  object_format_kind\nu8  git_object_id[20]\nu32 git_object_index_plus1",
+        "GitDocumentPlanIndexRecord — git_document_plan.idx (40 bytes):",
+        "GitDocumentRevisionIndexRecord — git_document_revision.idx (50 bytes):",
+        "PlanRevision bit 5 marks\nraw_git_artifact",
+        "Retain\nPlan/PlanRevision physical slots permanently",
+    ] {
+        assert!(authority.contains(layout), "missing exact Git amendment: {layout}");
+    }
+}
+
+#[test]
 fn binary_db_v0_has_the_owner_approved_layout_one_amendments() {
     let authority = std::str::from_utf8(binary_db_v0_bytes_or_skip!())
         .expect("docs/binary_db_v0.md must remain valid UTF-8");
@@ -912,6 +936,10 @@ fn binary_db_v0_separates_line_refs_from_snapshot_authoring_line() {
         "preserves\nthe exact referenced live fork Snapshot without comparing or rewriting its\nauthoring Line",
         "`landed_snapshot_index_plus1` references the exact live Snapshot installed as\nthat Line's new head",
         "Land never relabels it or compares those Line\nindexes for equality",
+        "exception to original Local base-Line identity",
+        "base of Remote publication record materialization",
+        "Exact\nmapped reuse moves no head and preserves its existing base/fork/owner",
+        "changes neither Local\nnor ordinary Remote Change creation",
     ] {
         assert!(
             authority.contains(invariant),
@@ -935,7 +963,7 @@ fn binary_db_v0_has_the_owner_approved_bin_to_bin_conversion_schema() {
         .expect("docs/binary_db_v0.md must remain valid UTF-8");
     assert!(
         authority.contains(REMOTE_CHANGE_RECORD_LAYOUT),
-        "Remote Change must retain its 44-byte prefix while naming the selected Patchset and appending the inline lifecycle tail"
+        "Remote Change must retain width and retire the selected slot to reserved-zero"
     );
     for marker in BIN_TO_BIN_SCHEMA_MARKERS {
         assert!(
@@ -944,7 +972,7 @@ fn binary_db_v0_has_the_owner_approved_bin_to_bin_conversion_schema() {
         );
     }
     for invariant in [
-        "Source `current_patchset_number` resolves through the latest index;",
+        "Task latest committed Patchset is the sole current candidate.",
         "`explicit_unplanned` both encode as `TaskRecord.task_meta` bit 0 clear;",
         "A converter presented with a different reviewer, an empty identity,\nzero groups, or more than one requested group for a request fails closed",
         "Source `input_fingerprint` is cache metadata, not Policy authority",
@@ -1000,7 +1028,7 @@ fn binary_db_v0_has_the_owner_approved_bin_to_bin_followup_schema() {
         "immutable Patchset metadata must not persist selected-for-landing state"
     );
     for invariant in [
-        "Selection is\nChange state, not an immutable Patchset property.",
+        "Task latest committed Patchset is the sole current candidate.",
         "A legacy source Patchset state\n`selected_for_landing` is a non-authoritative projection and normalizes to\n`published`",
         "An admitted source Task status `abandoned` maps to\n`TaskRecord.task_meta` bit 7 `canceled`.",
         "A source\nChange status `abandoned` maps to archived lifecycle, canceled set",
@@ -1088,9 +1116,9 @@ fn binary_db_v0_has_the_owner_approved_converter_normalization_correction() {
         assert!(authority.contains(layout), "missing corrected index layout");
     }
     for invariant in [
-        "`patch_ordinal` is unique in `(change_index, patch_ordinal)`.",
+        "`patch_ordinal` is unique in `(task_index, patch_ordinal)`.",
         "`review_ordinal` is unique in `(patchset_index, review_ordinal)`.",
-        "`land_ordinal` is unique in `(change_index, land_ordinal)`.",
+        "`land_ordinal` is Task-scoped in 0..63.",
         "Task Patchset, Review, Policy, and Land inventory\nlinks are rebuilt in emitted physical record order.",
         "Snapshot authority is a DAG forest, not a single-root tree. An authority with\nzero live Snapshots is valid.",
         "target `created_at_s` is the minimum valid non-zero source creation time.",
@@ -1253,6 +1281,34 @@ fn runtime_parity_fields_are_not_payload_schema() {
 }
 
 #[test]
+fn worktree_cursor_authority_bounds_retention_to_its_unfinished_lifecycle() {
+    let authority = std::str::from_utf8(binary_db_v0_bytes_or_skip!())
+        .expect("docs/binary_db_v0.md must remain valid UTF-8");
+    let cursor = authority
+        .split_once("## Worktree Cursor\n")
+        .expect("worktree cursor section")
+        .1
+        .split_once("## Line And Stash Records\n")
+        .expect("end of worktree cursor section")
+        .0;
+    for invariant in [
+        "WORKTREE_CURSOR_RECORD_SIZE = 28",
+        "temporary worktree-lifetime operation state",
+        "solely to resume that unfinished operation or its cleanup",
+        "Successful finish or abandonment cleanup removes it with the worktree",
+        "Never\nretain it after cleanup, copy it into permanent Binary DB history",
+        "Snapshot content or workflow-package uploads",
+        "Completed-operation queries and retries use the durable workflow records",
+        "changes no admission or\ninterrupted-conversion rule",
+    ] {
+        assert!(
+            cursor.contains(invariant),
+            "missing cursor lifetime rule: {invariant}"
+        );
+    }
+}
+
+#[test]
 fn superseded_binary_db_schema_documents_are_absent() {
     let docs_dir = repository_docs_dir();
     assert!(
@@ -1263,4 +1319,47 @@ fn superseded_binary_db_schema_documents_are_absent() {
         !docs_dir.join("binary_db_v1.md").exists(),
         "docs/binary_db_v1.md is superseded and forbidden; docs/binary_db_v0.md is the sole schema authority"
     );
+}
+
+#[test]
+fn agent_lookup_amendment_and_native_widths_agree() {
+    use ait_core::agent_binary_db::{agents_file, members_file, roles_file, teams_file};
+    let authority = std::str::from_utf8(binary_db_v0_bytes_or_skip!()).unwrap();
+    assert!(authority.contains("AGENT_TEAM_MEMBERSHIP_RECORD_SIZE = 16\n\nAgentTeamMembershipRecord — agent_team_membership.bin:\nu8  membership_meta\nu8  reserved0\nu16 reserved1\nu32 team_index\nu32 agent_index\nu32 role_index_plus1"));
+    assert!(
+        authority.contains("AgentTeamRecord.team_meta:\nbits 0..6 reserved = 0\nbit 7 archived")
+    );
+    assert_eq!(agents_file().record_size(), 16);
+    assert_eq!(roles_file().record_size(), 8);
+    assert_eq!(teams_file().record_size(), 20);
+    assert_eq!(members_file().record_size(), 16);
+    assert!(authority.contains("Length\nalone is insufficient"));
+    assert!(authority.contains("They ignore bit0 and never infer registration"));
+    assert!(ait_core::agent_binary_db::validate_team_metadata(1).is_err());
+}
+
+#[test]
+fn local_task_receipt_and_compact_snapshot_links_use_layout_two() {
+    use ait_core::binary_db::LocalBinaryDbFs;
+    use ait_core::workflow_binary_db::BinaryDbWorkflowStore;
+    type Workflow = BinaryDbWorkflowStore<LocalBinaryDbFs, 1>;
+    assert_eq!(Workflow::land_record_file().layout_id(), 2);
+    assert_eq!(Workflow::land_record_file().record_size(), 44);
+    assert_eq!(Workflow::task_record_file().layout_id(), 1);
+    assert_eq!(Workflow::task_record_file().record_size(), 64);
+    assert_eq!(Workflow::change_record_file().layout_id(), 1);
+    assert_eq!(Workflow::change_record_file().record_size(), 68);
+    let authority = std::str::from_utf8(binary_db_v0_bytes_or_skip!()).unwrap();
+    for invariant in [
+        "zero or one receipt",
+        "change_ordinal_plus1 = 0",
+        "local-u64-workflow-v1",
+        "Task64 receives no completion pointer",
+        "Server Land48 selects layout 2",
+    ] {
+        assert!(
+            authority.contains(invariant),
+            "missing local receipt boundary: {invariant}"
+        );
+    }
 }

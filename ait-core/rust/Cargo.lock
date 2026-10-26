@@ -100,6 +100,7 @@ dependencies = [
  "flate2",
  "fs2",
  "libc",
+ "object",
  "plist",
  "predicates",
  "serde_json",
@@ -111,6 +112,7 @@ dependencies = [
  "toml",
  "windows-sys 0.61.2",
  "zip",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -129,6 +131,7 @@ dependencies = [
  "sha1",
  "sha2",
  "similar",
+ "tar",
  "tempfile",
  "toml",
  "windows-sys 0.61.2",
@@ -147,6 +150,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "tempfile",
 ]
 
 [[package]]
@@ -1136,6 +1140,8 @@ dependencies = [
  "napi-sys",
  "nohash-hasher",
  "rustc-hash",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1205,6 +1211,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

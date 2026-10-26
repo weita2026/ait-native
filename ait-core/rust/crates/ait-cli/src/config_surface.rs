@@ -15,8 +15,6 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-const DEFAULT_AUTHOR_MODE: &str = "ai_with_human_review";
-const DEFAULT_WORKFLOW_SCOPE: &str = "local";
 const DEFAULT_PLAN_TASK_BINDING_MODE: &str = "required";
 const DEFAULT_ID_NAMESPACE_PREFIX: &str = "";
 const WORKFLOW_ID_FAMILIES: &[&str] = &[
@@ -32,7 +30,8 @@ pub struct ConfigSetRequest {
     pub task_review: Option<String>,
     pub task_worktree_alias_root: Option<String>,
     pub task_worktree_main_seed_ram_max_bytes: Option<i64>,
-    pub workflow_mode: Option<String>,
+    pub agent_teams: Option<String>,
+    pub agent_team_size: Option<i64>,
     pub id_namespace_prefix: Option<String>,
     pub sprint: Option<String>,
     pub user_name: Option<String>,
@@ -43,17 +42,17 @@ pub struct ConfigSetRequest {
 impl ConfigSetRequest {
     pub fn updated_keys(&self) -> Vec<&'static str> {
         let mut keys = Vec::new();
+        if self.agent_teams.is_some() {
+            keys.push("agent-teams");
+        }
         if self.plan_language.is_some() {
             keys.push("plan-language");
         }
         if self.plan_style.is_some() {
             keys.push("plan-style");
         }
-        if self.workflow_mode.is_some() {
-            keys.push("workflow-mode");
-            if self.sprint.is_none() {
-                keys.push("sprint");
-            }
+        if self.agent_team_size.is_some() {
+            keys.push("agent-team-size");
         }
         if self.sprint.is_some() {
             keys.push("sprint");
@@ -91,6 +90,7 @@ impl ConfigSetRequest {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConfigUnsetKey {
+    AgentTeamSize,
     PlanLanguage,
     PlanStyle,
     DefaultAuthorMode,
@@ -107,6 +107,7 @@ pub enum ConfigUnsetKey {
 impl ConfigUnsetKey {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::AgentTeamSize => "agent-team-size",
             Self::PlanLanguage => "plan-language",
             Self::PlanStyle => "plan-style",
             Self::DefaultAuthorMode => "default-author-mode",
@@ -127,7 +128,6 @@ pub fn config_show(repo: &RepoRuntime) -> Result<JsonValue, String> {
     let repository_index = ServerRepositoryAuthorityConfig::from_config_object(&repo.config)?
         .map(|config| config.repository_index.get());
     let workflow_default_scope = workflow_default_scope_summary(repo);
-    let workflow_mode = workflow_mode_summary(repo, &workflow_default_scope);
     let worktree_name = repo
         .is_worktree()
         .then(|| config_text(repo, "worktree_name"))
@@ -141,7 +141,7 @@ pub fn config_show(repo: &RepoRuntime) -> Result<JsonValue, String> {
     let active_root_worktree_name = root_config
         .get("worktree_name")
         .and_then(config_scalar_text);
-    Ok(json!({
+    let mut payload = json!({
         "repo_root": repo.authoritative_repo_root().to_string_lossy().to_string(),
         "workspace_root": repo.workspace_root().to_string_lossy().to_string(),
         "is_worktree": repo.is_worktree(),
@@ -162,11 +162,11 @@ pub fn config_show(repo: &RepoRuntime) -> Result<JsonValue, String> {
         "user_email": config_text(repo, "user_email"),
         "effective_actor": effective_actor(repo),
         "effective_reviewer": effective_reviewer(repo),
-        "effective_author_mode": effective_author_mode(repo),
+        "effective_author_mode": repo.effective_author_mode(None),
         "effective_model": effective_model(repo),
         "task_review": task_review_summary(repo),
         "id_namespace_prefix": id_namespace_prefix_summary(repo),
-        "workflow_mode": workflow_mode,
+        "agent_teams": crate::agent_teams::enabled(repo),
         "workflow_default_scope": workflow_default_scope,
         "agent_runtime": agent_runtime_summary(repo),
         "task_worktree": config_task_worktree_summary(repo),
@@ -174,7 +174,12 @@ pub fn config_show(repo: &RepoRuntime) -> Result<JsonValue, String> {
         "plan_task_binding": plan_task_binding_summary(repo),
         "web_inbox_defaults": web_inbox_defaults_summary(repo),
         "hooks": hooks_summary(repo),
-    }))
+    });
+    if crate::agent_teams::enabled(repo) {
+        payload["agent_team"] = crate::agent_teams::directory(repo)
+            .unwrap_or_else(|e| json!({"status":"pending","detail":e,"planned_seat_count":4}));
+    }
+    Ok(payload)
 }
 
 fn root_config_object(repo: &RepoRuntime) -> JsonMap<String, JsonValue> {
@@ -246,6 +251,33 @@ pub fn config_set(repo: &RepoRuntime, request: &ConfigSetRequest) -> Result<Json
     complete_config_mutation(repo)
 }
 
+/// The native configure operation, including enabled-Team preparation.
+pub fn config_set_with_team_bootstrap(
+    repo: &RepoRuntime,
+    request: &ConfigSetRequest,
+) -> Result<JsonValue, String> {
+    let mut payload = config_set(repo, request)?;
+    if request.agent_teams.as_deref() == Some("enabled") {
+        let root_repo = RepoRuntime::discover_from_path(&repo.authoritative_repo_root())?;
+        payload["team_bootstrap"] = crate::agent_teams::bootstrap(&root_repo);
+    }
+    Ok(payload)
+}
+
+pub fn config_set_from_payload_with_team_bootstrap(
+    repo: &RepoRuntime,
+    payload: &JsonValue,
+) -> Result<JsonValue, String> {
+    config_set_with_team_bootstrap(repo, &parse_config_set_request(payload)?)
+}
+
+/// Report the existing post-save failure after the caller has rendered the payload.
+pub fn team_setup_error(payload: &JsonValue) -> Option<String> {
+    let deployment = payload.get("team_bootstrap")?;
+    (!matches!(deployment["status"].as_str(), Some("ready" | "activation_required")))
+        .then(|| "Configuration saved, but team sessions are not ready; see team_bootstrap for recovery details.".to_string())
+}
+
 pub fn config_unset(repo: &RepoRuntime, key: ConfigUnsetKey) -> Result<JsonValue, String> {
     update_root_config(repo, |config| apply_config_unset(config, key))?;
     complete_config_mutation(repo)
@@ -284,7 +316,7 @@ fn parse_config_set_request(payload: &JsonValue) -> Result<ConfigSetRequest, Str
             "task_review",
             "task_worktree_alias_root",
             "task_worktree_main_seed_ram_max_bytes",
-            "workflow_mode",
+            "agent_teams",
             "id_namespace_prefix",
             "sprint",
             "user_name",
@@ -303,7 +335,8 @@ fn parse_config_set_request(payload: &JsonValue) -> Result<ConfigSetRequest, Str
             object,
             "task_worktree_main_seed_ram_max_bytes",
         )?,
-        workflow_mode: option_string_field(object, "workflow_mode")?,
+        agent_teams: option_string_field(object, "agent_teams")?,
+        agent_team_size: None,
         id_namespace_prefix: option_string_field(object, "id_namespace_prefix")?,
         sprint: option_string_field(object, "sprint")?,
         user_name: option_string_field(object, "user_name")?,
@@ -316,7 +349,44 @@ fn parse_config_set_request(payload: &JsonValue) -> Result<ConfigSetRequest, Str
     })
 }
 
+pub fn configuration_updated_keys(payload: &JsonValue) -> Result<Vec<&'static str>, String> {
+    Ok(parse_config_set_request(payload)?.updated_keys())
+}
+
+pub fn config_unset_from_key(repo: &RepoRuntime, key: &str) -> Result<JsonValue, String> {
+    config_unset(repo, config_unset_key(key)?)
+}
+
+pub fn config_unset_key(key: &str) -> Result<ConfigUnsetKey, String> {
+    match key {
+        "plan-language" => Ok(ConfigUnsetKey::PlanLanguage),
+        "plan-style" => Ok(ConfigUnsetKey::PlanStyle),
+        "default-author-mode" => Ok(ConfigUnsetKey::DefaultAuthorMode),
+        "default-model" => Ok(ConfigUnsetKey::DefaultModel),
+        "task-review" => Ok(ConfigUnsetKey::TaskReview),
+        "task-worktree-alias-root" => Ok(ConfigUnsetKey::TaskWorktreeAliasRoot),
+        "task-worktree-main-seed-ram-max-bytes" => {
+            Ok(ConfigUnsetKey::TaskWorktreeMainSeedRamMaxBytes)
+        }
+        "id-namespace-prefix" => Ok(ConfigUnsetKey::IdNamespacePrefix),
+        "user-name" => Ok(ConfigUnsetKey::UserName),
+        "user-email" => Ok(ConfigUnsetKey::UserEmail),
+        "post-finish-hooks" => Ok(ConfigUnsetKey::PostFinishHooks),
+        _ => Err(format!("Unknown config unset key: {key}")),
+    }
+}
+
 fn validate_config_set_request(request: &ConfigSetRequest) -> Result<(), String> {
+    if request.agent_team_size.is_some() {
+        return Err("Team size settings are retired; use --agent-teams enabled|disabled".into());
+    }
+    if request
+        .agent_teams
+        .as_deref()
+        .is_some_and(|v| !matches!(v, "enabled" | "disabled"))
+    {
+        return Err("--agent-teams must be enabled or disabled".into());
+    }
     if !request_has_updates(request) {
         return Err("No config updates specified".to_string());
     }
@@ -353,9 +423,6 @@ fn validate_config_set_request(request: &ConfigSetRequest) -> Result<(), String>
             "`--task-worktree-main-seed-ram-max-bytes` must be a non-negative integer.".to_string(),
         );
     }
-    if let Some(value) = request.workflow_mode.as_deref() {
-        normalize_public_workflow_mode_value(value)?;
-    }
     if let Some(value) = request.id_namespace_prefix.as_deref() {
         require_nonempty_config_text(value, "--id-namespace-prefix")?;
         normalize_id_namespace_prefix_value(value)?;
@@ -370,14 +437,15 @@ fn validate_config_set_request(request: &ConfigSetRequest) -> Result<(), String>
 }
 
 fn request_has_updates(request: &ConfigSetRequest) -> bool {
-    request.plan_language.is_some()
+    request.agent_teams.is_some()
+        || request.plan_language.is_some()
         || request.plan_style.is_some()
         || request.default_author_mode.is_some()
         || request.default_model.is_some()
         || request.task_review.is_some()
         || request.task_worktree_alias_root.is_some()
         || request.task_worktree_main_seed_ram_max_bytes.is_some()
-        || request.workflow_mode.is_some()
+        || request.agent_team_size.is_some()
         || request.id_namespace_prefix.is_some()
         || request.sprint.is_some()
         || request.user_name.is_some()
@@ -417,6 +485,20 @@ fn apply_config_set_updates(
     config: &mut JsonMap<String, JsonValue>,
     request: &ConfigSetRequest,
 ) -> Result<(), String> {
+    if let Some(value) = request.agent_teams.as_deref() {
+        config.insert("agent_teams".into(), json!(value == "enabled"));
+        config.remove("agent_team_size");
+        for key in [
+            "workflow_default_scope",
+            "task_default_scope",
+            "change_default_scope",
+        ] {
+            config.insert(key.into(), json!("local"));
+        }
+    }
+    if let Some(size) = request.agent_team_size {
+        config.insert("agent_team_size".into(), json!(size));
+    }
     if let Some(value) = request.plan_language.as_deref() {
         config.insert(
             "plan_language".to_string(),
@@ -486,37 +568,7 @@ fn apply_config_set_updates(
         );
     }
 
-    if let Some(value) = request.workflow_mode.as_ref() {
-        let normalized = normalize_public_workflow_mode_value(value)?;
-        let sprint = request
-            .sprint
-            .as_ref()
-            .map(|value| normalize_public_toggle_value(value, "--sprint"))
-            .transpose()?
-            .unwrap_or_else(|| "on".to_string());
-        config.insert(
-            "workflow_mode".to_string(),
-            JsonValue::String(normalized.clone()),
-        );
-        let preset = workflow_mode_preset(&normalized).unwrap();
-        config.insert(
-            "workflow_default_scope".to_string(),
-            JsonValue::String(preset.workflow_scope.to_string()),
-        );
-        config.insert(
-            "task_default_scope".to_string(),
-            JsonValue::String(preset.task_scope.to_string()),
-        );
-        config.insert(
-            "change_default_scope".to_string(),
-            JsonValue::String(preset.change_scope.to_string()),
-        );
-        config.insert("sprint".to_string(), JsonValue::String(sprint.clone()));
-        config.insert(
-            "plan_task_binding".to_string(),
-            json!({"mode": plan_task_binding_mode_for_sprint(&sprint)}),
-        );
-    } else if let Some(value) = request.sprint.as_ref() {
+    if let Some(value) = request.sprint.as_ref() {
         let sprint = normalize_public_toggle_value(value, "--sprint")?;
         config.insert("sprint".to_string(), JsonValue::String(sprint.clone()));
         config.insert(
@@ -553,6 +605,9 @@ fn apply_config_unset(
     key: ConfigUnsetKey,
 ) -> Result<(), String> {
     match key {
+        ConfigUnsetKey::AgentTeamSize => {
+            config.remove("agent_team_size");
+        }
         ConfigUnsetKey::PlanLanguage => {
             config.remove("plan_language");
         }
@@ -716,40 +771,6 @@ fn plan_task_binding_mode_for_sprint(sprint: &str) -> &'static str {
     }
 }
 
-fn normalize_workflow_scope_value(value: &str, option_name: &str) -> Result<String, String> {
-    match normalize_text(Some(value))
-        .unwrap_or_default()
-        .to_lowercase()
-        .as_str()
-    {
-        "local" | "remote" => Ok(value.trim().to_lowercase()),
-        _ => Err(format!("{option_name} must be `local` or `remote`.")),
-    }
-}
-
-fn normalize_workflow_mode_value(value: &str, option_name: &str) -> Result<String, String> {
-    match normalize_text(Some(value))
-        .unwrap_or_default()
-        .to_lowercase()
-        .as_str()
-    {
-        "solo_local" | "solo_remote" | "team_remote" => Ok(value.trim().to_lowercase()),
-        _ => Err(format!(
-            "{option_name} must be `solo_local`, `solo_remote`, or `team_remote`."
-        )),
-    }
-}
-
-fn normalize_public_workflow_mode_value(value: &str) -> Result<String, String> {
-    match value {
-        "solo_local" | "solo_remote" | "team_remote" => Ok(value.to_string()),
-        _ => Err(
-            "`--workflow-mode` must be exactly `solo_local`, `solo_remote`, or `team_remote`."
-                .to_string(),
-        ),
-    }
-}
-
 fn normalize_id_namespace_prefix_value(value: &str) -> Result<String, String> {
     let text = value.trim().to_uppercase();
     if !text.is_empty() && !text.chars().all(|ch| ch.is_ascii_alphanumeric()) {
@@ -791,10 +812,6 @@ fn effective_reviewer(repo: &RepoRuntime) -> Option<String> {
         (Some(name), None) => Some(name),
         (None, None) => detected_actor(),
     }
-}
-
-fn effective_author_mode(repo: &RepoRuntime) -> String {
-    config_text(repo, "default_author_mode").unwrap_or_else(|| DEFAULT_AUTHOR_MODE.to_string())
 }
 
 fn effective_model(repo: &RepoRuntime) -> Option<String> {
@@ -847,53 +864,13 @@ fn id_namespace_prefix_summary(repo: &RepoRuntime) -> JsonValue {
     }
 }
 
-fn configured_scope(repo: &RepoRuntime, key: &str) -> Option<String> {
-    config_text(repo, key).and_then(|value| normalize_workflow_scope_value(&value, key).ok())
-}
-
-fn configured_sprint_mode(repo: &RepoRuntime) -> Option<String> {
-    config_text(repo, "sprint").and_then(|value| normalize_toggle_mode(&value, "`sprint`").ok())
-}
-
 fn sprint_mode_override(repo: &RepoRuntime) -> Option<(String, &'static str)> {
-    configured_sprint_mode(repo).map(|value| (value, "repo_config"))
+    config_text(repo, "sprint")
+        .and_then(|v| normalize_toggle_mode(&v, "sprint").ok())
+        .map(|v| (v, "repo_config"))
 }
-
-fn workflow_default_scope_summary(repo: &RepoRuntime) -> JsonValue {
-    let workflow = configured_scope(repo, "workflow_default_scope")
-        .map(|value| json!({"value": value, "source": "repo_config"}))
-        .unwrap_or_else(|| json!({"value": DEFAULT_WORKFLOW_SCOPE, "source": "built_in"}));
-    let task = configured_scope(repo, "task_default_scope")
-        .map(|value| json!({"value": value, "source": "repo_config"}))
-        .unwrap_or_else(|| {
-            if workflow
-                .get("source")
-                .and_then(JsonValue::as_str)
-                .is_some_and(|value| value == "repo_config")
-            {
-                json!({"value": workflow["value"].clone(), "source": "workflow_default_scope"})
-            } else {
-                json!({"value": DEFAULT_WORKFLOW_SCOPE, "source": "built_in"})
-            }
-        });
-    let change = configured_scope(repo, "change_default_scope")
-        .map(|value| json!({"value": value, "source": "repo_config"}))
-        .unwrap_or_else(|| {
-            if workflow
-                .get("source")
-                .and_then(JsonValue::as_str)
-                .is_some_and(|value| value == "repo_config")
-            {
-                json!({"value": workflow["value"].clone(), "source": "workflow_default_scope"})
-            } else {
-                json!({"value": DEFAULT_WORKFLOW_SCOPE, "source": "built_in"})
-            }
-        });
-    json!({
-        "workflow": workflow,
-        "task": task,
-        "change": change,
-    })
+fn workflow_default_scope_summary(_repo: &RepoRuntime) -> JsonValue {
+    json!({"workflow":{"value":"local","source":"core_route"},"task":{"value":"local","source":"core_route"},"change":{"value":"local","source":"core_route"}})
 }
 
 fn plan_task_binding_summary(repo: &RepoRuntime) -> JsonValue {
@@ -944,81 +921,6 @@ fn sprint_summary(repo: &RepoRuntime) -> JsonValue {
     })
 }
 
-fn workflow_mode_summary(repo: &RepoRuntime, scope_summary: &JsonValue) -> JsonValue {
-    let workflow_scope = scope_summary
-        .get("workflow")
-        .and_then(JsonValue::as_object)
-        .and_then(|value| value.get("value"))
-        .and_then(JsonValue::as_str)
-        .unwrap_or(DEFAULT_WORKFLOW_SCOPE);
-    let task_scope = scope_summary
-        .get("task")
-        .and_then(JsonValue::as_object)
-        .and_then(|value| value.get("value"))
-        .and_then(JsonValue::as_str)
-        .unwrap_or(DEFAULT_WORKFLOW_SCOPE);
-    let change_scope = scope_summary
-        .get("change")
-        .and_then(JsonValue::as_object)
-        .and_then(|value| value.get("value"))
-        .and_then(JsonValue::as_str)
-        .unwrap_or(DEFAULT_WORKFLOW_SCOPE);
-    let binding_summary = plan_task_binding_summary(repo);
-    let binding_mode = binding_summary
-        .get("mode")
-        .and_then(JsonValue::as_str)
-        .unwrap_or(DEFAULT_PLAN_TASK_BINDING_MODE);
-    if let Some(configured_mode) = config_text(repo, "workflow_mode")
-        .and_then(|value| normalize_workflow_mode_value(&value, "`workflow_mode`").ok())
-    {
-        let preset = workflow_mode_preset(&configured_mode).unwrap();
-        if workflow_scope == preset.workflow_scope
-            && task_scope == preset.task_scope
-            && change_scope == preset.change_scope
-            && (binding_mode == preset.binding_mode || binding_mode == "off")
-        {
-            return json!({
-                "value": configured_mode,
-                "source": "repo_config",
-                "change_strategy": preset.change_strategy,
-            });
-        }
-    }
-    let derived_value = if workflow_scope == "local"
-        && task_scope == "local"
-        && change_scope == "local"
-        && matches!(binding_mode, "required" | "off")
-    {
-        "solo_local"
-    } else if workflow_scope == "remote"
-        && task_scope == "remote"
-        && change_scope == "remote"
-        && matches!(binding_mode, "advisory" | "off")
-    {
-        "solo_remote"
-    } else if workflow_scope == "remote"
-        && task_scope == "remote"
-        && change_scope == "remote"
-        && binding_mode == "required"
-    {
-        "team_remote"
-    } else {
-        "custom"
-    };
-    if let Some(preset) = workflow_mode_preset(derived_value) {
-        return json!({
-            "value": derived_value,
-            "source": "derived_from_effective_config",
-            "change_strategy": preset.change_strategy,
-        });
-    }
-    json!({
-        "value": "custom",
-        "source": "derived_from_effective_config",
-        "change_strategy": "custom",
-    })
-}
-
 fn web_inbox_defaults_summary(repo: &RepoRuntime) -> JsonValue {
     let Some(JsonValue::Object(map)) = repo.config.get("web_inbox_defaults") else {
         return json!({
@@ -1037,77 +939,7 @@ fn web_inbox_defaults_summary(repo: &RepoRuntime) -> JsonValue {
 }
 
 fn agent_runtime_summary(repo: &RepoRuntime) -> JsonValue {
-    let workflow_mode = workflow_mode_summary(repo, &workflow_default_scope_summary(repo))
-        .get("value")
-        .and_then(JsonValue::as_str)
-        .unwrap_or("custom")
-        .to_string();
-    match workflow_mode.as_str() {
-        "solo_local" => json!({
-            "mode": "local",
-            "workflow_mode": workflow_mode,
-            "repo_root": repo.root.to_string_lossy().to_string(),
-            "repo_name": repo.repo_name(),
-            "remote_name": JsonValue::Null,
-            "server_url": JsonValue::Null,
-        }),
-        "solo_remote" | "team_remote" => match repo.remote_row(None) {
-            Ok(remote) => {
-                let server_url = remote.url.trim().trim_end_matches('/').to_string();
-                if server_url.is_empty() {
-                    json!({"error": "The default ait remote is missing a server URL."})
-                } else {
-                    json!({
-                        "mode": "remote",
-                        "workflow_mode": workflow_mode,
-                        "repo_root": repo.root.to_string_lossy().to_string(),
-                        "repo_name": repo.repo_name(),
-                        "remote_name": Some(remote.name),
-                        "server_url": server_url,
-                    })
-                }
-            }
-            Err(err) => json!({"error": err}),
-        },
-        _ => json!({
-            "error": "ait-agent requires a repo workflow preset. Set `ait config set --workflow-mode solo_local|solo_remote|team_remote` before starting agent workers."
-        }),
-    }
-}
-
-fn workflow_mode_preset(value: &str) -> Option<WorkflowModePreset> {
-    match value {
-        "solo_local" => Some(WorkflowModePreset {
-            workflow_scope: "local",
-            task_scope: "local",
-            change_scope: "local",
-            binding_mode: "required",
-            change_strategy: "promote_reviewable_outputs_late",
-        }),
-        "solo_remote" => Some(WorkflowModePreset {
-            workflow_scope: "remote",
-            task_scope: "remote",
-            change_scope: "remote",
-            binding_mode: "required",
-            change_strategy: "remote_backed_selective_promotion",
-        }),
-        "team_remote" => Some(WorkflowModePreset {
-            workflow_scope: "remote",
-            task_scope: "remote",
-            change_scope: "remote",
-            binding_mode: "required",
-            change_strategy: "per_slice_reviewable_changes",
-        }),
-        _ => None,
-    }
-}
-
-struct WorkflowModePreset {
-    workflow_scope: &'static str,
-    task_scope: &'static str,
-    change_scope: &'static str,
-    binding_mode: &'static str,
-    change_strategy: &'static str,
+    json!({"mode":"local","agent_teams":crate::agent_teams::enabled(repo),"repo_root":repo.root,"repo_name":repo.repo_name(),"remote_name":null,"server_url":null})
 }
 
 fn option_string_field(
@@ -1157,10 +989,29 @@ fn write_json_pretty(path: &Path, payload: &JsonValue) -> Result<(), String> {
     fs::write(path, encoded).map_err(|err| err.to_string())
 }
 
+/// Coordinate config writes with team provisioning without touching Agent storage.
+/// The writer preserves this inode. Team provisioning takes the exclusive
+/// lease; ordinary config writes share a guard and keep their solo behavior.
+pub(crate) fn lock_root_config(repo: &RepoRuntime, exclusive: bool) -> Result<fs::File, String> {
+    let file = fs::File::open(repo.authoritative_repo_root().join(".ait/config.json"))
+        .map_err(|e| e.to_string())?;
+    let result = if exclusive {
+        fs2::FileExt::try_lock_exclusive(&file)
+    } else {
+        fs2::FileExt::try_lock_shared(&file)
+    };
+    result.map_err(|_| {
+        "operation_busy: Repository configuration is in use; retry after preparation completes"
+            .to_string()
+    })?;
+    Ok(file)
+}
+
 fn update_root_config(
     repo: &RepoRuntime,
     updater: impl FnOnce(&mut JsonMap<String, JsonValue>) -> Result<(), String>,
 ) -> Result<(), String> {
+    let _config_lock = lock_root_config(repo, false)?;
     let config_path = repo
         .authoritative_repo_root()
         .join(".ait")

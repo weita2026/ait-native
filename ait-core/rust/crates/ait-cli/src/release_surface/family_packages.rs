@@ -1,8 +1,13 @@
 use super::*;
 use flate2::read::GzDecoder;
+use object::Object as _;
 use std::io::{Cursor, Read};
 use tar::Archive as TarArchive;
 use zip::ZipArchive;
+
+#[cfg(test)]
+#[path = "python_wheel_fixture.rs"]
+mod python_wheel_fixture;
 
 const FAMILY_PACKAGE_CONTRACT: &str = "ait.release.family.package/v1";
 const FAMILY_PACKAGE_CONTENT_CONTRACT: &str = "ait.release.family.package-content/v1";
@@ -2286,6 +2291,7 @@ fn rewrite_python_metadata(
     license_files: &[String],
     source_url: &str,
     documentation_url: &str,
+    language_cli: bool,
 ) -> Result<Vec<u8>, String> {
     let text = std::str::from_utf8(source)
         .map_err(|_| "Frozen Python wheel METADATA must be UTF-8.".to_string())?;
@@ -2366,11 +2372,17 @@ fn rewrite_python_metadata(
     output.push(format!(
         "Project-URL: Migration, {documentation_url}#public-0x-to-10-transition"
     ));
+    let package_boundary = if language_cli {
+        "This wheel installs the Python `ait` CLI and the admitted PyO3 binding.\nThe Python entrypoint calls named Rust domain APIs through the extension.\nStandalone native CLI, Server and Runner executables are separate products."
+    } else {
+        "This wheel installs the language-neutral `ait` CLI, the inactive-by-default\n`ait-server` command, and the admitted `ait-python` binding. The server starts\nonly when explicitly requested."
+    };
+    let closeout_path = if language_cli { "finish" } else { "land" };
     let description = format!(
         r#"# ait-native
 
 AIT turns an ordinary coding request into an isolated, sprint-bound repository
-change with validation evidence and a recoverable land path. It is for
+change with validation evidence and a recoverable {closeout_path} path. It is for
 individual developers and maintainers who use coding agents and want the work
 to remain reviewable without inventing a workflow for every repository.
 
@@ -2391,16 +2403,14 @@ other verified installation routes, use the [official quickstart]({OFFICIAL_QUIC
 
 ## What initialization provides
 
-`ait init` creates repository-local authority, defaults to `solo_local` with
+`ait init` creates repository-local authority, defaults to local operation with
 sprint mode on, creates the sprint directory, and writes the effective workflow
 router to `AGENTS.md`. Local work uses bound Task worktrees, Snapshots, and
 atomic Task finish. The server remains off.
 
 ## Package boundary
 
-This wheel installs the language-neutral `ait` CLI, the inactive-by-default
-`ait-server` command, and the admitted `ait-python` binding. The server starts
-only when explicitly requested.
+{package_boundary}
 
 ## Local and reviewed closeout
 
@@ -2535,6 +2545,119 @@ fn pypi_wheel_identity(
     ))
 }
 
+fn validate_python_language_cli(entries: &PackageEntries, dist_info: &str) -> Result<(), String> {
+    let entry_points = entries
+        .get(&format!("{dist_info}/entry_points.txt"))
+        .ok_or("Python language wheel requires console-script metadata.")?;
+    let text = std::str::from_utf8(&entry_points.0)
+        .map_err(|_| "Python console-script metadata must be UTF-8.")?;
+    let mut console_scripts = false;
+    let mut ait_entries = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            console_scripts = line == "[console_scripts]";
+        } else if console_scripts {
+            if let Some((name, target)) = line.split_once('=') {
+                if name.trim() == "ait" {
+                    ait_entries.push(target.trim());
+                }
+            }
+        }
+    }
+    if ait_entries != ["ait_python.cli:main"] || !entries.contains_key("ait_python/cli.py") {
+        return Err(
+            "Python language wheel requires the ait_python.cli:main console entry and frontend."
+                .into(),
+        );
+    }
+    let mut found_extension = false;
+    for (path, (bytes, _)) in entries {
+        let extension = path.strip_prefix("ait_py/ait_py.").is_some_and(|suffix| {
+            !suffix.contains('/') && (path.ends_with(".so") || path.ends_with(".pyd"))
+        });
+        if extension {
+            let format = validate_python_extension_image(bytes).map_err(|error| {
+                format!("Python language wheel has an invalid extension at {path:?}: {error}")
+            })?;
+            if (format == object::BinaryFormat::Pe) != path.ends_with(".pyd") {
+                return Err(format!(
+                    "Python extension format does not match its suffix at {path:?}."
+                ));
+            }
+            found_extension = true;
+        }
+        let native_image = bytes.starts_with(b"\x7fELF")
+            || bytes.starts_with(b"MZ")
+            || [
+                [0xfe, 0xed, 0xfa, 0xce],
+                [0xce, 0xfa, 0xed, 0xfe],
+                [0xfe, 0xed, 0xfa, 0xcf],
+                [0xcf, 0xfa, 0xed, 0xfe],
+                [0xca, 0xfe, 0xba, 0xbe],
+                [0xbe, 0xba, 0xfe, 0xca],
+                [0xca, 0xfe, 0xba, 0xbf],
+                [0xbf, 0xba, 0xfe, 0xca],
+            ]
+            .iter()
+            .any(|magic| bytes.starts_with(magic));
+        // Installers generate platform launchers from the console metadata.
+        // A Python companion does not establish the identity of an executable.
+        if native_image && !extension {
+            return Err(format!(
+                "Python language wheel contains a standalone native executable at {path:?}."
+            ));
+        }
+        let filename = path.rsplit('/').next().unwrap_or(path);
+        if matches!(
+            filename,
+            "ait-server" | "ait-server.exe" | "ait-runner" | "ait-runner.exe"
+        ) {
+            return Err(format!(
+                "Python language wheel contains a standalone native command at {path:?}."
+            ));
+        }
+    }
+    if !found_extension {
+        return Err("Python language wheel requires a loadable ait_py extension.".into());
+    }
+    Ok(())
+}
+
+fn validate_python_extension_image(bytes: &[u8]) -> Result<object::BinaryFormat, String> {
+    let image = object::File::parse(bytes)
+        .map_err(|error| format!("invalid native shared image: {error}"))?;
+    let mach_o_bundle = match &image {
+        object::File::MachO32(file) => {
+            file.macho_header().filetype.get(file.endian()) == object::macho::MH_BUNDLE
+        }
+        object::File::MachO64(file) => {
+            file.macho_header().filetype.get(file.endian()) == object::macho::MH_BUNDLE
+        }
+        _ => false,
+    };
+    if !matches!(
+        image.format(),
+        object::BinaryFormat::Elf | object::BinaryFormat::MachO | object::BinaryFormat::Pe
+    ) || (image.kind() != object::ObjectKind::Dynamic && !mach_o_bundle)
+        // ELF PIE executables share ET_DYN with libraries, but have a process entrypoint.
+        || (image.format() == object::BinaryFormat::Elf && image.entry() != 0)
+    {
+        return Err("expected a native shared extension, not an executable.".into());
+    }
+    let exports = image
+        .exports()
+        .map_err(|error| format!("invalid native extension exports: {error}"))?;
+    let initializer = if image.format() == object::BinaryFormat::MachO {
+        b"_PyInit_ait_py".as_slice()
+    } else {
+        b"PyInit_ait_py".as_slice()
+    };
+    if !exports.iter().any(|export| export.name() == initializer) {
+        return Err("native shared extension does not export PyInit_ait_py.".into());
+    }
+    Ok(image.format())
+}
+
 fn assemble_pypi(
     repo: &RepoRuntime,
     input: &FamilyPackageInput,
@@ -2543,11 +2666,16 @@ fn assemble_pypi(
     if distribution.role != "product" || distribution.identity != "ait-native" {
         return Err("PyPI distribution must be the ait-native product.".to_string());
     }
-    require_distribution_components(distribution, &["ait", "ait-server", "ait-python"])?;
+    let language_cli = super::family_release::language_cli_bindings_required(&input.version)?;
+    if language_cli {
+        require_distribution_components(distribution, &["ait-python"])?;
+    } else {
+        require_distribution_components(distribution, &["ait", "ait-server", "ait-python"])?;
+        required_component(input, "ait-server", "native")?;
+    }
     require_registry_targets(distribution)?;
     let python_component = required_component(input, "ait-python", "python")?;
     required_component(input, "ait", "native")?;
-    required_component(input, "ait-server", "native")?;
     let license_expression = winget_license_expression(input, distribution)?;
     let mut generated = Vec::new();
     for target in &distribution.targets {
@@ -2590,6 +2718,9 @@ fn assemble_pypi(
                 "Frozen ait-python wheel contains more than one dist-info root.".to_string(),
             );
         }
+        if language_cli {
+            validate_python_language_cli(&source_entries, &source_dist_info)?;
+        }
         let source_metadata = source_entries
             .get(&format!("{source_dist_info}/METADATA"))
             .map(|entry| entry.0.clone())
@@ -2618,6 +2749,12 @@ fn assemble_pypi(
                         continue;
                     }
                     format!("{output_dist_info}/{relative}")
+                } else if language_cli {
+                    path.strip_prefix(&format!("ait_python-{}.data/", python_component.version))
+                        .map(|relative| {
+                            format!("ait_native-{}.data/{relative}", python_component.version)
+                        })
+                        .unwrap_or(path)
                 } else {
                     path
                 };
@@ -2628,7 +2765,14 @@ fn assemble_pypi(
             }
         }
 
-        let materials = material_for_components(input, &distribution.components)?;
+        // The extension contains Core code even when the native CLI component is
+        // excluded from this channel's payload selectors.
+        let material_components = if language_cli {
+            vec!["ait".to_string(), "ait-python".to_string()]
+        } else {
+            distribution.components.clone()
+        };
+        let materials = material_for_components(input, &material_components)?;
         let mut material_projections = Vec::new();
         let mut license_files = Vec::new();
         for material in materials {
@@ -2670,6 +2814,7 @@ fn assemble_pypi(
                         github_source_identity(input)?,
                         input.tag
                     ),
+                    language_cli,
                 )?,
                 0o644,
             ),
@@ -2683,7 +2828,12 @@ fn assemble_pypi(
             source: source_wheel.clone(),
             destination: output_filename.clone(),
         }];
-        for component in ["ait", "ait-server"] {
+        let native_commands: &[&str] = if language_cli {
+            &[]
+        } else {
+            &["ait", "ait-server"]
+        };
+        for &component in native_commands {
             let source = component_artifact(input, component, target, "native-executable")?;
             let command = component_command(component, target)?;
             let destination = format!(
@@ -2750,7 +2900,7 @@ fn assemble_pypi(
                     "source_wheel_size_bytes": source_wheel.size_bytes,
                     "binding_member_count": binding_member_count,
                     "wheel_record_regenerated": true,
-                    "native_script_count": 2,
+                    "native_script_count": native_commands.len(),
                     "server_activation": "inactive",
                 }),
                 input,
@@ -4302,5 +4452,275 @@ mod tests {
                 .unwrap_err()
                 .contains("cp311-abi3")
         );
+    }
+
+    fn language_wheel_validation_entries(extension: Vec<u8>, windows: bool) -> PackageEntries {
+        PackageEntries::from([
+            (
+                "ait_python/cli.py".into(),
+                (b"def main(): pass\n".to_vec(), 0o644),
+            ),
+            (
+                "ait_native-1.2.0rc1.dist-info/entry_points.txt".into(),
+                (
+                    b"[console_scripts]\nait = ait_python.cli:main\n".to_vec(),
+                    0o644,
+                ),
+            ),
+            (
+                if windows {
+                    "ait_py/ait_py.pyd"
+                } else {
+                    "ait_py/ait_py.abi3.so"
+                }
+                .into(),
+                (extension, 0o755),
+            ),
+        ])
+    }
+
+    #[test]
+    fn python_language_wheel_requires_shared_image_types_and_initializer_exports() {
+        for target in REGISTRY_TARGETS {
+            let image = python_wheel_fixture::extension_image(target);
+            validate_python_extension_image(&image).unwrap();
+            let entries =
+                language_wheel_validation_entries(image.clone(), target.ends_with("windows-msvc"));
+            validate_python_language_cli(&entries, "ait_native-1.2.0rc1.dist-info").unwrap();
+            let mut no_initializer = image.clone();
+            let offset = no_initializer
+                .windows(b"PyInit_ait_py".len())
+                .position(|bytes| bytes == b"PyInit_ait_py")
+                .unwrap();
+            no_initializer[offset] = b'X';
+            assert!(validate_python_extension_image(&no_initializer)
+                .unwrap_err()
+                .contains("does not export PyInit_ait_py"));
+            if target.ends_with("linux-gnu") {
+                let mut pie = image;
+                pie[24..32].copy_from_slice(&0x1000_u64.to_le_bytes());
+                assert!(validate_python_extension_image(&pie)
+                    .unwrap_err()
+                    .contains("not an executable"));
+            } else if target.ends_with("apple-darwin") {
+                let mut bundle = image;
+                bundle[12..16].copy_from_slice(&object::macho::MH_BUNDLE.to_le_bytes());
+                validate_python_extension_image(&bundle).unwrap();
+            }
+        }
+        for bytes in [b"fixture extension bytes".as_slice(), b"\x7fELF", b"MZ"] {
+            assert!(validate_python_extension_image(bytes).is_err());
+        }
+    }
+
+    fn assert_language_wheel_rejects_native_disguises(entries: &PackageEntries, executable: &[u8]) {
+        for path in [
+            "renamed-payload",
+            "ait_py/ait_py_extra.so",
+            "ait_py/ait_py.abi3.so",
+            "ait_py/ait_py.pyd",
+            "ait_native-1.2.0rc1.data/scripts/ait.exe",
+        ] {
+            let mut invalid = entries.clone();
+            invalid.insert(path.into(), (executable.to_vec(), 0o755));
+            invalid.insert(
+                "ait_native-1.2.0rc1.data/scripts/ait-script.py".into(),
+                (b"from ait_python.cli import main\nmain()\n".to_vec(), 0o755),
+            );
+            assert!(
+                validate_python_language_cli(&invalid, "ait_native-1.2.0rc1.dist-info").is_err(),
+                "accepted a native executable at {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn python_language_wheel_rejects_actual_executable_disguises() {
+        let executable = fs::read(std::env::current_exe().unwrap()).unwrap();
+        let entries = language_wheel_validation_entries(
+            python_wheel_fixture::extension_image("x86_64-pc-windows-msvc"),
+            true,
+        );
+        validate_python_language_cli(&entries, "ait_native-1.2.0rc1.dist-info").unwrap();
+        assert_language_wheel_rejects_native_disguises(&entries, &executable);
+    }
+
+    #[test]
+    #[ignore = "requires AIT_PY_TEST_EXTENSION and AIT_CLI_TEST_BINARY from the selected producer build"]
+    fn python_language_wheel_validates_selected_artifacts() {
+        let extension =
+            fs::read(std::env::var_os("AIT_PY_TEST_EXTENSION").expect("selected PyO3 artifact"))
+                .unwrap();
+        let format = validate_python_extension_image(&extension).unwrap();
+        let entries =
+            language_wheel_validation_entries(extension, format == object::BinaryFormat::Pe);
+        validate_python_language_cli(&entries, "ait_native-1.2.0rc1.dist-info").unwrap();
+        let executable = fs::read(
+            std::env::var_os("AIT_CLI_TEST_BINARY").expect("selected native CLI artifact"),
+        )
+        .unwrap();
+        assert_language_wheel_rejects_native_disguises(&entries, &executable);
+    }
+
+    #[test]
+    fn pypi_language_wheel_preserves_entrypoint_binding_and_core_legal_material() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        crate::init_surface::init_repo(&crate::init_surface::InitRequest {
+            root: root.clone(),
+            name: None,
+            default_line: "main".into(),
+            policy_profile: "prototype".into(),
+            default_author_mode: "ai_only_experimental".into(),
+            default_model: None,
+            repair_existing: false,
+        })
+        .unwrap();
+        let repo = RepoRuntime::discover_from_path(&root).unwrap();
+        let mut input = npm_validation_input();
+        input.version = "1.2.0-rc.1".into();
+        input.tag = "v1.2.0-rc.1".into();
+        input.components.remove("ait-node");
+        input.components.insert(
+            "ait-python".into(),
+            ComponentDefinition {
+                id: "ait-python".into(),
+                source_repository: "ait-python".into(),
+                source_snapshot: "SNP-333333333333".into(),
+                ecosystem: "python".into(),
+                license: "Apache-2.0".into(),
+                version: "1.2.0rc1".into(),
+            },
+        );
+        let targets = REGISTRY_TARGETS
+            .iter()
+            .map(|target| (*target).to_string())
+            .collect::<Vec<_>>();
+        input.distributions.push(DistributionDefinition {
+            channel: "pypi".into(),
+            role: "product".into(),
+            identity: "ait-native".into(),
+            components: vec!["ait-python".into()],
+            targets: targets.clone(),
+        });
+        for repository in ["ait-core", "ait-python"] {
+            for (role, declared_path) in [("license", "LICENSE"), ("notice", "NOTICE")] {
+                let bytes = format!("{repository}:{role}\n").into_bytes();
+                let path = format!("{repository}-{declared_path}");
+                fs::write(root.join(&path), &bytes).unwrap();
+                input.license_material.push(FrozenLicenseMaterial {
+                    source_repository: repository.into(),
+                    source_snapshot: "SNP-111111111111".into(),
+                    material_role: role.into(),
+                    declared_path: declared_path.into(),
+                    path,
+                    sha256: sha256_hex(&bytes),
+                    size_bytes: bytes.len() as u64,
+                });
+            }
+        }
+        let dist_info = "ait_python-1.2.0rc1.dist-info";
+        let record = format!("{dist_info}/RECORD");
+        for target in &targets {
+            let platform = match target.as_str() {
+                "aarch64-apple-darwin" => "macosx_11_0_arm64",
+                "x86_64-apple-darwin" => "macosx_10_12_x86_64",
+                "aarch64-unknown-linux-gnu" => "manylinux_2_28_aarch64",
+                "x86_64-unknown-linux-gnu" => "manylinux_2_28_x86_64",
+                "aarch64-pc-windows-msvc" => "win_arm64",
+                "x86_64-pc-windows-msvc" => "win_amd64",
+                _ => panic!("unknown fixture target"),
+            };
+            let tags = format!("cp311-abi3-{platform}");
+            let mut entries = PackageEntries::from([
+                ("ait_python/cli.py".into(), (b"def main(): pass\n".to_vec(), 0o644)),
+                (format!("{dist_info}/entry_points.txt"), (b"[console_scripts]\nait = ait_python.cli:main\n".to_vec(), 0o644)),
+                (format!("{dist_info}/METADATA"), (b"Metadata-Version: 2.4\nName: ait-python\nVersion: 1.2.0rc1\nSummary: fixture\nLicense-Expression: Apache-2.0\n\nfixture\n".to_vec(), 0o644)),
+                (format!("{dist_info}/WHEEL"), (format!("Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: false\nTag: {tags}\n").into_bytes(), 0o644)),
+            ]);
+            let extension = if target.ends_with("windows-msvc") {
+                "ait_py/ait_py.pyd"
+            } else {
+                "ait_py/ait_py.abi3.so"
+            };
+            entries.insert(
+                extension.into(),
+                (python_wheel_fixture::extension_image(target), 0o755),
+            );
+            let script =
+                b"#!/usr/bin/env python\nfrom ait_python.cli import main\nmain()\n".to_vec();
+            let script_root = "ait_python-1.2.0rc1.data/scripts";
+            if target.ends_with("windows-msvc") {
+                entries.insert(format!("{script_root}/ait-script.py"), (script, 0o755));
+            } else {
+                entries.insert(format!("{script_root}/ait"), (script, 0o755));
+            }
+            let record_bytes = generated_wheel_record(&entries, &record).unwrap();
+            entries.insert(record.clone(), (record_bytes, 0o644));
+            let bytes = wheel_zip_bytes(&entries, &record).unwrap();
+            let path = format!("ait_python-1.2.0rc1-{tags}.whl");
+            fs::write(root.join(&path), &bytes).unwrap();
+            input.artifacts.push(FrozenComponentArtifact {
+                component: "ait-python".into(),
+                kind: "python-wheel".into(),
+                target: Some(target.clone()),
+                path,
+                sha256: sha256_hex(&bytes),
+                size_bytes: bytes.len() as u64,
+            });
+        }
+        let generated = assemble_pypi(&repo, &input).unwrap();
+        assert_eq!(generated.len(), targets.len());
+        for artifact in generated {
+            let entries = read_wheel_entries(&artifact.bytes).unwrap();
+            let output_info = "ait_native-1.2.0rc1.dist-info";
+            validate_wheel_record(&entries, &format!("{output_info}/RECORD")).unwrap();
+            validate_python_language_cli(&entries, output_info).unwrap();
+            assert!(entries
+                .keys()
+                .any(|path| path.starts_with("ait_native-1.2.0rc1.data/scripts/")));
+            assert!(!entries
+                .keys()
+                .any(|path| path.starts_with("ait_python-1.2.0rc1.data/")));
+            assert!(entries.keys().any(|path| path.starts_with("ait_py/ait_py")));
+            for repository in ["ait-core", "ait-python"] {
+                assert!(
+                    entries.contains_key(&format!("{output_info}/licenses/{repository}/LICENSE"))
+                );
+                assert!(
+                    entries.contains_key(&format!("{output_info}/licenses/{repository}/NOTICE"))
+                );
+            }
+            let metadata =
+                String::from_utf8(entries[&format!("{output_info}/METADATA")].0.clone()).unwrap();
+            assert!(metadata.contains("Python `ait` CLI"));
+            assert!(!metadata.contains("inactive-by-default"));
+            assert_eq!(artifact.evidence["metadata"]["native_script_count"], 0);
+            let mut invalid = entries.clone();
+            invalid.insert(
+                "renamed-payload".into(),
+                (b"\x7fELFnative executable".to_vec(), 0o755),
+            );
+            assert!(validate_python_language_cli(&invalid, output_info)
+                .unwrap_err()
+                .contains("standalone native executable"));
+            let mut invalid = entries.clone();
+            invalid.remove("ait_python/cli.py");
+            assert!(validate_python_language_cli(&invalid, output_info).is_err());
+            let mut invalid = entries.clone();
+            invalid.insert(
+                format!("{output_info}/entry_points.txt"),
+                (
+                    b"[console_scripts]\nait = old_native_relay:main\n".to_vec(),
+                    0o644,
+                ),
+            );
+            assert!(validate_python_language_cli(&invalid, output_info).is_err());
+            assert!(!entries.contains_key("ait_native-1.2.0rc1.data/scripts/ait.exe"));
+            assert_eq!(
+                entries[&format!("{output_info}/entry_points.txt")].0,
+                b"[console_scripts]\nait = ait_python.cli:main\n"
+            );
+        }
     }
 }

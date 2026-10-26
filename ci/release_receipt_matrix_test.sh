@@ -165,7 +165,7 @@ jq -e '
   .public_publish == false and
   .expected_source_count == 5 and
   .expected_receipt_count == 31 and
-  .expected_component_artifact_count == 43 and
+  .expected_component_artifact_count == 31 and
   .source_line == "main" and
   .bootstrap_line == "release-bootstrap" and
   (.bootstrap.include | length) == 6 and
@@ -173,13 +173,13 @@ jq -e '
   (.builds.include | length) == 31 and
   ([.builds.include[].receipt_artifact] | unique | length) == 31 and
   ([.builds.include[] | select(.repo_name == "ait-core") |
-    .expected_component_artifact_count] | all(. == 3)) and
+    .expected_component_artifact_count] | all(. == 1)) and
   ([.builds.include[] | select(.repo_name == "ait-core") |
     .expected_components] |
-    all(. == ["ait", "ait-agent", "ait-agent-worker"])) and
+    all(. == ["ait"])) and
   ([.builds.include[] | select(.target == "portable")] | length) == 1 and
   ([.builds.include[] | select(.repo_name == "ait-node")] | length) == 7 and
-  ([.builds.include[].expected_component_artifact_count] | add) == 43
+  ([.builds.include[].expected_component_artifact_count] | add) == 31
 ' "${projection}" >/dev/null
 
 for required_verifier_text in \
@@ -261,8 +261,8 @@ jq '.public_publish = true' "${authorities}" \
 expect_failure public-publish project \
   "${family}" "${platforms}" "${temporary_root}/public-publish.json"
 
-jq '(.components[] | select(.id == "ait-agent-worker") | .source_snapshot) =
-  "SNP-000000000000"' "${family}" >"${temporary_root}/snapshot-drift.json"
+jq '(.components[] | select(.id == "ait") | .source_snapshot) =
+  "unbound"' "${family}" >"${temporary_root}/snapshot-drift.json"
 expect_failure snapshot-drift project \
   "${temporary_root}/snapshot-drift.json" "${platforms}" "${authorities}"
 

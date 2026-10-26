@@ -1,0 +1,12 @@
+format = "ait.external.lock"
+
+[[node]]
+name = "ait-db"
+repo_name = "ait-db"
+repository_index = 99
+remote = "origin"
+line = "main"
+snapshot = "SNP-DB-LOCK"
+parent_path = ""
+materialize_to = ".ait-external/ait-db"
+license = "Apache-2.0"

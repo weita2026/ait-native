@@ -13,6 +13,33 @@ pub(in crate::pack_substrate) fn write_zstd_chunked_container(
     members: &[ZstdChunkedMemberInput],
     chunk_bytes: usize,
 ) -> Result<ZstdChunkedPackIndex, String> {
+    write_zstd_chunked_container_with_layout(
+        pack_path,
+        kind,
+        pack_format,
+        index_entry_name,
+        pack_id,
+        created_at,
+        members,
+        chunk_bytes,
+        None,
+    )
+}
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit existing container contract plus transient physical plan"
+)]
+pub(in crate::pack_substrate) fn write_zstd_chunked_container_with_layout(
+    pack_path: &str,
+    kind: u8,
+    pack_format: &str,
+    index_entry_name: &str,
+    pack_id: &str,
+    created_at: &str,
+    members: &[ZstdChunkedMemberInput],
+    chunk_bytes: usize,
+    layout: Option<&ObjectPackChunkLayout>,
+) -> Result<ZstdChunkedPackIndex, String> {
     let path = PathBuf::from(pack_path);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -21,67 +48,49 @@ pub(in crate::pack_substrate) fn write_zstd_chunked_container(
     let mut file =
         File::create(&path).map_err(|err| format!("failed to create zstd pack archive: {err}"))?;
 
-    let chunk_bytes = chunk_bytes.max(1);
-    let mut chunks = Vec::<ZstdChunkedChunkIndex>::new();
-    let mut indexed_members = Vec::<ZstdChunkedMemberIndex>::new();
-    let mut raw_chunk = Vec::<u8>::new();
-    let mut raw_chunk_member_count = 0usize;
-    let mut next_chunk_ordinal = 0usize;
-
-    for member in members {
-        if raw_chunk_member_count > 0
-            && raw_chunk.len().saturating_add(member.data.len()) > chunk_bytes
-        {
-            chunks.push(write_zstd_chunked_raw_chunk(
-                &mut file,
-                next_chunk_ordinal,
-                &raw_chunk,
-            )?);
-            next_chunk_ordinal += 1;
-            raw_chunk.clear();
-            raw_chunk_member_count = 0;
+    let canonical;
+    let plan = if let Some(layout) = layout {
+        layout
+    } else {
+        canonical = ObjectPackChunkLayout::new(
+            &members.iter().map(|m| m.data.len()).collect::<Vec<_>>(),
+            None,
+            chunk_bytes,
+        )?;
+        &canonical
+    };
+    plan.validate(members.len())?;
+    let mut chunks = Vec::new();
+    let mut indexed_members = Vec::new();
+    let mut raw_chunk = Vec::new();
+    for group in &plan.chunks {
+        raw_chunk.clear();
+        for ordinal in group {
+            let member = &members[*ordinal];
+            indexed_members.push(ZstdChunkedMemberIndex {
+                member_ordinal: member.member_ordinal,
+                entry_name: member.entry_name.clone(),
+                content_id: member.content_id.clone(),
+                entry_type: member.entry_type.clone(),
+                entry_count: member.entry_count,
+                base_content_id: member.base_content_id.clone(),
+                delta_algorithm: member.delta_algorithm.clone(),
+                chain_depth: member.chain_depth,
+                chunk_ordinal: chunks.len(),
+                in_chunk_offset: raw_chunk.len(),
+                stored_len: member.data.len(),
+                logical_len: member.logical_len,
+                checksum: member.checksum.clone(),
+            });
+            raw_chunk.extend_from_slice(&member.data);
         }
-
-        let chunk_ordinal = next_chunk_ordinal;
-        let in_chunk_offset = raw_chunk.len();
-        raw_chunk.extend_from_slice(&member.data);
-        raw_chunk_member_count += 1;
-        indexed_members.push(ZstdChunkedMemberIndex {
-            member_ordinal: member.member_ordinal,
-            entry_name: member.entry_name.clone(),
-            content_id: member.content_id.clone(),
-            entry_type: member.entry_type.clone(),
-            entry_count: member.entry_count,
-            base_content_id: member.base_content_id.clone(),
-            delta_algorithm: member.delta_algorithm.clone(),
-            chain_depth: member.chain_depth,
-            chunk_ordinal,
-            in_chunk_offset,
-            stored_len: member.data.len(),
-            logical_len: member.logical_len,
-            checksum: member.checksum.clone(),
-        });
-
-        if raw_chunk.len() >= chunk_bytes {
-            chunks.push(write_zstd_chunked_raw_chunk(
-                &mut file,
-                next_chunk_ordinal,
-                &raw_chunk,
-            )?);
-            next_chunk_ordinal += 1;
-            raw_chunk.clear();
-            raw_chunk_member_count = 0;
-        }
-    }
-
-    if raw_chunk_member_count > 0 {
         chunks.push(write_zstd_chunked_raw_chunk(
             &mut file,
-            next_chunk_ordinal,
+            chunks.len(),
             &raw_chunk,
         )?);
     }
-
+    indexed_members.sort_by_key(|m| m.member_ordinal);
     let pack_index = ZstdChunkedPackIndex {
         pack_format: pack_format.to_string(),
         pack_id: pack_id.to_string(),
@@ -108,13 +117,17 @@ pub(in crate::pack_substrate) fn write_zstd_chunked_raw_chunk(
     chunk_ordinal: usize,
     raw: &[u8],
 ) -> Result<ZstdChunkedChunkIndex, String> {
-    let compressed = ::zstd::bulk::compress(raw, ZSTD_CHUNKED_LEVEL)
-        .map_err(|err| format!("failed to zstd-compress pack chunk: {err}"))?;
+    let compressed = {
+        ::zstd::bulk::compress(raw, ZSTD_CHUNKED_LEVEL)
+            .map_err(|err| format!("failed to zstd-compress pack chunk: {err}"))?
+    };
     let compressed_offset = file
         .stream_position()
         .map_err(|err| format!("failed to locate zstd pack chunk offset: {err}"))?;
-    file.write_all(&compressed)
-        .map_err(|err| format!("failed to write zstd pack chunk: {err}"))?;
+    {
+        file.write_all(&compressed)
+            .map_err(|err| format!("failed to write zstd pack chunk: {err}"))?;
+    }
     Ok(ZstdChunkedChunkIndex {
         chunk_ordinal,
         compressed_offset,
@@ -229,9 +242,19 @@ pub(in crate::pack_substrate) fn read_zstd_chunked_raw_chunk(
     chunk: &ZstdChunkedChunkIndex,
 ) -> Result<Vec<u8>, String> {
     let _trace = crate::perfetto_range!("ait.core.pack.zstd.read_and_decompress_raw_chunk");
+    #[cfg(test)]
+    {
+        crate::binary_db::read_profile::note("chunk_decodes_raw_bytes", chunk.raw_len as u64);
+        crate::binary_db::read_profile::note(
+            "chunk_io_compressed_bytes",
+            chunk.compressed_len as u64,
+        );
+    }
     let compressed = read_file_range(pack_path, chunk.compressed_offset, chunk.compressed_len)?;
-    let raw = ::zstd::bulk::decompress(&compressed, chunk.raw_len)
-        .map_err(|err| format!("failed to zstd-decompress pack chunk: {err}"))?;
+    let raw = {
+        ::zstd::bulk::decompress(&compressed, chunk.raw_len)
+            .map_err(|err| format!("failed to zstd-decompress pack chunk: {err}"))?
+    };
     if raw.len() != chunk.raw_len {
         return Err(format!(
             "Invalid zstd chunked pack: raw chunk size mismatch for chunk {}",

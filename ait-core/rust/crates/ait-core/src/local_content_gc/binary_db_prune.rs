@@ -1,6 +1,6 @@
 use super::*;
 use crate::binary_db::{
-    BinaryDbCommandScope, BinaryDbFsyncPolicy, BinaryDbWriteTxn, LocalBinaryDbFs,
+    BinaryDbCommandScope, BinaryDbFsyncPolicy, BinaryDbWriteTxn, BinaryFileId, LocalBinaryDbFs,
 };
 use crate::content_binary_db::{
     absolute_repo_path, object_pack_format_name, object_pack_id_from_hash48,
@@ -30,6 +30,35 @@ struct BinaryDbBaseBlobPointerRewrite {
     fallback_blob_index: u32,
 }
 
+struct NativeGitGcGuard {
+    _db: LocalBinaryDbFs,
+    blob_indices: BTreeSet<u32>,
+}
+fn native_git_gc_guard<const W: u32>(
+    content: &LocalContentBinaryDb<W>,
+) -> Result<Option<NativeGitGcGuard>, String> {
+    let repo = content.db().local_repo_root().as_path();
+    if !crate::git_binary_db::GitInteropBundle::exists(repo) {
+        return Ok(None);
+    }
+    let db = crate::git_binary_db::GitInteropBundle::open(repo, false)?
+        .database(repo, crate::binary_db::AuthorityId::new("git-gc"));
+    // Git writers acquire interop before content. Keep this order through apply and unlink.
+    let read = BinaryDbReadTxn::new(&db);
+    let file = BinaryFileId::new("git_object.bin", 1, 32);
+    let mut blob_indices = BTreeSet::new();
+    for i in 0..read.record_count(file.clone())? {
+        blob_indices.insert(
+            crate::git_binary_db::GitObjectRecord::decode(&read.read_record(file.clone(), i)?)?
+                .content_blob_index,
+        );
+    }
+    Ok(Some(NativeGitGcGuard {
+        _db: db,
+        blob_indices,
+    }))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct BinaryDbOrphanPackPrunePlan {
     candidates: Vec<BinaryDbOrphanObjectPack>,
@@ -39,7 +68,12 @@ pub(super) struct BinaryDbOrphanPackPrunePlan {
 pub(super) fn binary_db_preview_orphan_pack_prune<const WRITE_LAYOUT: u32>(
     content: &LocalContentBinaryDb<WRITE_LAYOUT>,
 ) -> Result<JsonValue, String> {
-    let plan = binary_db_verified_orphan_pack_prune_plan(content)?;
+    let guard = native_git_gc_guard(content)?;
+    let pinned = guard
+        .as_ref()
+        .map(|g| g.blob_indices.clone())
+        .unwrap_or_default();
+    let plan = binary_db_verified_orphan_pack_prune_plan(content, &pinned)?;
     let mut revalidation_write = content
         .object_packs()
         .begin_write_txn(BinaryDbCommandScope::ContentWrite)
@@ -47,6 +81,7 @@ pub(super) fn binary_db_preview_orphan_pack_prune<const WRITE_LAYOUT: u32>(
     let validation = binary_db_require_unchanged_orphan_pack_prune_plan::<WRITE_LAYOUT, _>(
         &revalidation_write,
         &plan,
+        &pinned,
     );
     let abort = revalidation_write
         .abort()
@@ -59,7 +94,12 @@ pub(super) fn binary_db_preview_orphan_pack_prune<const WRITE_LAYOUT: u32>(
 pub(super) fn binary_db_prune_orphan_packs<const WRITE_LAYOUT: u32>(
     content: &LocalContentBinaryDb<WRITE_LAYOUT>,
 ) -> Result<JsonValue, String> {
-    let plan = binary_db_verified_orphan_pack_prune_plan(content)?;
+    let guard = native_git_gc_guard(content)?;
+    let pinned = guard
+        .as_ref()
+        .map(|g| g.blob_indices.clone())
+        .unwrap_or_default();
+    let plan = binary_db_verified_orphan_pack_prune_plan(content, &pinned)?;
 
     // Apply reacquires only content.write.lock and recomputes the plan. Any
     // concurrent catalog change makes the command fail before mutation.
@@ -67,9 +107,9 @@ pub(super) fn binary_db_prune_orphan_packs<const WRITE_LAYOUT: u32>(
         .object_packs()
         .begin_write_txn(BinaryDbCommandScope::ContentWrite)
         .map_err(|error| error.to_string())?;
-    if let Err(error) =
-        binary_db_require_unchanged_orphan_pack_prune_plan::<WRITE_LAYOUT, _>(&write, &plan)
-    {
+    if let Err(error) = binary_db_require_unchanged_orphan_pack_prune_plan::<WRITE_LAYOUT, _>(
+        &write, &plan, &pinned,
+    ) {
         write.abort().map_err(|error| error.to_string())?;
         return Err(error);
     }
@@ -198,6 +238,7 @@ pub(super) fn binary_db_prune_orphan_packs<const WRITE_LAYOUT: u32>(
 
 pub(super) fn binary_db_verified_orphan_pack_prune_plan<const WRITE_LAYOUT: u32>(
     content: &LocalContentBinaryDb<WRITE_LAYOUT>,
+    pinned_blob_indices: &BTreeSet<u32>,
 ) -> Result<BinaryDbOrphanPackPrunePlan, String> {
     // Take a stable catalog plan under content.write.lock, then release it
     // before reading fallback bytes through the normal Blob API.
@@ -205,10 +246,15 @@ pub(super) fn binary_db_verified_orphan_pack_prune_plan<const WRITE_LAYOUT: u32>
         .object_packs()
         .begin_write_txn(BinaryDbCommandScope::ContentWrite)
         .map_err(|error| error.to_string())?;
-    let plan = binary_db_orphan_pack_prune_plan_from_write::<WRITE_LAYOUT, _>(&planning_write);
-    let abort = planning_write.abort().map_err(|error| error.to_string());
-    let plan = plan?;
-    abort?;
+    let mut plan = binary_db_orphan_pack_prune_plan_from_write::<WRITE_LAYOUT, _>(&planning_write)?;
+    plan.candidates.retain(|p| {
+        !p.blob_tombstones
+            .iter()
+            .any(|(ordinal, _, _)| pinned_blob_indices.contains(ordinal))
+    });
+    plan.base_pointer_rewrites =
+        binary_db_base_blob_pointer_rewrites::<WRITE_LAYOUT, _>(&planning_write, &plan.candidates)?;
+    planning_write.abort().map_err(|error| error.to_string())?;
     binary_db_verify_fallback_blob_content(content, &plan.candidates, &plan.base_pointer_rewrites)?;
     Ok(plan)
 }
@@ -231,11 +277,19 @@ where
 pub(super) fn binary_db_require_unchanged_orphan_pack_prune_plan<const WRITE_LAYOUT: u32, F>(
     write: &BinaryDbWriteTxn<'_, LocalBinaryDbFs, F>,
     expected: &BinaryDbOrphanPackPrunePlan,
+    pinned_blob_indices: &BTreeSet<u32>,
 ) -> Result<(), String>
 where
     F: BinaryDbFsyncPolicy,
 {
-    let revalidated = binary_db_orphan_pack_prune_plan_from_write::<WRITE_LAYOUT, _>(write)?;
+    let mut revalidated = binary_db_orphan_pack_prune_plan_from_write::<WRITE_LAYOUT, _>(write)?;
+    revalidated.candidates.retain(|p| {
+        !p.blob_tombstones
+            .iter()
+            .any(|(ordinal, _, _)| pinned_blob_indices.contains(ordinal))
+    });
+    revalidated.base_pointer_rewrites =
+        binary_db_base_blob_pointer_rewrites::<WRITE_LAYOUT, _>(write, &revalidated.candidates)?;
     if &revalidated != expected {
         return Err(
             "Binary DB content catalog changed while orphan-pack fallbacks were being verified; rerun gc prune."

@@ -1,0 +1,55 @@
+{
+  "contract": "ait-agent-token-benchmark-campaign/v1",
+  "campaign_id": "game-v1-g6a-medium-agents-ab-current-suffix4-20260908",
+  "protocol_revision": "game-development-2026-09-08.54",
+  "campaign_scope": "smoke",
+  "accounting_profile": "steady_state_task_cost",
+  "ait_sprint_mode": "off",
+  "ait_edit_root_mode": "explicit",
+  "git_worktree_mode": "agent_managed",
+  "claude_model_admission": "strict",
+  "functional_replacement_policy": "none",
+  "seed": 2026090802,
+  "attempts_per_cell": 1,
+  "workload_ids": [
+    "GD-04",
+    "GD-01"
+  ],
+  "modes": [
+    "git_linear_single_session",
+    "ait_linear_single_session"
+  ],
+  "model": {
+    "provider": "openai",
+    "model_id": "gpt-6-astra",
+    "model_revision": "gpt-6-astra-provider-alias-observed-2026-09-08",
+    "reasoning_effort": "medium"
+  },
+  "runtime": {
+    "executor": "codex",
+    "codex_program": "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "executor_version": "codex-cli 0.153.4",
+    "ait_version": "ait 1.1.4",
+    "git_version": "git version 2.50.1 (Apple Git-155)",
+    "node_version": "v25.9.0",
+    "browser_version": "Google Chrome 152.0.7977.76",
+    "ait_program": "ait",
+    "git_program": "/usr/bin/git",
+    "node_program": "/opt/homebrew/bin/node",
+    "browser_program": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "fixture_manifest": "../../fixtures/agent-token-game-v1/manifest.json",
+    "run_timeout_seconds": 1800,
+    "ait_first_use_worktree_add_dir": null,
+    "project_doc_max_bytes": 8192
+  },
+  "cache_class": "provider_default_fresh_ephemeral_session",
+  "network_policy": "disabled_except_loopback",
+  "tool_policy": "codex_shell_only",
+  "bootstrap_resamples": 2000,
+  "limitations": [
+    "This predeclared suffix contains exactly the GD-04 and GD-01 pairs not executed after the full current arm correctly stopped on GD-02 parent traversal.",
+    "It does not replace or retry any measured session. Combined current-arm analysis retains the six r2 sessions and these four fresh suffix sessions.",
+    "The separate executor preflight is excluded from candidate model metrics and makes end-to-end wall time non-comparable at the combined-arm level.",
+    "This is smoke evidence only and cannot authorize a 200-session claim."
+  ]
+}

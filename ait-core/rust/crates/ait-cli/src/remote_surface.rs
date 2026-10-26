@@ -1,6 +1,5 @@
 use crate::agent_harness::converge_agent_workflow_harness;
 use crate::json_support::{encode_value_pretty_with_newline_error_string, parse_value};
-use crate::primitives::{snapshot_show, workflow_workspace_status};
 use crate::remote_repository::{
     ensure_or_read_remote_repository_authority_for_url, local_policy_requires_tests,
     remote_repository_index,
@@ -14,13 +13,9 @@ use ait_core::remote_store::{
     remote_exists_with_remote_store, RemoteAddRecord, RemoteRecord, RemoteStore,
 };
 use chrono::Utc;
-use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
-
-const PATCH_CI_RELATIVE_PATH: &str = "ci/patch_ci.json";
-const PATCH_CI_PLACEHOLDER_COMMAND: &str = "CONFIGURE_PATCHSET_TEST_COMMAND";
 
 #[derive(Clone, Debug)]
 pub struct RemoteAddRequest {
@@ -46,12 +41,7 @@ fn remote_add_unlocked(
     ensure_remote_name_available_with_remote_store(&store, &name)?;
     ensure_fresh_registration_has_no_archive(repo, &name)?;
     let repo_name = canonical_repository_directory_name(&repo.authoritative_repo_root())?;
-    let normalized_request = RemoteAddRequest {
-        name: name.clone(),
-        url: url.clone(),
-        make_default: request.make_default,
-    };
-    let patch_ci = prepare_remote_registration_patch_ci(repo, &normalized_request)?;
+    let delivery_policy_default_requires_tests = local_policy_requires_tests(repo)?;
     let remote_repository = ensure_or_read_remote_repository_authority_for_url(
         repo, &url, &repo_name,
     )
@@ -86,7 +76,14 @@ fn remote_add_unlocked(
     payload
         .as_object_mut()
         .ok_or_else(|| "Remote add payload must be an object.".to_string())?
-        .insert("patch_ci".to_string(), patch_ci);
+        .insert(
+            "patch_ci".to_string(),
+            json!({
+                "status": "deferred_to_workflow",
+                "required": false,
+                "delivery_policy_default_requires_tests": delivery_policy_default_requires_tests,
+            }),
+        );
     if request.make_default {
         let agent_harness = converge_agent_workflow_harness(&refreshed)?;
         payload
@@ -95,385 +92,6 @@ fn remote_add_unlocked(
             .insert("agent_harness".to_string(), agent_harness);
     }
     Ok(payload)
-}
-
-fn prepare_remote_registration_patch_ci(
-    repo: &RepoRuntime,
-    request: &RemoteAddRequest,
-) -> Result<JsonValue, String> {
-    let required = local_policy_requires_tests(repo)?;
-    if !required {
-        return Ok(patch_ci_readiness_payload(
-            false,
-            "not_required",
-            None,
-            Vec::new(),
-        ));
-    }
-
-    let root = repo.workspace_root();
-    let manifest_path = root.join(PATCH_CI_RELATIVE_PATH);
-    let manifest_text = match read_patch_ci_manifest(&manifest_path) {
-        Ok(Some(text)) => text,
-        Ok(None) => {
-            let template = patch_ci_template(&root);
-            let encoded = encode_value_pretty_with_newline_error_string(&template.manifest)?;
-            write_new_patch_ci_manifest(&manifest_path, encoded.as_bytes())?;
-            return Err(generated_patch_ci_message(request, &template));
-        }
-        Err(err) => return Err(patch_ci_not_ready_message(request, &err)),
-    };
-    let blocking_suite_ids = validate_patch_ci_manifest(&manifest_text)
-        .map_err(|err| patch_ci_not_ready_message(request, &err))?;
-    let snapshot_id = patch_ci_snapshot_admission(repo, manifest_text.as_bytes())
-        .map_err(|err| patch_ci_not_ready_message(request, &err))?;
-
-    Ok(patch_ci_readiness_payload(
-        true,
-        "ready",
-        Some(snapshot_id),
-        blocking_suite_ids,
-    ))
-}
-
-fn read_patch_ci_manifest(path: &Path) -> Result<Option<String>, String> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() {
-                return Err(format!(
-                    "{} must be a regular repository file, not a symbolic link.",
-                    PATCH_CI_RELATIVE_PATH
-                ));
-            }
-            if !metadata.is_file() {
-                return Err(format!(
-                    "{} must be a regular file.",
-                    PATCH_CI_RELATIVE_PATH
-                ));
-            }
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(format!(
-                "Could not inspect {}: {err}",
-                PATCH_CI_RELATIVE_PATH
-            ));
-        }
-    }
-    fs::read_to_string(path)
-        .map(Some)
-        .map_err(|err| format!("Could not read {}: {err}", PATCH_CI_RELATIVE_PATH))
-}
-
-fn write_new_patch_ci_manifest(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory.", path.display()))?;
-    match fs::symlink_metadata(parent) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                return Err(format!(
-                    "Refusing to create {} because {} is not a regular directory.",
-                    PATCH_CI_RELATIVE_PATH,
-                    parent.display()
-                ));
-            }
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(parent)
-                .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
-        }
-        Err(err) => {
-            return Err(format!("Could not inspect {}: {err}", parent.display()));
-        }
-    }
-
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|err| {
-            format!(
-                "Could not create {} without overwriting existing content: {err}",
-                PATCH_CI_RELATIVE_PATH
-            )
-        })?;
-    if let Err(err) = file.write_all(bytes).and_then(|_| file.sync_all()) {
-        drop(file);
-        let _ = fs::remove_file(path);
-        return Err(format!(
-            "Could not finish writing {}: {err}",
-            PATCH_CI_RELATIVE_PATH
-        ));
-    }
-    Ok(())
-}
-
-#[derive(Clone, Debug)]
-struct PatchCiTemplate {
-    manifest: JsonValue,
-    commands: Vec<String>,
-}
-
-fn patch_ci_template(_: &Path) -> PatchCiTemplate {
-    let commands = vec![PATCH_CI_PLACEHOLDER_COMMAND.to_string()];
-    let manifest = json!({
-        "schema_version": 1,
-        "suites": [{
-            "schema_version": 1,
-            "suite_id": "patchset_gate",
-            "display_name": "Patchset Gate",
-            "plane": "patchset",
-            "default_blocking": true,
-            "mode": "gate",
-            "purpose": "Validate this repository before remote finish.",
-            "runner": {
-                "kind": "command_bundle",
-                "commands": commands.clone(),
-            },
-            "artifacts": {
-                "log_path": ".ait/generated/ci/patchset_gate.log",
-            },
-        }],
-    });
-
-    PatchCiTemplate { manifest, commands }
-}
-
-fn validate_patch_ci_manifest(text: &str) -> Result<Vec<String>, String> {
-    let manifest = parse_value(text, "Invalid ci/patch_ci.json")?;
-    let object = manifest
-        .as_object()
-        .ok_or_else(|| "ci/patch_ci.json must contain a JSON object.".to_string())?;
-    if object.get("schema_version").and_then(JsonValue::as_i64) != Some(1) {
-        return Err("ci/patch_ci.json must set top-level `schema_version` to 1.".to_string());
-    }
-    let suites = object
-        .get("suites")
-        .and_then(JsonValue::as_array)
-        .ok_or_else(|| "ci/patch_ci.json must contain a `suites` array.".to_string())?;
-    let mut blocking_suite_ids = Vec::new();
-    for suite in suites {
-        let Some(suite_obj) = suite.as_object() else {
-            continue;
-        };
-        if suite_obj.get("plane").and_then(JsonValue::as_str) != Some("patchset")
-            || suite_obj.get("mode").and_then(JsonValue::as_str) != Some("gate")
-            || suite_obj
-                .get("default_blocking")
-                .and_then(JsonValue::as_bool)
-                != Some(true)
-        {
-            continue;
-        }
-        let suite_id = suite_obj
-            .get("suite_id")
-            .and_then(JsonValue::as_str)
-            .and_then(|value| normalize_optional_text(Some(value)))
-            .ok_or_else(|| {
-                "Every blocking Patchset gate must define a non-empty `suite_id`.".to_string()
-            })?;
-        validate_patch_ci_runner(suite_obj, &suite_id)?;
-        blocking_suite_ids.push(suite_id);
-    }
-    blocking_suite_ids.sort();
-    blocking_suite_ids.dedup();
-    if blocking_suite_ids.is_empty() {
-        return Err(
-            "ci/patch_ci.json must contain at least one suite with `plane: patchset`, \
-             `mode: gate`, and `default_blocking: true`."
-                .to_string(),
-        );
-    }
-    Ok(blocking_suite_ids)
-}
-
-fn validate_patch_ci_runner(
-    suite: &JsonMap<String, JsonValue>,
-    suite_id: &str,
-) -> Result<(), String> {
-    let runner = suite
-        .get("runner")
-        .and_then(JsonValue::as_object)
-        .ok_or_else(|| format!("Patchset CI suite {suite_id:?} must define a `runner` object."))?;
-    let kind = runner
-        .get("kind")
-        .and_then(JsonValue::as_str)
-        .and_then(|value| normalize_optional_text(Some(value)))
-        .ok_or_else(|| {
-            format!("Patchset CI suite {suite_id:?} must define a non-empty `runner.kind`.")
-        })?;
-    if kind != "command_bundle" {
-        return Ok(());
-    }
-    let commands = runner
-        .get("commands")
-        .and_then(JsonValue::as_array)
-        .ok_or_else(|| {
-            format!("Patchset CI command-bundle suite {suite_id:?} must define `runner.commands`.")
-        })?;
-    if commands.is_empty() {
-        return Err(format!(
-            "Patchset CI command-bundle suite {suite_id:?} must contain at least one command."
-        ));
-    }
-    for command in commands {
-        let command = command
-            .as_str()
-            .and_then(|value| normalize_optional_text(Some(value)))
-            .ok_or_else(|| {
-                format!(
-                    "Patchset CI command-bundle suite {suite_id:?} contains an empty or non-string command."
-                )
-            })?;
-        if command == PATCH_CI_PLACEHOLDER_COMMAND {
-            return Err(format!(
-                "Patchset CI suite {suite_id:?} still contains the generated placeholder \
-                 {PATCH_CI_PLACEHOLDER_COMMAND:?}; replace it with the repository test command."
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn patch_ci_snapshot_admission(
-    repo: &RepoRuntime,
-    manifest_bytes: &[u8],
-) -> Result<String, String> {
-    let status = workflow_workspace_status(repo, None, None).map_err(|err| {
-        format!("Could not verify the current Line Snapshot for Patchset CI: {err}")
-    })?;
-    let snapshot_id = status
-        .get("baseline_snapshot_id")
-        .and_then(JsonValue::as_str)
-        .and_then(|value| normalize_optional_text(Some(value)))
-        .ok_or_else(|| {
-            format!(
-                "{} is configured but the current Line has no head Snapshot.",
-                PATCH_CI_RELATIVE_PATH
-            )
-        })?;
-    let snapshot = snapshot_show(repo, &snapshot_id).map_err(|err| {
-        format!("Could not inspect current Line head Snapshot {snapshot_id}: {err}")
-    })?;
-    let file = snapshot
-        .get("files")
-        .and_then(JsonValue::as_array)
-        .and_then(|files| {
-            files.iter().find(|file| {
-                file.get("path").and_then(JsonValue::as_str) == Some(PATCH_CI_RELATIVE_PATH)
-            })
-        })
-        .ok_or_else(|| {
-            format!(
-                "{} is configured but is not included in current Line head Snapshot {snapshot_id}.",
-                PATCH_CI_RELATIVE_PATH
-            )
-        })?;
-    let expected_sha256 = file
-        .get("sha256")
-        .and_then(JsonValue::as_str)
-        .ok_or_else(|| {
-            format!(
-                "Current Line head Snapshot {snapshot_id} has no SHA-256 for {}.",
-                PATCH_CI_RELATIVE_PATH
-            )
-        })?;
-    let actual_sha256 = format!("{:x}", Sha256::digest(manifest_bytes));
-    if expected_sha256 != actual_sha256 {
-        return Err(format!(
-            "{} differs from current Line head Snapshot {snapshot_id}.",
-            PATCH_CI_RELATIVE_PATH
-        ));
-    }
-    Ok(snapshot_id)
-}
-
-fn patch_ci_readiness_payload(
-    required: bool,
-    status: &str,
-    snapshot_id: Option<String>,
-    blocking_suite_ids: Vec<String>,
-) -> JsonValue {
-    json!({
-        "status": status,
-        "required": required,
-        "manifest_path": PATCH_CI_RELATIVE_PATH,
-        "snapshot_id": snapshot_id,
-        "blocking_suite_ids": blocking_suite_ids,
-        "configuration": {
-            "commands_field": "suites[].runner.commands",
-            "required_plane": "patchset",
-            "required_mode": "gate",
-            "default_blocking": true,
-            "changes_require_new_snapshot": true,
-        },
-    })
-}
-
-fn generated_patch_ci_message(request: &RemoteAddRequest, template: &PatchCiTemplate) -> String {
-    let commands = template
-        .commands
-        .iter()
-        .map(|command| format!("  - {command}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "Created a language-neutral {PATCH_CI_RELATIVE_PATH} starter.\n\
-         No project manifests were inspected and no validation command was inferred.\n\
-         Remote registration was not attempted. Replace \
-         {PATCH_CI_PLACEHOLDER_COMMAND:?} before retrying.\n\n\
-         Configure the repository-authored validation command:\n{commands}\n\n\
-         Keep at least one suite configured with:\n\
-           plane: patchset\n\
-           mode: gate\n\
-           default_blocking: true\n\
-         Edit test commands at `suites[].runner.commands`, then run:\n\
-           ait snapshot create <task-id> --message \"Configure Patchset CI\"\n\
-           {}",
-        remote_add_retry_command(request)
-    )
-}
-
-fn patch_ci_not_ready_message(request: &RemoteAddRequest, detail: &str) -> String {
-    format!(
-        "Patchset CI is not ready for remote registration: {detail}\n\
-         Remote registration was not attempted and existing configuration was not overwritten.\n\n\
-         Configure {PATCH_CI_RELATIVE_PATH} with at least one blocking Patchset gate:\n\
-           plane: patchset\n\
-           mode: gate\n\
-           default_blocking: true\n\
-           runner.commands: [\"your test command\"]\n\
-         Include the exact manifest bytes in the current Line head, then retry:\n\
-           ait snapshot create <task-id> --message \"Configure Patchset CI\"\n\
-           {}",
-        remote_add_retry_command(request)
-    )
-}
-
-fn remote_add_retry_command(request: &RemoteAddRequest) -> String {
-    let mut command = vec![
-        "ait".to_string(),
-        "remote".to_string(),
-        "add".to_string(),
-        shell_quote(&request.name),
-        shell_quote(&request.url),
-    ];
-    if request.make_default {
-        command.push("--default".to_string());
-    }
-    command.join(" ")
-}
-
-fn shell_quote(value: &str) -> String {
-    if !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"-_./:@%+=".contains(&byte))
-    {
-        return value.to_string();
-    }
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn ensure_remote_name_available_with_remote_store<S>(store: &S, name: &str) -> Result<(), String>

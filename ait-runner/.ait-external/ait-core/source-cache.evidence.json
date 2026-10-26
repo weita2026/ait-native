@@ -1,0 +1,23 @@
+{
+  "contract": "ait.release.source-cache/v1",
+  "status": "ready",
+  "repo_name": "ait-core",
+  "repository_index": 0,
+  "namespace": "C",
+  "source_snapshot": "SNP-B1E5120FA441",
+  "source_manifest_hash": "b1e5120fa441f6179debb1d768adce415fdbd58c8a244928059f7828dbb813a0",
+  "source_snapshot_created_at": "1791467844",
+  "source_line": "main",
+  "version": "1.1.4",
+  "license": "Apache-2.0",
+  "source_authority": "ait_remote_snapshot_boundary",
+  "local_selection_authority": "ait_external_lock",
+  "materialize_to": ".ait-external/ait-runner/.ait-external/ait-core",
+  "shallow_history_boundary": true,
+  "workspace_clean": true,
+  "workspace_external_materialized": false,
+  "remote_coordinates_embedded": false,
+  "adapter_manifest_sha256": "4047a750486d52f45590c4efe07509bf07e00d93ec41e7e2c52e514f066399e9",
+  "family_manifest_sha256": null,
+  "public_publish": false
+}

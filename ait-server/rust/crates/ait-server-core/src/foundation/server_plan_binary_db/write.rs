@@ -4,7 +4,7 @@ use super::codec::{
 use super::schema::{
     compact_plan_file_for, plan_file, plan_item_file, plan_item_payload_file, plan_payload_file,
     plan_revision_file, plan_revision_payload_file, CompactPlanFile, PlanRecord,
-    PlanRevisionPayload, PlanRevisionRecord, PLAN_LAYOUT_ID,
+    PlanRevisionPayload, PlanRevisionRecord, REMOTE_PLAN_LAYOUT_ID,
 };
 use super::{binary_error, item_record_payload, u16_len};
 use crate::foundation::remote_binary_db::{
@@ -74,7 +74,6 @@ pub(crate) enum ServerPlanBinaryDbCommitPoint {
         plan_index: u32,
         revision_index: u32,
         task_index: u32,
-        change_index: u32,
     },
 }
 
@@ -121,7 +120,9 @@ where
         purpose: ServerPlanBinaryDbWritePurpose,
     ) -> Result<Self, String> {
         ensure_supported_write_layout(WRITE_LAYOUT)?;
-        let inner = BinaryDbWriteTxn::begin_serving(db, BinaryDbCommandScope::ServerPlan)
+        // Actor liveness belongs to Workflow; keep its validation under the
+        // existing Plan+Workflow writer boundary without widening Plan writes.
+        let inner = BinaryDbWriteTxn::begin_serving(db, BinaryDbCommandScope::ServerTaskStart)
             .map_err(binary_error)?;
         Ok(Self {
             purpose,
@@ -160,8 +161,113 @@ where
     D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone,
     F: BinaryDbFsyncPolicy,
 {
+    pub(super) fn request_actor(
+        &self,
+        payload: &serde_json::Map<String, JsonValue>,
+    ) -> Result<u32, String> {
+        crate::foundation::workflow_binary_v0_adapter::BinaryDbServerWorkflowV0Store::new_frozen(
+            self.inner.db().clone(),
+        )
+        .request_actor_in_write(&self.inner, payload)
+    }
+
     pub(super) fn record_count(&self, file: BinaryFileId) -> Result<u32, String> {
         self.inner.db().record_count(file).map_err(binary_error)
+    }
+
+    pub(super) fn matching_head(
+        &self,
+        plan_index: Option<u32>,
+        title: &str,
+        status: &str,
+        revision_payload: &PlanRevisionPayload,
+        items: &[JsonValue],
+    ) -> Result<Option<u32>, String> {
+        let candidates = match plan_index {
+            Some(index) => index..index.checked_add(1).ok_or("Plan index overflow")?,
+            None => 0..self.record_count(plan_file())?,
+        };
+        let expected_revision =
+            ServerPlanRevisionCodec::<WRITE_LAYOUT>::encode_payload(revision_payload)?;
+        let mut found = None;
+        for index in candidates {
+            let record = self.current_plan_record_locked(index)?;
+            if super::plan_status_from_record(&record)? != status {
+                continue;
+            }
+            let actual_title = self
+                .inner
+                .read_payload(
+                    plan_payload_file(),
+                    record.payload_offset,
+                    u32::from(record.payload_len),
+                )
+                .map_err(binary_error)?;
+            if actual_title != title.as_bytes() {
+                continue;
+            }
+            let Some(head) = record.latest_revision_index_plus1.checked_sub(1) else {
+                continue;
+            };
+            let revision = ServerPlanRevisionCodec::<WRITE_LAYOUT>::decode_record(
+                &self
+                    .inner
+                    .read_record(plan_revision_file(), head)
+                    .map_err(binary_error)?,
+            )?;
+            if revision.plan_index != index {
+                return Err("Plan head references a foreign revision".into());
+            }
+            if usize::from(revision.item_count) != items.len() {
+                continue;
+            }
+            let actual_payload = self
+                .inner
+                .read_payload(
+                    plan_revision_payload_file(),
+                    revision.payload_offset,
+                    u32::from(revision.payload_len),
+                )
+                .map_err(binary_error)?;
+            if actual_payload != expected_revision {
+                continue;
+            }
+            let mut same = true;
+            for (offset, item) in items.iter().enumerate() {
+                let item_index = revision
+                    .item_start_index
+                    .checked_add(u32::try_from(offset).map_err(|_| "Plan item offset overflow")?)
+                    .ok_or("Plan item index overflow")?;
+                let actual = ServerPlanItemCodec::<WRITE_LAYOUT>::decode_record(
+                    &self
+                        .inner
+                        .read_record(plan_item_file(), item_index)
+                        .map_err(binary_error)?,
+                )?;
+                let (expected, payload) = item_record_payload(item)?;
+                let actual_payload = self
+                    .inner
+                    .read_payload(
+                        plan_item_payload_file(),
+                        actual.payload_offset,
+                        u32::from(actual.payload_len),
+                    )
+                    .map_err(binary_error)?;
+                if actual.item_meta != expected.item_meta
+                    || actual.reserved0 != expected.reserved0
+                    || actual.line_number != expected.line_number
+                    || actual_payload
+                        != ServerPlanItemCodec::<WRITE_LAYOUT>::encode_payload(&payload)?
+                {
+                    same = false;
+                    break;
+                }
+            }
+            if same && found.replace(index).is_some() {
+                return Err("Plan create matches multiple existing Plan authorities".into());
+            }
+        }
+        Ok(found)
     }
 
     pub(super) fn require_unchanged_plan(
@@ -370,10 +476,10 @@ fn revision_ref(index_plus1: u32) -> String {
 }
 
 fn ensure_supported_write_layout(layout: u32) -> Result<(), String> {
-    if layout == PLAN_LAYOUT_ID {
+    if layout == REMOTE_PLAN_LAYOUT_ID {
         return Ok(());
     }
     Err(format!(
-        "unsupported server Plan Binary DB write layout {layout}; supported layout is {PLAN_LAYOUT_ID}"
+        "unsupported server Plan Binary DB write layout {layout}; supported layout is {REMOTE_PLAN_LAYOUT_ID}"
     ))
 }

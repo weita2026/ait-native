@@ -356,7 +356,6 @@ fn config_set_rejects_empty_legacy_alias_and_mistyped_payloads_before_writing() 
             ..ConfigSetRequest::default()
         },
         ConfigSetRequest {
-            workflow_mode: Some("SOLO_LOCAL".to_string()),
             ..ConfigSetRequest::default()
         },
         ConfigSetRequest {
@@ -444,6 +443,10 @@ fn initialized_repo() -> (TempDir, RepoRuntime) {
         repair_existing: false,
     })
     .unwrap();
+    let path = temp.path().join(".ait/config.json");
+    let mut config = parse_object_or_empty(&std::fs::read_to_string(&path).unwrap());
+    config.insert("agent_teams".into(), json!(false));
+    std::fs::write(path, json!(config).to_string()).unwrap();
     let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
     (temp, repo)
 }
@@ -512,16 +515,15 @@ fn config_set_sprint_off_disables_plan_task_binding() {
     let refreshed = RepoRuntime::discover_from_path(&repo.root).unwrap();
     assert_eq!(refreshed.config["sprint"], "off");
     assert_eq!(refreshed.config["plan_task_binding"]["mode"], "off");
-    assert_eq!(refreshed.effective_workflow_mode(), "solo_local");
     let agents = std::fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
-    assert!(agents.contains("Route: mode=`solo_local`; sprint=`off`; scope=`local`"));
+    assert!(agents.contains("Route: sprint=`off`; scope=`local`"));
     assert!(agents.contains("plan-binding=`off`"));
     assert!(agents.contains("--title \"<title>\" --intent \"<intent>\"`"));
     assert!(!agents.to_ascii_lowercase().contains("json"));
     assert!(agents.contains("`--from` is unavailable"));
     assert!(agents.contains("--edit-root\n<absolute-path>"));
     let claude = std::fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
-    assert!(claude.contains("Route: mode=`solo_local`; sprint=`off`; scope=`local`"));
+    assert!(claude.contains("Route: sprint=`off`; scope=`local`"));
     assert!(claude.contains("--title \"<title>\" --intent \"<intent>\" --edit-root"));
     assert!(claude.contains("&& cd <absolute-path>"));
     assert!(!claude.to_ascii_lowercase().contains("json"));
@@ -538,58 +540,46 @@ fn config_set_sprint_off_disables_plan_task_binding() {
 }
 
 #[test]
-fn config_set_workflow_mode_sprint_on_requires_plan_task_binding() {
+fn config_set_rejects_retired_mode_and_preserves_independent_sprint_binding() {
     let (temp, repo) = initialized_repo();
-    config_set(
-        &repo,
-        &ConfigSetRequest {
-            sprint: Some("off".to_string()),
-            ..ConfigSetRequest::default()
-        },
-    )
-    .unwrap();
-    std::fs::remove_dir(temp.path().join("docs/sprints")).unwrap();
-    std::fs::remove_dir(temp.path().join("docs")).unwrap();
-    let repo = RepoRuntime::discover_from_path(&repo.root).unwrap();
+    assert!(config_set_from_payload(&repo, &json!({"workflow_mode":"solo_remote"})).is_err());
+    let enabled =
+        config_set_from_payload(&repo, &json!({"agent_teams":"enabled","sprint":"on"})).unwrap();
+    assert_eq!(enabled["agent_teams"], true);
+    assert_eq!(enabled["sprint"]["value"], "on");
+    assert_eq!(enabled["default_author_mode"], "ai_with_human_review");
+    assert_eq!(enabled["effective_author_mode"], "ai_only_experimental");
+    let configured = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    assert_eq!(
+        configured.effective_author_mode(None),
+        "ai_only_experimental"
+    );
+    for path in ["AGENTS.md", "CLAUDE.md"] {
+        let guidance = std::fs::read_to_string(temp.path().join(path)).unwrap();
+        assert!(guidance.contains("author-mode=`ai_only_experimental`"));
+        assert!(guidance.contains("a missing Reviewer requires assignment"));
+    }
+    let disabled = config_set_from_payload(&repo, &json!({"agent_teams":"disabled"})).unwrap();
+    assert_eq!(disabled["agent_teams"], false);
+    assert_eq!(disabled["default_author_mode"], "ai_with_human_review");
+    assert_eq!(disabled["effective_author_mode"], "ai_with_human_review");
+    for path in ["AGENTS.md", "CLAUDE.md"] {
+        let guidance = std::fs::read_to_string(temp.path().join(path)).unwrap();
+        assert!(guidance.contains("author-mode=`ai_with_human_review`"));
+        assert!(!guidance.contains("Fresh team candidates"));
+    }
+    assert!(disabled.get("workflow_mode").is_none());
+}
 
-    let payload = config_set(
-        &repo,
-        &ConfigSetRequest {
-            workflow_mode: Some("solo_remote".to_string()),
-            sprint: Some("on".to_string()),
-            ..ConfigSetRequest::default()
-        },
-    )
-    .unwrap();
-
-    assert_eq!(payload["workflow_mode"]["value"], "solo_remote");
-    assert_eq!(payload["sprint"]["value"], "on");
-    assert_eq!(payload["sprint"]["plan_task_binding_mode"], "required");
-    assert_eq!(payload["plan_task_binding"]["mode"], "required");
-    assert_eq!(payload["agent_harness"]["status"], "pending");
-    assert_eq!(payload["agent_harness"]["reason"], "no_default_remote");
-    let refreshed = RepoRuntime::discover_from_path(&repo.root).unwrap();
-    assert_eq!(refreshed.config["workflow_mode"], "solo_remote");
-    assert_eq!(refreshed.config["sprint"], "on");
-    assert_eq!(refreshed.config["plan_task_binding"]["mode"], "required");
-    let agents = std::fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
-    assert!(agents.contains("Route: mode=`solo_remote`; sprint=`on`; scope=`remote`"));
-    assert!(agents.contains("plan-binding=`required`"));
-    assert!(agents.contains("ait plan sync <markdown-file-or-dir> --remote origin"));
-    assert!(agents.contains("ait task start --from"));
-    assert!(agents.contains("`--from` syncs and binds"));
-    assert!(agents.contains("--remote origin`"));
-    assert!(!agents.to_ascii_lowercase().contains("json"));
-    assert!(agents.contains("--edit-root\n<absolute-path>"));
-    assert!(!agents.contains("--plan-item-ref"));
-    assert!(agents.contains("After every context-window compaction, re-read the bound sprint card"));
-    assert!(agents.contains("ait workflow ready <task-id> --apply"));
-    assert!(agents.contains("Workflow finish owns Review, approval"));
-    let claude = std::fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
-    assert!(claude.contains("Route: mode=`solo_remote`; sprint=`on`; scope=`remote`"));
-    assert!(claude.contains("--edit-root <absolute-path> --remote origin"));
-    assert!(claude.contains("&& cd <absolute-path>"));
-    assert!(!claude.to_ascii_lowercase().contains("json"));
-    assert!(!claude.contains("@AGENTS.md"));
-    assert!(temp.path().join("docs/sprints").is_dir());
+#[test]
+fn agent_count_payload_is_optional_bounded_and_does_not_change_solo_route() {
+    let (temp, repo) = initialized_repo();
+    let before = std::fs::read(temp.path().join(".ait/config.json")).unwrap();
+    for value in [json!(0), json!(4), json!(50)] {
+        assert!(config_set_from_payload(&repo, &json!({"agent_team_size":value})).is_err());
+    }
+    assert_eq!(
+        std::fs::read(temp.path().join(".ait/config.json")).unwrap(),
+        before
+    );
 }

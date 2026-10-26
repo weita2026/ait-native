@@ -12,7 +12,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const CORE_SNAPSHOT = "SNP-D8DD5ACBA74B";
+const CORE_SNAPSHOT = "SNP-E05379CAEDF7";
 const INTERNAL_CORE_ROOT = path.join(ROOT, ".ait-external", "ait-core");
 const PUBLIC_CORE_ROOT = path.resolve(ROOT, "..", "ait-core");
 const MANIFEST_RELATIVE = path.join("rust", "crates", "ait-napi", "Cargo.toml");
@@ -204,7 +204,12 @@ async function validatePublicCore(manifestPath) {
     nodeComponents[0].source_repository !== "ait-node" ||
     nodeComponents[0].source_snapshot !== node.source_snapshot ||
     !Array.isArray(coreComponents) ||
-    coreComponents.length === 0 ||
+    coreComponents.length !== 1 ||
+    coreComponents[0].id !== "ait" ||
+    JSON.stringify(core.components) !== JSON.stringify(["ait"]) ||
+    family.components.some((component) =>
+      component?.id === "ait-agent" || component?.id === "ait-agent-worker"
+    ) ||
     coreComponents.some((component) => component.source_snapshot !== CORE_SNAPSHOT)
   ) {
     fail("public family Snapshots differ from the source mapping");

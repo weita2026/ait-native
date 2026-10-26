@@ -3208,3 +3208,5 @@ fn external_error_exposes_structured_json_payload() {
     assert_eq!(json["code"], "external_manifest_parse");
     assert_eq!(json["message"], "invalid manifest");
 }
+
+mod recursive_ownership;

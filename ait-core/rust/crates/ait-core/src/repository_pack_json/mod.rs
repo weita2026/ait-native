@@ -9,7 +9,9 @@ use crate::repository_pack_policy::{
     RepositoryTreeLocatorInventoryRow, RepositoryTreePackInventoryRow, TreePackIndexInventory,
 };
 
+mod capture_binding;
 mod codec;
+pub use capture_binding::{SnapshotCaptureBinding, SNAPSHOT_CAPTURE_BINDING_CONTRACT};
 
 use self::codec::*;
 pub(crate) use self::codec::{
@@ -277,6 +279,7 @@ pub struct ZstdBulkCommitRequest {
     pub tree_locators: Vec<ZstdBulkTreeLocatorRow>,
     pub snapshots: Vec<ZstdBulkSnapshotRow>,
     pub line_update: Option<ZstdBulkLineUpdate>,
+    pub capture_binding: Option<SnapshotCaptureBinding>,
 }
 
 impl ZstdBulkCommitRequest {
@@ -318,6 +321,7 @@ impl ZstdBulkCommitRequest {
                 .map(snapshot_row_from_value)
                 .collect::<Result<Vec<_>, _>>()?,
             line_update,
+            capture_binding: None,
         })
     }
 }

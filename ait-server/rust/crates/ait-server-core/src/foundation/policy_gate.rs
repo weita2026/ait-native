@@ -386,7 +386,20 @@ pub fn policy_gate_evaluation(input: &JsonMap<String, JsonValue>) -> JsonMap<Str
         }
     }
 
-    if review_count(review_summary, "approval_count") >= required_approvals {
+    let require_human_review =
+        requirement_bool(&effective_requirements, "require_human_review", false)
+            || attestation.is_some_and(|row| truthy(row.get("require_human_review")));
+    let approval_key = if require_human_review {
+        "human_approval_count"
+    } else {
+        "approval_count"
+    };
+    let approval_label = if require_human_review {
+        "Required human approvals must be present"
+    } else {
+        "Required approvals must be present"
+    };
+    if review_count(review_summary, approval_key) >= required_approvals {
         add_check(
             &mut checks,
             &mut decision,
@@ -395,7 +408,7 @@ pub fn policy_gate_evaluation(input: &JsonMap<String, JsonValue>) -> JsonMap<Str
             "required_human_review",
             "pass",
             None,
-            None,
+            Some(approval_label),
         );
     } else {
         add_check(
@@ -411,7 +424,7 @@ pub fn policy_gate_evaluation(input: &JsonMap<String, JsonValue>) -> JsonMap<Str
                 )
                 .as_str(),
             ),
-            None,
+            Some(approval_label),
         );
     }
 

@@ -1,0 +1,578 @@
+use super::*;
+use ait_core::plan_store::PlanReadStore;
+use tempfile::TempDir;
+
+fn request(root: &Path) -> InitRequest {
+    InitRequest {
+        root: root.to_path_buf(),
+        name: Some("housekeeper".to_string()),
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_with_human_review".to_string(),
+        default_model: Some("codex".to_string()),
+        repair_existing: false,
+    }
+}
+
+fn read_config(root: &Path) -> JsonMap<String, JsonValue> {
+    let text = fs::read_to_string(root.join(".ait/config.json")).unwrap();
+    match parse_value(&text, "test config").unwrap() {
+        JsonValue::Object(config) => config,
+        _ => panic!("config must be an object"),
+    }
+}
+
+#[test]
+fn fresh_init_ignore_template_keeps_project_data_and_gitignored_files_visible() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    let paths = [
+        "source.txt",
+        "data.csv",
+        "datasets/input.csv",
+        "checkpoints/model.bin",
+        "fixtures/expected.bin",
+        "local-output/result.txt",
+    ];
+    for path in paths {
+        let file = root.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, b"project data\0\xff").unwrap();
+    }
+    let gitignore = b"local-output/\r\n*.csv\r\n";
+    fs::write(root.join(".gitignore"), gitignore).unwrap();
+    init_repo(&request(root)).unwrap();
+
+    let ignore = fs::read_to_string(root.join(".aitignore")).unwrap();
+    assert!(!ignore.is_empty());
+    assert!(ignore
+        .lines()
+        .all(|line| line.trim().is_empty() || line.trim().starts_with('#')));
+    assert_eq!(fs::read(root.join(".gitignore")).unwrap(), gitignore);
+    let visible =
+        ait_core::plan_filesystem::list_visible_workspace_paths(root.to_str().unwrap(), None, None)
+            .unwrap();
+    for path in paths {
+        assert!(visible.iter().any(|entry| entry == path), "hidden {path}");
+    }
+    assert!(visible.iter().any(|entry| entry == ".aitignore"));
+}
+
+#[test]
+fn fresh_init_and_reinit_preserve_existing_ignore_bytes() {
+    for contents in [
+        b"".as_slice(),
+        b"# user rules\r\n.scratch/\r\n!fixtures/keep.txt",
+    ] {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(".aitignore");
+        fs::write(&path, contents).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        let permissions = fs::metadata(&path).unwrap().permissions();
+        for expected in ["initialized", "reinitialized"] {
+            let result = init_repo(&request(temp.path())).unwrap();
+            assert_eq!(result["action"], expected);
+            assert_eq!(fs::read(&path).unwrap(), contents);
+            assert_eq!(fs::metadata(&path).unwrap().permissions(), permissions);
+        }
+    }
+}
+
+#[test]
+fn reinit_and_repair_do_not_recreate_missing_ignore_file() {
+    let temp = TempDir::new().unwrap();
+    init_repo(&request(temp.path())).unwrap();
+    let path = temp.path().join(".aitignore");
+    fs::remove_file(&path).unwrap();
+    assert_eq!(
+        init_repo(&request(temp.path())).unwrap()["action"],
+        "reinitialized"
+    );
+    assert!(!path.exists());
+    fs::remove_file(temp.path().join(".ait/policy.yaml")).unwrap();
+    let mut repair = request(temp.path());
+    repair.repair_existing = true;
+    assert_eq!(init_repo(&repair).unwrap()["action"], "repaired");
+    assert!(!path.exists());
+}
+
+#[test]
+fn fresh_init_rejects_ignore_directory_before_creating_authority() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join(".aitignore");
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("keep"), b"do not replace").unwrap();
+    let error = init_repo(&request(temp.path())).unwrap_err();
+    assert!(error.contains("workspace ignore file must be a regular file"));
+    assert_eq!(fs::read(path.join("keep")).unwrap(), b"do not replace");
+    assert!(!temp.path().join(".ait").exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn fresh_init_rejects_existing_and_dangling_ignore_symlinks() {
+    use std::os::unix::fs::symlink;
+    for target_exists in [true, false] {
+        let temp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let target = outside.path().join("ignore");
+        if target_exists {
+            fs::write(&target, b"# untouched\n").unwrap();
+        }
+        let path = temp.path().join(".aitignore");
+        symlink(&target, &path).unwrap();
+        let error = init_repo(&request(temp.path())).unwrap_err();
+        assert!(error.contains("Refusing symbolic-link workspace ignore file"));
+        assert_eq!(fs::read_link(&path).unwrap(), target);
+        if target_exists {
+            assert_eq!(fs::read(&target).unwrap(), b"# untouched\n");
+        } else {
+            assert!(!target.exists());
+        }
+        assert!(!temp.path().join(".ait").exists());
+    }
+}
+
+#[test]
+fn plan_preferences_persist_once_and_legacy_missing_fields_use_fixed_defaults() {
+    let temp = TempDir::new().unwrap();
+    let initialized = init_repo(&request(temp.path())).unwrap();
+    let mut config = read_config(temp.path());
+    assert_eq!(
+        initialized["plan_language"]["value"],
+        config["plan_language"]
+    );
+    assert_eq!(initialized["plan_language"]["source"], "repo_config");
+    assert_eq!(config["plan_style"], "concise");
+    config.insert("plan_language".into(), json!("ko-KR"));
+    config.insert("plan_style".into(), json!("detailed"));
+    write_json_pretty(
+        &temp.path().join(".ait/config.json"),
+        &JsonValue::Object(config.clone()),
+    )
+    .unwrap();
+    let reinit = init_repo(&request(temp.path())).unwrap();
+    assert_eq!(reinit["plan_language"]["value"], "ko-KR");
+    assert_eq!(reinit["plan_style"]["value"], "detailed");
+    config.remove("plan_language");
+    config.remove("plan_style");
+    write_json_pretty(
+        &temp.path().join(".ait/config.json"),
+        &JsonValue::Object(config),
+    )
+    .unwrap();
+    let before = fs::read(temp.path().join(".ait/config.json")).unwrap();
+    let legacy = init_repo(&request(temp.path())).unwrap();
+    assert_eq!(
+        legacy["plan_language"],
+        json!({"value":"en","source":"built_in"})
+    );
+    assert_eq!(
+        legacy["plan_style"],
+        json!({"value":"concise","source":"built_in"})
+    );
+    assert_eq!(
+        fs::read(temp.path().join(".ait/config.json")).unwrap(),
+        before
+    );
+    fs::remove_file(temp.path().join(".ait/config.json")).unwrap();
+    let mut repair = request(temp.path());
+    repair.repair_existing = true;
+    let repaired = init_repo(&repair).unwrap();
+    assert_eq!(repaired["plan_language"]["source"], "built_in");
+    assert_eq!(repaired["plan_language"]["value"], "en");
+}
+
+#[test]
+fn invalid_saved_plan_preferences_stop_repair_and_harness_before_any_write() {
+    let temp = TempDir::new().unwrap();
+    init_repo(&request(temp.path())).unwrap();
+    let path = temp.path().join(".ait/config.json");
+    let mut config = read_config(temp.path());
+    config.insert("plan_style".into(), json!("verbose"));
+    write_json_pretty(&path, &JsonValue::Object(config)).unwrap();
+    let before = fs::read(&path).unwrap();
+    let agents = fs::read(temp.path().join("AGENTS.md")).unwrap();
+    let claude = fs::read(temp.path().join("CLAUDE.md")).unwrap();
+    fs::remove_file(temp.path().join(".ait/policy.yaml")).unwrap();
+    let mut repair = request(temp.path());
+    repair.repair_existing = true;
+    assert!(init_repo(&repair).unwrap_err().contains("plan_style"));
+    let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    assert!(crate::agent_harness::refresh_agent_workflow_harness(&repo).is_err());
+    assert!(!temp.path().join(".ait/policy.yaml").exists());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(fs::read(temp.path().join("AGENTS.md")).unwrap(), agents);
+    assert_eq!(fs::read(temp.path().join("CLAUDE.md")).unwrap(), claude);
+}
+
+#[test]
+fn init_creates_authority_agent_contract_and_configured_sprint_directory() {
+    let temp = TempDir::new().unwrap();
+    fs::write(temp.path().join("README.md"), "base\n").unwrap();
+
+    let payload = init_repo(&request(temp.path())).unwrap();
+
+    assert_eq!(payload["action"], "initialized");
+    assert_eq!(payload["repo_name"], "housekeeper");
+    assert_eq!(payload["default_line"], "main");
+    assert_eq!(payload["workflow_mode"]["value"], "solo_local");
+    assert_eq!(payload["policy_profile"], "prototype");
+    assert_eq!(payload["default_author_mode"], "ai_with_human_review");
+    assert_eq!(payload["default_model"], "codex");
+    assert_eq!(payload["repairs"], json!([]));
+    assert!(payload.get("agent_harness").is_none());
+    assert!(payload.get("bootstrap_files").is_none());
+    assert!(payload.get("next_steps").is_none());
+    assert!(temp.path().join(".ait/binary-db").is_dir());
+    assert!(temp.path().join(".ait/binary-db/line.bin").is_file());
+    assert!(temp.path().join(".ait/objects/packs").is_dir());
+    assert!(temp.path().join(".ait/refs/lines").is_dir());
+    assert_eq!(
+        fs::read_to_string(temp.path().join("README.md")).unwrap(),
+        "base\n"
+    );
+    let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
+    assert!(agents.contains("<!-- ait:workflow:start -->"));
+    assert!(agents.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(agents.contains("plan-binding=`required`"));
+    assert!(agents.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent"));
+    assert!(agents.contains("Work only in the returned `edit_root`"));
+    assert!(agents.contains("--edit-root\n<absolute-path>"));
+    assert!(agents.contains("otherwise omit it and use the returned `edit_root`"));
+    assert!(agents.contains("Read `docs/plan.md` Current Priorities only"));
+    let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
+    assert!(claude.contains("<!-- ait:workflow:start -->"));
+    assert!(claude.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(claude.contains("--edit-root <absolute-path>"));
+    assert!(claude.contains("&& cd <absolute-path>"));
+    assert!(!agents.to_ascii_lowercase().contains("json"));
+    assert!(!claude.to_ascii_lowercase().contains("json"));
+    assert!(claude.contains("Do not omit `--edit-root`"));
+    assert!(!claude.contains("@AGENTS.md"));
+    assert!(temp.path().join("docs/sprints").is_dir());
+    for path in ["ait-native.md", "docs/plan.md", "docs/milestone.md"] {
+        assert!(!temp.path().join(path).exists(), "unexpected {path}");
+    }
+    let config = read_config(temp.path());
+    assert_eq!(config["repo_name"], "housekeeper");
+    assert_eq!(config["default_line"], "main");
+    assert_eq!(config["current_line"], "main");
+    assert_eq!(config["default_remote"], JsonValue::Null);
+    assert_eq!(config["sprint"], "on");
+    assert_eq!(config["plan_task_binding"]["mode"], "required");
+    let policy_text = fs::read_to_string(temp.path().join(".ait/policy.yaml")).unwrap();
+    assert!(policy_text.contains("policy_id: prototype"));
+    assert!(policy_text.contains("require_ai_provenance: false"));
+}
+
+#[test]
+fn built_in_policy_profiles_materialize_their_exact_gate_defaults() {
+    for (profile, lint, security, license) in [
+        ("prototype", false, false, false),
+        ("team", true, false, false),
+        ("release", true, true, true),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let mut init_request = request(temp.path());
+        init_request.policy_profile = profile.to_string();
+
+        let payload = init_repo(&init_request).unwrap();
+        let policy_text = fs::read_to_string(temp.path().join(".ait/policy.yaml")).unwrap();
+        let policy = parse_policy_yaml(&policy_text, DEFAULT_POLICY_PROFILE).unwrap();
+
+        assert_eq!(payload["policy_profile"], profile);
+        assert_eq!(policy["policy_id"], profile);
+        assert_eq!(policy["defaults"]["require_attestation"], true);
+        assert_eq!(policy["defaults"]["require_tests"], true);
+        assert_eq!(policy["defaults"]["require_lint"], lint);
+        assert_eq!(policy["defaults"]["require_security_scan"], security);
+        assert_eq!(policy["defaults"]["require_license_scan"], license);
+    }
+}
+
+#[test]
+fn recovery_init_is_minimal_and_creates_no_plan_lineage() {
+    let temp = TempDir::new().unwrap();
+    let mut init_request = request(temp.path());
+    init_request.name = Some("recovered".to_string());
+    init_request.default_line = "feature/task".to_string();
+
+    let payload = init_repo_for_remote_head_recovery(&init_request).unwrap();
+    let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    let plans = PlanReadStore::list_plans(
+        &repo
+            .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
+            .plans(),
+    )
+    .unwrap();
+
+    assert_eq!(payload["action"], "initialized");
+    assert!(plans.is_empty());
+    assert!(!temp.path().join("AGENTS.md").exists());
+    assert!(!temp.path().join("CLAUDE.md").exists());
+    assert!(!temp.path().join(".aitignore").exists());
+    assert!(repo
+        .line_store()
+        .unwrap()
+        .line_by_name("feature/task")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn valid_repository_reinitializes_without_repair_and_preserves_authority_bytes() {
+    let temp = TempDir::new().unwrap();
+    let mut initial = request(temp.path());
+    initial.default_model = None;
+    init_repo(&initial).unwrap();
+    let config_before = fs::read(temp.path().join(".ait/config.json")).unwrap();
+    let policy_before = fs::read(temp.path().join(".ait/policy.yaml")).unwrap();
+    let line_before = fs::read(temp.path().join(".ait/binary-db/line.bin")).unwrap();
+    let agents_path = temp.path().join("AGENTS.md");
+    let mut agents = fs::read_to_string(&agents_path).unwrap();
+    agents.push_str("\nRepository-specific rule.\n");
+    fs::write(&agents_path, &agents).unwrap();
+    fs::write(temp.path().join("WORKSPACE.md"), "keep\n").unwrap();
+
+    let mut rerun = request(temp.path());
+    rerun.name = Some("replacement".to_string());
+    rerun.default_line = "replacement-line".to_string();
+    rerun.policy_profile = "release".to_string();
+    rerun.default_author_mode = "human_only".to_string();
+    rerun.default_model = Some("replacement-model".to_string());
+    let payload = init_repo(&rerun).unwrap();
+
+    assert_eq!(payload["action"], "reinitialized");
+    assert_eq!(payload["repo_name"], "housekeeper");
+    assert_eq!(payload["default_line"], "main");
+    assert_eq!(payload["policy_profile"], "prototype");
+    assert_eq!(payload["default_author_mode"], "ai_with_human_review");
+    assert_eq!(payload["default_model"], JsonValue::Null);
+    assert_eq!(
+        fs::read(temp.path().join(".ait/config.json")).unwrap(),
+        config_before
+    );
+    assert_eq!(
+        fs::read(temp.path().join(".ait/policy.yaml")).unwrap(),
+        policy_before
+    );
+    assert_eq!(
+        fs::read(temp.path().join(".ait/binary-db/line.bin")).unwrap(),
+        line_before
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("WORKSPACE.md")).unwrap(),
+        "keep\n"
+    );
+    let refreshed_agents = fs::read_to_string(&agents_path).unwrap();
+    assert!(refreshed_agents.contains("Repository-specific rule."));
+    assert_eq!(
+        refreshed_agents
+            .matches("<!-- ait:workflow:start -->")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn invalid_creation_values_leave_no_repository_shell() {
+    for (field, mutate) in [
+        (
+            "policy",
+            (|request: &mut InitRequest| request.policy_profile = "invalid".to_string())
+                as fn(&mut InitRequest),
+        ),
+        (
+            "author",
+            (|request: &mut InitRequest| request.default_author_mode = "invalid".to_string())
+                as fn(&mut InitRequest),
+        ),
+        (
+            "line",
+            (|request: &mut InitRequest| request.default_line = "   ".to_string())
+                as fn(&mut InitRequest),
+        ),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let mut init_request = request(temp.path());
+        mutate(&mut init_request);
+        assert!(init_repo(&init_request).is_err(), "{field} must fail");
+        assert!(
+            fs::symlink_metadata(temp.path().join(".ait")).is_err(),
+            "{field} left an .ait entry"
+        );
+        assert!(!temp.path().join("AGENTS.md").exists());
+        assert!(!temp.path().join("CLAUDE.md").exists());
+        assert!(!temp.path().join("docs").exists());
+    }
+}
+
+#[test]
+fn malformed_config_fails_closed_during_repair() {
+    let temp = TempDir::new().unwrap();
+    init_repo(&request(temp.path())).unwrap();
+    let config_path = temp.path().join(".ait/config.json");
+    let malformed = b"{not-json\n";
+    fs::write(&config_path, malformed).unwrap();
+    let mut repair = request(temp.path());
+    repair.repair_existing = true;
+
+    let error = init_repo(&repair).unwrap_err();
+
+    assert!(error.contains("Failed to parse repository config"));
+    assert_eq!(fs::read(&config_path).unwrap(), malformed);
+}
+
+#[test]
+fn non_object_config_fails_closed_during_repair() {
+    let temp = TempDir::new().unwrap();
+    init_repo(&request(temp.path())).unwrap();
+    let config_path = temp.path().join(".ait/config.json");
+    fs::write(&config_path, "[]\n").unwrap();
+    let mut repair = request(temp.path());
+    repair.repair_existing = true;
+
+    let error = init_repo(&repair).unwrap_err();
+
+    assert!(error.contains("must contain a JSON object"));
+    assert_eq!(fs::read_to_string(&config_path).unwrap(), "[]\n");
+}
+
+#[test]
+fn malformed_policy_fails_closed_during_repair() {
+    let temp = TempDir::new().unwrap();
+    init_repo(&request(temp.path())).unwrap();
+    let policy_path = temp.path().join(".ait/policy.yaml");
+    let malformed = "version: 1\npolicy_id: prototype\ndefaults:\n  not-a-policy-field: true\n";
+    fs::write(&policy_path, malformed).unwrap();
+    let mut repair = request(temp.path());
+    repair.repair_existing = true;
+
+    let error = init_repo(&repair).unwrap_err();
+
+    assert!(error.contains("unknown field"));
+    assert_eq!(fs::read_to_string(&policy_path).unwrap(), malformed);
+}
+
+#[test]
+fn repair_is_required_and_fills_only_missing_structure() {
+    let temp = TempDir::new().unwrap();
+    init_repo(&request(temp.path())).unwrap();
+    let config_path = temp.path().join(".ait/config.json");
+    let mut config = read_config(temp.path());
+    config.remove("current_line");
+    write_json_pretty(&config_path, &JsonValue::Object(config)).unwrap();
+    let policy_path = temp.path().join(".ait/policy.yaml");
+    fs::remove_file(&policy_path).unwrap();
+    let missing_dir = temp.path().join(".ait/objects/manifests");
+    fs::remove_dir(&missing_dir).unwrap();
+    let config_before = fs::read(&config_path).unwrap();
+
+    let error = init_repo(&request(temp.path())).unwrap_err();
+    assert!(error.contains("--repair-existing"));
+    assert_eq!(fs::read(&config_path).unwrap(), config_before);
+    assert!(!policy_path.exists());
+    assert!(!missing_dir.exists());
+
+    let mut repair = request(temp.path());
+    repair.repair_existing = true;
+    let payload = init_repo(&repair).unwrap();
+
+    assert_eq!(payload["action"], "repaired");
+    assert_eq!(read_config(temp.path())["current_line"], "main");
+    assert!(policy_path.is_file());
+    assert!(missing_dir.is_dir());
+}
+
+#[cfg(unix)]
+#[test]
+fn symbolic_link_authority_paths_fail_closed() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    symlink(outside.path(), temp.path().join(".ait")).unwrap();
+    let error = init_repo(&request(temp.path())).unwrap_err();
+    assert!(error.contains("symbolic-link repository authority"));
+
+    let second = TempDir::new().unwrap();
+    init_repo(&request(second.path())).unwrap();
+    let config_path = second.path().join(".ait/config.json");
+    let config_bytes = fs::read(&config_path).unwrap();
+    fs::remove_file(&config_path).unwrap();
+    let outside_config = outside.path().join("config.json");
+    fs::write(&outside_config, &config_bytes).unwrap();
+    symlink(&outside_config, &config_path).unwrap();
+    let mut repair = request(second.path());
+    repair.repair_existing = true;
+    let error = init_repo(&repair).unwrap_err();
+    assert!(error.contains("symbolic-link Repository config"));
+    assert_eq!(fs::read(&outside_config).unwrap(), config_bytes);
+
+    let third = TempDir::new().unwrap();
+    init_repo_for_remote_head_recovery(&request(third.path())).unwrap();
+    let outside_agents = outside.path().join("AGENTS.md");
+    fs::write(&outside_agents, "# Outside\n").unwrap();
+    symlink(&outside_agents, third.path().join("AGENTS.md")).unwrap();
+    let error = init_repo(&request(third.path())).unwrap_err();
+    assert!(error.contains("symbolic-link Agent contract"));
+    assert_eq!(fs::read_to_string(&outside_agents).unwrap(), "# Outside\n");
+
+    let fourth = TempDir::new().unwrap();
+    init_repo_for_remote_head_recovery(&request(fourth.path())).unwrap();
+    symlink(outside.path(), fourth.path().join("docs")).unwrap();
+    let error = init_repo(&request(fourth.path())).unwrap_err();
+    assert!(error.contains("symbolic-link workflow directory"));
+
+    let fifth = TempDir::new().unwrap();
+    init_repo_for_remote_head_recovery(&request(fifth.path())).unwrap();
+    let outside_claude = outside.path().join("CLAUDE.md");
+    fs::write(&outside_claude, "# Outside Claude\n").unwrap();
+    symlink(&outside_claude, fifth.path().join("CLAUDE.md")).unwrap();
+    let error = init_repo(&request(fifth.path())).unwrap_err();
+    assert!(error.contains("symbolic-link Claude agent contract"));
+    assert_eq!(
+        fs::read_to_string(&outside_claude).unwrap(),
+        "# Outside Claude\n"
+    );
+}
+
+#[test]
+fn wrong_authority_path_kind_fails_without_replacement() {
+    let temp = TempDir::new().unwrap();
+    fs::write(temp.path().join(".ait"), "user data\n").unwrap();
+
+    let error = init_repo(&request(temp.path())).unwrap_err();
+
+    assert!(error.contains("must be a directory"));
+    assert_eq!(
+        fs::read_to_string(temp.path().join(".ait")).unwrap(),
+        "user data\n"
+    );
+
+    let agents_root = TempDir::new().unwrap();
+    init_repo_for_remote_head_recovery(&request(agents_root.path())).unwrap();
+    fs::create_dir(agents_root.path().join("AGENTS.md")).unwrap();
+    let error = init_repo(&request(agents_root.path())).unwrap_err();
+    assert!(error.contains("Agent contract must be a regular file"));
+    assert!(agents_root.path().join("AGENTS.md").is_dir());
+
+    let claude_root = TempDir::new().unwrap();
+    init_repo_for_remote_head_recovery(&request(claude_root.path())).unwrap();
+    fs::create_dir(claude_root.path().join("CLAUDE.md")).unwrap();
+    let error = init_repo(&request(claude_root.path())).unwrap_err();
+    assert!(error.contains("Claude agent contract must be a regular file"));
+    assert!(claude_root.path().join("CLAUDE.md").is_dir());
+
+    let docs_root = TempDir::new().unwrap();
+    init_repo_for_remote_head_recovery(&request(docs_root.path())).unwrap();
+    fs::write(docs_root.path().join("docs"), "user data\n").unwrap();
+    let error = init_repo(&request(docs_root.path())).unwrap_err();
+    assert!(error.contains("Workflow directory path has the wrong file kind"));
+    assert_eq!(
+        fs::read_to_string(docs_root.path().join("docs")).unwrap(),
+        "user data\n"
+    );
+}

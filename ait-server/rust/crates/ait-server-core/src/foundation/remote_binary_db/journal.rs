@@ -259,6 +259,14 @@ impl BinaryDbTxnJournal {
         Ok(offset < original_len)
     }
 
+    pub(super) fn has_before_image(&self, relative: &StorePath, offset: u64) -> bool {
+        self.entries.iter().any(|entry| {
+            matches!(entry,
+            BinaryDbTxnJournalEntry::BeforeImage { relative_path, offset: existing, .. }
+                if relative_path == relative && *existing == offset)
+        })
+    }
+
     pub(super) fn track_before_images<B, F>(
         &mut self,
         db: &B,

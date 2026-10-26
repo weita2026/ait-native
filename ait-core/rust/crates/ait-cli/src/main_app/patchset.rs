@@ -1,128 +1,85 @@
 fn run_patchset(repo: RepoRuntime, command: PatchsetCommand) -> Result<(), String> {
     match command {
         PatchsetCommand::Publish(args) => {
-            let change_ref =
-                resolve_task_remote_change_input(&repo, &args.change, args.remote.as_deref())?;
-            let payload = run_task_scoped_workspace_command(
+            let payload = crate::binding_changes::publish_patchset(
                 &repo,
                 &args.change,
-                true,
-                true,
+                &args.summary,
+                args.author_mode.map(ConfigAuthorModeArg::as_str),
                 args.remote.as_deref(),
-                "ait-cli patchset publish",
-                |execution_repo| {
-                patchset_publish(
-                    execution_repo,
-                    &change_ref,
-                    &args.summary,
-                    args.author_mode.map(ConfigAuthorModeArg::as_str),
-                    args.remote.as_deref(),
-                )
-                },
             )?;
-            emit_result(
-                "ait-cli patchset publish",
-                &payload,
-                args.json,
-                &[
-                    "patchset_id",
-                    "current_line",
-                    "base_snapshot_id",
-                    "revision_snapshot_id",
-                    "author_mode",
-                ],
-            )?;
-            Ok(())
-        }
-        PatchsetCommand::List(args) => {
-            let change_ref =
-                resolve_task_remote_change_input(&repo, &args.change, args.remote.as_deref())?;
-            let payload = patchset_list_cmd(&repo, &change_ref, args.remote.as_deref())?;
             if args.json {
                 print_json(&payload)?;
-            } else if let Some(rows) = payload.as_array() {
-                print_list(
-                    rows,
-                    &[
-                        "patchset_id",
-                        "patchset_number",
-                        "base_snapshot_id",
-                        "revision_snapshot_id",
-                        "publish_state",
-                        "evaluation_state",
-                    ],
+            } else {
+                println!(
+                    "{}",
+                    crate::binding_output::format_patchset_publish(&payload)?
                 );
             }
             Ok(())
         }
+        PatchsetCommand::List(args) => {
+            let payload = crate::binding_changes::list_patchsets(
+                &repo,
+                &args.change,
+                args.remote.as_deref(),
+            )?;
+            if args.json {
+                print_json(&payload)?;
+            } else if payload.is_array() {
+                println!("{}", crate::binding_output::format_patchset_list(&payload)?);
+            }
+            Ok(())
+        }
         PatchsetCommand::Show(args) => {
-            let payload =
-                patchset_show_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
-            let display_payload = if args.json {
-                payload.clone()
-            } else {
-                patchset_show_display_payload(&payload)
-            };
-            emit_result(
-                "ait-cli patchset show",
-                &display_payload,
-                args.json,
-                &[
-                    "patchset_id",
-                    "patchset_number",
-                    "author_mode",
-                    "base_snapshot_id",
-                    "revision_snapshot_id",
-                    "evaluation_state",
-                    "publish_state",
-                    "summary",
-                ],
-            )?;
-            Ok(())
-        }
-        PatchsetCommand::Select(args) => {
-            let payload =
-                patchset_select_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
-            emit_result(
-                "ait-cli patchset select",
-                &payload,
-                args.json,
-                &["selected_patchset_id"],
-            )?;
-            Ok(())
-        }
-        PatchsetCommand::CiStatus(args) => {
-            let payload =
-                patchset_ci_status_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
+            let payload = patchset_show_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
             if args.json {
                 print_json(&payload)?;
             } else {
-                let display_payload = patchset_ci_status_display_payload(&payload);
-                let fields = patchset_ci_status_display_fields(&display_payload);
-                emit_result(
-                    "ait-cli patchset ci-status",
-                    &display_payload,
-                    false,
-                    &fields,
-                )?;
+                println!("{}", crate::binding_output::format_patchset_show(&payload)?);
+            }
+            Ok(())
+        }
+        PatchsetCommand::Select(args) => {
+            let payload = patchset_select_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!(
+                    "{}",
+                    crate::binding_output::format_patchset_select(&payload)?
+                );
+            }
+            Ok(())
+        }
+        PatchsetCommand::CiStatus(args) => {
+            let payload = patchset_ci_status_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!(
+                    "{}",
+                    crate::binding_output::format_patchset_ci_status(&payload)?
+                );
             }
             Ok(())
         }
         PatchsetCommand::RerunCi(args) => {
-            let payload =
-                patchset_rerun_ci_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
-            emit_result(
-                "ait-cli patchset rerun-ci",
-                &payload,
-                args.json,
-                &["patchset_id", "queued", "trigger"],
-            )?;
+            let payload = patchset_rerun_ci_cmd(&repo, &args.patchset_id, args.remote.as_deref())?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!(
+                    "{}",
+                    crate::binding_output::format_patchset_rerun_ci(&payload)?
+                );
+            }
             Ok(())
         }
     }
 }
 
-fn patchset_show_display_payload(payload: &JsonValue) -> JsonValue {
+pub(crate) fn patchset_show_display_payload(payload: &JsonValue) -> JsonValue {
     let Some(obj) = payload.as_object() else {
         return payload.clone();
     };
@@ -146,7 +103,7 @@ fn patchset_show_display_payload(payload: &JsonValue) -> JsonValue {
     JsonValue::Object(display)
 }
 
-fn patchset_ci_status_display_payload(payload: &JsonValue) -> JsonValue {
+pub(crate) fn patchset_ci_status_display_payload(payload: &JsonValue) -> JsonValue {
     let Some(obj) = payload.as_object() else {
         return payload.clone();
     };
@@ -179,7 +136,7 @@ fn patchset_ci_status_display_payload(payload: &JsonValue) -> JsonValue {
     JsonValue::Object(display)
 }
 
-fn patchset_ci_status_display_fields(payload: &JsonValue) -> Vec<&'static str> {
+pub(crate) fn patchset_ci_status_display_fields(payload: &JsonValue) -> Vec<&'static str> {
     let mut fields = vec!["patchset_id", "tests_status"];
     for optional_field in ["recommended_action", "status_message"] {
         if patchset_ci_status_has_display_field(payload, optional_field) {

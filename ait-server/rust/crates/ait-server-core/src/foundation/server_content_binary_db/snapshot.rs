@@ -1,4 +1,7 @@
 use super::*;
+use crate::foundation::remote_actor_metadata::{
+    RemoteSnapshotActorCodec, RemoteSnapshotActorRecord,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServerBinarySnapshotRecord {
@@ -15,6 +18,7 @@ pub struct ServerBinarySnapshotRecord {
     pub file_count: u32,
     pub total_bytes: u64,
     pub created_at_s: u64,
+    pub actor_index_plus1: u32,
 }
 
 impl ServerBinarySnapshotRecord {
@@ -131,7 +135,11 @@ impl<const LAYOUT: u32> ServerBinarySnapshotCodec<LAYOUT> {
         BinaryFileId::new(
             SERVER_SNAPSHOT_BIN,
             LAYOUT,
-            SERVER_SNAPSHOT_RECORD_SIZE,
+            if LAYOUT == 1 {
+                LEGACY_SERVER_SNAPSHOT_RECORD_SIZE
+            } else {
+                SERVER_SNAPSHOT_RECORD_SIZE
+            },
             BinaryDbFileFamily::Content,
         )
     }
@@ -139,7 +147,7 @@ impl<const LAYOUT: u32> ServerBinarySnapshotCodec<LAYOUT> {
     pub fn payload_file() -> BinaryPayloadFileId {
         BinaryPayloadFileId::new(
             SERVER_SNAPSHOT_PAYLOAD_BIN,
-            LAYOUT,
+            SERVER_CONTENT_BINARY_LAYOUT_ID,
             BinaryDbFileFamily::Content,
         )
     }
@@ -147,7 +155,7 @@ impl<const LAYOUT: u32> ServerBinarySnapshotCodec<LAYOUT> {
     pub fn id_index() -> BinaryIndexId {
         BinaryIndexId::new_fixed(
             SERVER_SNAPSHOT_ID_IDX,
-            LAYOUT,
+            SERVER_CONTENT_BINARY_LAYOUT_ID,
             8,
             true,
             BinaryDbFileFamily::Content,
@@ -155,9 +163,26 @@ impl<const LAYOUT: u32> ServerBinarySnapshotCodec<LAYOUT> {
     }
 
     pub fn encode_record(record: &ServerBinarySnapshotRecord) -> StoreResult<Vec<u8>> {
-        require_layout::<LAYOUT>("snapshot")?;
+        match LAYOUT {
+            1 if record.actor_index_plus1 == 0 => Self::encode_prefix(record),
+            2 => {
+                let prefix = Self::encode_prefix(record)?.try_into().unwrap();
+                Ok(RemoteSnapshotActorCodec::encode_record(
+                    &RemoteSnapshotActorRecord {
+                        prefix,
+                        actor_index_plus1: record.actor_index_plus1,
+                    },
+                ))
+            }
+            _ => Err(BinaryDbError::layout_mismatch(
+                "unsupported snapshot record layout or lossy legacy Actor encoding",
+            )),
+        }
+    }
+
+    fn encode_prefix(record: &ServerBinarySnapshotRecord) -> StoreResult<Vec<u8>> {
         validate_snapshot_record(record)?;
-        let mut out = Vec::with_capacity(SERVER_SNAPSHOT_RECORD_SIZE as usize);
+        let mut out = Vec::with_capacity(LEGACY_SERVER_SNAPSHOT_RECORD_SIZE as usize);
         out.push(record.snapshot_meta);
         out.push(record.history_flags);
         out.extend_from_slice(&record.payload_len.to_le_bytes());
@@ -173,20 +198,35 @@ impl<const LAYOUT: u32> ServerBinarySnapshotCodec<LAYOUT> {
         out.extend_from_slice(&record.created_at_s.to_le_bytes());
         require_len(
             &out,
-            SERVER_SNAPSHOT_RECORD_SIZE as usize,
+            LEGACY_SERVER_SNAPSHOT_RECORD_SIZE as usize,
             "ServerBinarySnapshotRecord",
         )?;
         Ok(out)
     }
 
     pub fn decode_record(raw: &[u8]) -> StoreResult<ServerBinarySnapshotRecord> {
-        require_layout::<LAYOUT>("snapshot")?;
+        match LAYOUT {
+            1 => Self::decode_prefix(raw),
+            2 => {
+                let wrapper = RemoteSnapshotActorCodec::decode_record(raw)?;
+                let mut record = Self::decode_prefix(&wrapper.prefix)?;
+                record.actor_index_plus1 = wrapper.actor_index_plus1;
+                Ok(record)
+            }
+            _ => Err(BinaryDbError::layout_mismatch(
+                "unsupported snapshot record layout",
+            )),
+        }
+    }
+
+    fn decode_prefix(raw: &[u8]) -> StoreResult<ServerBinarySnapshotRecord> {
         require_len(
             raw,
-            SERVER_SNAPSHOT_RECORD_SIZE as usize,
+            LEGACY_SERVER_SNAPSHOT_RECORD_SIZE as usize,
             "ServerBinarySnapshotRecord",
         )?;
         let record = ServerBinarySnapshotRecord {
+            actor_index_plus1: 0,
             snapshot_meta: raw[0],
             history_flags: raw[1],
             payload_len: u16::from_le_bytes(raw[2..4].try_into().unwrap()),
@@ -206,7 +246,7 @@ impl<const LAYOUT: u32> ServerBinarySnapshotCodec<LAYOUT> {
     }
 
     pub fn encode_payload(payload: &ServerBinarySnapshotPayload) -> StoreResult<Vec<u8>> {
-        require_layout::<LAYOUT>("snapshot")?;
+        require_snapshot_codec_layout::<LAYOUT>()?;
         let message = payload.message.as_deref().unwrap_or("").as_bytes();
         let message_len = u16::try_from(message.len())
             .map_err(|_| "snapshot message exceeds u16::MAX bytes".to_string())?;
@@ -224,7 +264,7 @@ impl<const LAYOUT: u32> ServerBinarySnapshotCodec<LAYOUT> {
         raw: &[u8],
         has_line_name_payload: bool,
     ) -> StoreResult<ServerBinarySnapshotPayload> {
-        require_layout::<LAYOUT>("snapshot")?;
+        require_snapshot_codec_layout::<LAYOUT>()?;
         if raw.len() < 2 {
             return Err("snapshot payload is truncated".into());
         }
@@ -253,6 +293,16 @@ impl<const LAYOUT: u32> ServerBinarySnapshotCodec<LAYOUT> {
     }
 }
 
+fn require_snapshot_codec_layout<const LAYOUT: u32>() -> StoreResult<()> {
+    if matches!(LAYOUT, 1 | 2) {
+        Ok(())
+    } else {
+        Err(BinaryDbError::layout_mismatch(
+            "unsupported snapshot record layout",
+        ))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ServerBinaryDbSnapshotStore<B, const WRITE_LAYOUT: u32>
 where
@@ -276,7 +326,7 @@ where
     ) -> StoreResult<Option<(u32, ServerBinarySnapshotRecord)>> {
         let Some(layout) = persisted_content_layout(
             read,
-            ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
+            ServerBinarySnapshotCodec::<2>::record_file(),
             "snapshot",
         )?
         else {
@@ -303,7 +353,7 @@ where
     ) -> StoreResult<ServerBinarySnapshotPayload> {
         let layout = persisted_content_layout(
             read,
-            ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
+            ServerBinarySnapshotCodec::<2>::record_file(),
             "snapshot",
         )?
         .ok_or_else(|| BinaryDbError::missing_data("canonical snapshot file is missing"))?;
@@ -327,7 +377,7 @@ where
     ) -> StoreResult<Vec<(u32, ServerBinarySnapshotRecord)>> {
         let Some(layout) = persisted_content_layout(
             read,
-            ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
+            ServerBinarySnapshotCodec::<2>::record_file(),
             "snapshot",
         )?
         else {
@@ -424,7 +474,7 @@ where
     ) -> StoreResult<String> {
         let layout = persisted_content_layout(
             read,
-            ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file(),
+            ServerBinarySnapshotCodec::<2>::record_file(),
             "snapshot",
         )?
         .ok_or_else(|| BinaryDbError::missing_data("canonical snapshot file is missing"))?;
@@ -521,17 +571,15 @@ where
     B: ServerRemoteBinaryDb,
 {
     let read = BinaryDbReadTxn::new(db);
-    let snapshot_file = ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file();
+    let snapshot_file = ServerBinarySnapshotCodec::<2>::record_file();
     let edge_file =
         ServerBinarySnapshotParentEdgeCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::record_file();
     let snapshot_count = read.record_count(snapshot_file.clone())?;
     let mut snapshots = Vec::with_capacity(snapshot_count as usize);
     for index in 0..snapshot_count {
-        snapshots.push(
-            ServerBinarySnapshotCodec::<SERVER_CONTENT_BINARY_LAYOUT_ID>::decode_record(
-                &read.read_record(snapshot_file.clone(), index)?,
-            )?,
-        );
+        snapshots.push(ServerBinarySnapshotCodec::<2>::decode_record(
+            &read.read_record(snapshot_file.clone(), index)?,
+        )?);
     }
     let mut parents = vec![Vec::<(u16, u32)>::new(); snapshot_count as usize];
     let edge_count = read.record_count(edge_file.clone())?;
@@ -660,7 +708,7 @@ where
         if ancestor_snapshot_index == descendant_snapshot_index {
             return Ok(true);
         }
-        let file = ServerBinarySnapshotCodec::<WRITE_LAYOUT>::record_file();
+        let file = ServerBinarySnapshotCodec::<2>::record_file();
         let edge_file = ServerBinarySnapshotParentEdgeCodec::<WRITE_LAYOUT>::record_file();
         let edge_count = write.record_count(edge_file.clone())?;
         let mut parents_by_child = std::collections::BTreeMap::<u32, Vec<(u16, u32)>>::new();
@@ -679,7 +727,7 @@ where
             if !seen.insert(cursor) {
                 continue;
             }
-            let record = ServerBinarySnapshotCodec::<WRITE_LAYOUT>::decode_record(
+            let record = ServerBinarySnapshotCodec::<2>::decode_record(
                 &write.read_record(file.clone(), cursor)?,
             )?;
             let parents = if record.has_parent_edges_authority() {
@@ -726,10 +774,10 @@ where
         F: BinaryDbFsyncPolicy,
     {
         let raw = write.db().read_record(
-            ServerBinarySnapshotCodec::<WRITE_LAYOUT>::record_file(),
+            ServerBinarySnapshotCodec::<2>::record_file(),
             snapshot_index,
         )?;
-        let record = ServerBinarySnapshotCodec::<WRITE_LAYOUT>::decode_record(&raw)?;
+        let record = ServerBinarySnapshotCodec::<2>::decode_record(&raw)?;
         Ok(server_snapshot_id_from_hash48(record.snapshot_hash48))
     }
 
@@ -794,7 +842,7 @@ where
         }
         validate_optional_record_link(
             tx,
-            ServerBinarySnapshotCodec::<WRITE_LAYOUT>::record_file(),
+            ServerBinarySnapshotCodec::<2>::record_file(),
             record.parent_snapshot_index_plus1,
             "parent snapshot",
         )?;
@@ -805,17 +853,16 @@ where
             "line",
         )?;
         validate_snapshot_line_name::<_, WRITE_LAYOUT>(tx, &record, payload)?;
-        let payload_bytes = ServerBinarySnapshotCodec::<WRITE_LAYOUT>::encode_payload(payload)?;
+        let payload_bytes = ServerBinarySnapshotCodec::<2>::encode_payload(payload)?;
         let range = tx.append_payload(
-            ServerBinarySnapshotCodec::<WRITE_LAYOUT>::payload_file(),
+            ServerBinarySnapshotCodec::<2>::payload_file(),
             &payload_bytes,
         )?;
         record.payload_offset = range.payload_offset;
         record.payload_len = u16::try_from(range.payload_len)
             .map_err(|_| "snapshot payload length exceeds u16::MAX".to_string())?;
         set_payload_flags(&mut record, payload);
-        let expected_index =
-            tx.record_count(ServerBinarySnapshotCodec::<WRITE_LAYOUT>::record_file())?;
+        let expected_index = tx.record_count(ServerBinarySnapshotCodec::<2>::record_file())?;
         record.snapshot_meta |= ServerBinarySnapshotRecord::META_PARENT_EDGES_AUTHORITY;
         if let Some(parent_snapshot_index) = record.parent_snapshot_index_plus1.checked_sub(1) {
             let edge = ServerBinarySnapshotParentEdgeRecord {
@@ -834,18 +881,15 @@ where
                     .join(SERVER_SNAPSHOT_PARENT_EDGE_BIN),
             )?;
         }
-        let raw = ServerBinarySnapshotCodec::<WRITE_LAYOUT>::encode_record(&record)?;
-        let index = tx.append_record(
-            ServerBinarySnapshotCodec::<WRITE_LAYOUT>::record_file(),
-            &raw,
-        )?;
+        let raw = ServerBinarySnapshotCodec::<2>::encode_record(&record)?;
+        let index = tx.append_record(ServerBinarySnapshotCodec::<2>::record_file(), &raw)?;
         if index != expected_index {
             return Err(BinaryDbError::corruption(format!(
                 "snapshot append index {index} disagrees with expected index {expected_index}"
             )));
         }
         tx.append_index_candidate(
-            ServerBinarySnapshotCodec::<WRITE_LAYOUT>::id_index(),
+            ServerBinarySnapshotCodec::<2>::id_index(),
             &server_snapshot_id_index_key(snapshot_id)?,
             index,
         )?;

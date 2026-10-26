@@ -5,7 +5,7 @@ import importlib
 from types import ModuleType
 from typing import Any, Callable, Mapping
 
-from .contract import LANGUAGE_BINDING_CONTRACT
+from .contract import CHAT_RETIREMENT_MESSAGE, LANGUAGE_BINDING_CONTRACT
 from .errors import NativeProtocolError, NativeResolutionError
 
 
@@ -77,16 +77,13 @@ class NativeRuntime:
         )
 
     def agent_capabilities(self) -> dict[str, Any]:
-        return _object_payload(
-            self.call("ait_agent_worker_capabilities"),
-            "ait-agent-worker capabilities",
-        )
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def agent_management(self, request: Mapping[str, Any]) -> Any:
-        return self.call("ait_agent_management", dict(request))
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
     def agent_worker_transaction(self, request: Mapping[str, Any]) -> Any:
-        return self.call("ait_agent_worker_transaction", dict(request))
+        raise RuntimeError(CHAT_RETIREMENT_MESSAGE)
 
 
 def _object_payload(payload: Any, label: str) -> dict[str, Any]:

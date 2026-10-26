@@ -1,26 +1,33 @@
 #[test]
 fn native_patchset_namespace_supports_list_show_and_select() {
-    let (base_url, log, _state, handle) = spawn_fake_remote();
+    let (base_url, log, state, handle) = spawn_fake_remote();
     let (_temp, worktree) = init_worktree_repo(&base_url);
+    state.lock().unwrap().selected_patchset_id = Some("RT-1/P-01".into());
 
     let listed = json_output(&worktree, &["patchset", "list", "RT-1", "--json"]);
     let listed_rows = listed.as_array().unwrap();
-    assert_eq!(listed_rows[0]["patchset_id"].as_str(), Some("RP-1"));
+    assert_eq!(listed_rows[0]["patchset_id"].as_str(), Some("RT-1/P-01"));
     assert_eq!(listed_rows[0]["patchset_number"].as_i64(), Some(1));
 
-    let shown = json_output(&worktree, &["patchset", "show", "RP-1", "--json"]);
-    assert_eq!(shown["patchset_id"].as_str(), Some("RP-1"));
-    assert_eq!(shown["change_id"].as_str(), Some("RC-1"));
+    let shown = json_output(&worktree, &["patchset", "show", "RT-1/P-01", "--json"]);
+    assert_eq!(shown["patchset_id"].as_str(), Some("RT-1/P-01"));
+    assert!(shown["change_id"].is_null());
     assert_eq!(shown["summary"].as_str(), Some("Native Rust patchset"));
 
-    let selected = json_output(&worktree, &["patchset", "select", "RP-1", "--json"]);
-    assert_eq!(selected["change_id"].as_str(), Some("RC-1"));
-    assert_eq!(selected["selected_patchset_id"].as_str(), Some("RP-1"));
+    let selected = json_output(&worktree, &["patchset", "select", "RT-1/P-01", "--json"]);
+    assert!(selected["change_id"].is_null());
+    assert_eq!(selected["current_patchset_id"].as_str(), Some("RT-1/P-01"));
+
+    assert_eq!(selected["selection_changed"], false);
+    assert_eq!(
+        state.lock().unwrap().selected_patchset_id.as_deref(),
+        Some("RT-1/P-01")
+    );
 
     for args in [
         &["patchset", "list", "RT-1"][..],
-        &["patchset", "show", "RP-1"][..],
-        &["patchset", "select", "RP-1"][..],
+        &["patchset", "show", "RT-1/P-01"][..],
+        &["patchset", "select", "RT-1/P-01"][..],
     ] {
         let output = command_output_with_env(&worktree, args, &[]);
         assert!(
@@ -30,7 +37,7 @@ fn native_patchset_namespace_supports_list_show_and_select() {
             String::from_utf8_lossy(&output.stderr)
         );
         let human = String::from_utf8_lossy(&output.stdout);
-        assert!(human.contains("RP-1"), "stdout:\n{human}");
+        assert!(human.contains("RT-1/P-01"), "stdout:\n{human}");
         assert!(!human.contains("change_id"), "stdout:\n{human}");
         assert!(!human.contains("RC-1"), "stdout:\n{human}");
     }
@@ -38,12 +45,12 @@ fn native_patchset_namespace_supports_list_show_and_select() {
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
     assert!(logged.iter().any(|row| row.method == "GET"
-        && row.url == "/v1/native/repository-authorities/7/changes/RC-1/patchsets"));
+        && row.url == "/v1/native/repository-authorities/7/changes/RT-1/patchsets"));
     assert!(logged.iter().any(|row| row.method == "GET"
-        && row.url == "/v1/native/repository-authorities/7/patchsets/RP-1"));
+        && row.url == "/v1/native/repository-authorities/7/patchsets/RT-1%2FP-01"));
     assert!(logged.iter().any(|row| row.method == "POST"
-        && row.url == "/v1/native/repository-authorities/7/changes/RC-1:selectPatchset"
-        && row.body.contains("\"patchset_id\":\"RP-1\"")));
+        && row.url == "/v1/native/repository-authorities/7/changes/RT-1:selectPatchset"
+        && row.body.contains("\"patchset_id\":\"RT-1/P-01\"")));
 }
 
 #[test]
@@ -67,20 +74,30 @@ fn native_change_namespace_supports_local_and_remote_scopes() {
         ],
     );
     assert_eq!(local_started["task_id"].as_str(), Some("LT-0001"));
-    assert_eq!(local_started["change"]["change_id"].as_str(), Some("C-01"));
-    assert_eq!(
-        local_started["change"]["publication_state"].as_str(),
-        Some("local_draft")
+    assert!(local_started["change"].is_null());
+    let worktree = PathBuf::from(local_started["worktree"]["path"].as_str().unwrap());
+    let revision = create_local_revision_fixture(
+        &worktree,
+        "LT-0001",
+        "Revise captured local namespace candidate",
     );
+    assert_eq!(revision["change_id"], "C-01");
+    assert_eq!(revision["publication_state"], "local_draft");
     let local_show = json_output(root, &["change", "show", "C-01", "--local", "--json"]);
     assert_eq!(local_show["change_id"].as_str(), Some("C-01"));
     assert_eq!(local_show["task_id"].as_str(), Some("LT-0001"));
     assert!(log.lock().unwrap().is_empty());
 
-    let remote_show = json_output(root, &["change", "show", "RC-1", "--json"]);
+    let remote_show = json_output(
+        root,
+        &["change", "show", "RC-1", "--remote", "origin", "--json"],
+    );
     assert_eq!(remote_show["change_id"].as_str(), Some("RC-1"));
 
-    let remote_closed = json_output(root, &["change", "close", "RC-1", "--json"]);
+    let remote_closed = json_output(
+        root,
+        &["change", "close", "RC-1", "--remote", "origin", "--json"],
+    );
     assert_eq!(remote_closed["change_id"].as_str(), Some("RC-1"));
     assert_eq!(remote_closed["status"].as_str(), Some("archived"));
 
@@ -99,6 +116,7 @@ fn native_change_namespace_supports_local_and_remote_scopes() {
 fn native_change_namespace_supports_revert_and_replay() {
     let (base_url, _log, state, handle) = spawn_fake_remote();
     let (_repo, worktree) = init_worktree_repo(&base_url);
+    use_published_revision_fixture(&worktree, &state);
     state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
 
     let snapshot = checkpoint_bound_worktree_fixture(&worktree, "change checkpoint");
@@ -109,9 +127,16 @@ fn native_change_namespace_supports_revert_and_replay() {
 
     let reverted = json_output(
         &worktree,
-        &["change", "revert", "RC-1", "--remote", "origin", "--json"],
+        &[
+            "change",
+            "revert",
+            "RT-1/C-01",
+            "--remote",
+            "origin",
+            "--json",
+        ],
     );
-    assert_eq!(reverted["change_id"].as_str(), Some("RC-1"));
+    assert_eq!(reverted["change_id"].as_str(), Some("C-01"));
     assert_eq!(
         reverted["latest_change_snapshot_id"].as_str(),
         Some(snapshot_id.as_str())
@@ -127,7 +152,7 @@ fn native_change_namespace_supports_revert_and_replay() {
         &[
             "change",
             "replay",
-            "RC-1",
+            "RT-1/C-01",
             "--onto",
             "feature/rt-1",
             "--remote",
@@ -136,7 +161,7 @@ fn native_change_namespace_supports_revert_and_replay() {
             "--json",
         ],
     );
-    assert_eq!(replayed["change_id"].as_str(), Some("RC-1"));
+    assert_eq!(replayed["change_id"].as_str(), Some("C-01"));
     assert_eq!(
         replayed["latest_change_snapshot_id"].as_str(),
         Some(snapshot_id.as_str())
@@ -555,14 +580,7 @@ fn task_finish_creates_one_final_snapshot_for_dirty_local_work_and_reuses_it_on_
 
     let retried = json_output(
         root,
-        &[
-            "task",
-            "finish",
-            "LT-0001/C-01",
-            "--local",
-            "--json",
-            "--full",
-        ],
+        &["task", "finish", "LT-0001", "--local", "--json", "--full"],
     );
     assert_eq!(retried["execution_status"].as_str(), Some("already_landed"));
     assert_eq!(
@@ -657,7 +675,12 @@ fn task_finish_retry_after_post_snapshot_failure_does_not_duplicate_snapshot() {
         .output()
         .unwrap();
     assert!(!first.status.success());
-    assert!(String::from_utf8_lossy(&first.stderr).contains("does not descend"));
+    assert!(
+        String::from_utf8_lossy(&first.stderr)
+            .contains("Finish candidate does not preserve the expected target history"),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
 
     let after_first_count = json_output(&worktree, &["snapshot", "list", "--json"])
         .as_array()
@@ -677,7 +700,7 @@ fn task_finish_retry_after_post_snapshot_failure_does_not_duplicate_snapshot() {
         .args([
             "task",
             "finish",
-            "LT-0001/C-01",
+            "LT-0001",
             "--message",
             "Snapshot before injected Line failure",
             "--local",
@@ -687,7 +710,8 @@ fn task_finish_retry_after_post_snapshot_failure_does_not_duplicate_snapshot() {
         .output()
         .unwrap();
     assert!(!second.status.success());
-    assert!(String::from_utf8_lossy(&second.stderr).contains("does not descend"));
+    assert!(String::from_utf8_lossy(&second.stderr)
+        .contains("Finish candidate does not preserve the expected target history"));
     let after_retry_count = json_output(&worktree, &["snapshot", "list", "--json"])
         .as_array()
         .unwrap()
@@ -751,8 +775,9 @@ fn native_first_task_start_captures_the_existing_workspace_as_its_base() {
         payload["worktree"]["head_snapshot_id"],
         main["head_snapshot_id"]
     );
+    assert!(payload["change"].is_null());
     assert_eq!(
-        payload["change"]["fork_snapshot_id"],
+        payload["worktree"]["fork_snapshot_id"],
         main["head_snapshot_id"]
     );
     let baseline_id = main["head_snapshot_id"].as_str().unwrap();
@@ -789,17 +814,17 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
             "--title",
             "Bootstrap local workflow",
             "--intent",
-            "create draft task and change together",
+            "create the initial Task, then explicit revisions",
             "--json",
         ],
     );
 
     assert_eq!(payload["task_id"].as_str(), Some("LT-0001"));
     assert_eq!(payload["publication_state"].as_str(), Some("local_draft"));
-    assert_eq!(payload["change"]["change_id"].as_str(), Some("C-01"));
+    assert!(payload["change"].is_null());
     assert_eq!(
-        payload["change"]["publication_state"].as_str(),
-        Some("local_draft")
+        json_output(root, &["change", "list", "--local", "--json"]),
+        json!([])
     );
     assert_eq!(payload["worktree"]["exists"].as_bool(), Some(true));
     assert!(root.join(".ait/worktrees/lt-0001.json").exists());
@@ -817,6 +842,9 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
     let task = json_output(root, &["task", "show", "LT-0001", "--local", "--json"]);
     assert_eq!(task["task_id"].as_str(), Some("LT-0001"));
     assert_eq!(task["status"].as_str(), Some("active"));
+    let revision =
+        create_local_revision_fixture(&worktree_path, "LT-0001", "Revise first Task candidate");
+    assert_eq!(revision["change_ref"], "LT-0001/C-01");
     let change = json_output(root, &["change", "show", "C-01", "--local", "--json"]);
     assert_eq!(change["change_id"].as_str(), Some("C-01"));
     assert_eq!(change["status"].as_str(), Some("draft"));
@@ -835,11 +863,12 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
         ],
     );
     assert_eq!(second["task_id"].as_str(), Some("LT-0002"));
-    assert_eq!(second["change"]["change_id"].as_str(), Some("C-01"));
-    assert_eq!(
-        second["change"]["change_ref"].as_str(),
-        Some("LT-0002/C-01")
-    );
+    assert!(second["change"].is_null());
+    let second_worktree = PathBuf::from(second["worktree"]["path"].as_str().unwrap());
+    let second_revision =
+        create_local_revision_fixture(&second_worktree, "LT-0002", "Revise second Task candidate");
+    assert_eq!(second_revision["change_id"], "C-01");
+    assert_eq!(second_revision["change_ref"], "LT-0002/C-01");
 
     let ambiguous = cargo_bin()
         .current_dir(root)
@@ -864,7 +893,7 @@ fn native_task_start_local_scope_creates_authoritative_rows_and_worktree() {
         audit["audit_source"]["remote_task_missing"].as_bool(),
         Some(false)
     );
-    assert_eq!(audit["workflow"]["state"].as_str(), Some("in_progress"));
+    assert_eq!(audit["workflow"]["state"].as_str(), Some("task_working"));
     assert_eq!(
         audit["changes"][0]["change"]["change_ref"].as_str(),
         Some("LT-0002/C-01")
@@ -1046,8 +1075,11 @@ fn native_task_start_from_emits_one_json_document_and_compact_text_output() {
     assert!(audit_stdout.contains(compact_task_id));
     assert!(!audit_stdout.contains("C-01"));
     assert!(audit_stdout.contains("target: main"));
-    let audit_json = json_output(root, &["task", "audit", compact_task_id, "--local", "--json"]);
-    assert_eq!(audit_json["changes"][0]["change"]["change_id"], "C-01");
+    let audit_json = json_output(
+        root,
+        &["task", "audit", compact_task_id, "--local", "--json"],
+    );
+    assert_eq!(audit_json["changes"], json!([]));
     assert!(!audit_stdout.contains("{\"archived_at\""));
 
     let shown = cargo_bin()
@@ -1109,10 +1141,12 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         &[
             "task",
             "start",
+            "--remote",
+            "origin",
             "--from",
             "docs/sprints/atomic-start.md#atomic-start/implement",
             "--intent",
-            "Publish the Plan head and create Task plus Change in one mutation",
+            "Publish the Plan head and create the initial Task in one mutation",
             "--edit-root",
             explicit_root.to_str().unwrap(),
             "--json",
@@ -1125,9 +1159,9 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         payload["worktree"]["path"].as_str(),
         Some(explicit_root.to_string_lossy().as_ref())
     );
-    assert_eq!(payload["change"]["change_id"], "C-01");
+    assert!(payload["change"].is_null());
     assert_eq!(
-        payload["change"]["fork_snapshot_id"].as_str(),
+        payload["worktree"]["fork_snapshot_id"].as_str(),
         Some(remote_snapshot_id.as_str()),
     );
     assert_eq!(local_line_head(root, "main"), local_head_before);
@@ -1138,7 +1172,7 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
     );
     assert_eq!(
         payload["plan_source"]["transport_contract"],
-        "task-start-atomic/v1"
+        "task-start-atomic/v2"
     );
     assert!(payload["phase_timings_ms"]["atomic_remote_start"]
         .as_f64()
@@ -1152,20 +1186,19 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         &[
             "task",
             "start",
+            "--remote",
+            "origin",
             "--from",
             "docs/sprints/atomic-start.md#atomic-start/implement",
             "--intent",
-            "Publish the Plan head and create Task plus Change in one mutation",
+            "Publish the Plan head and create the initial Task in one mutation",
             "--edit-root",
             explicit_root.to_str().unwrap(),
             "--json",
         ],
     );
     assert_eq!(replay["task_id"], payload["task_id"]);
-    assert_eq!(
-        replay["change"]["change_id"],
-        payload["change"]["change_id"]
-    );
+    assert!(replay["change"].is_null());
     assert_eq!(
         replay["worktree"]["open_path"],
         payload["worktree"]["open_path"]
@@ -1183,10 +1216,12 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         &[
             "task",
             "start",
+            "--remote",
+            "origin",
             "--from",
             "docs/sprints/atomic-start.md#atomic-start/implement",
             "--intent",
-            "Publish the Plan head and create Task plus Change in one mutation",
+            "Publish the Plan head and create the initial Task in one mutation",
             "--edit-root",
             different_root.to_str().unwrap(),
             "--json",
@@ -1209,10 +1244,10 @@ fn native_remote_task_start_from_uses_one_atomic_mutation_and_no_legacy_posts() 
         .collect::<Vec<_>>();
     assert_eq!(atomic.len(), 2);
     let atomic_body: JsonValue = parse_json(&atomic[0].body);
-    assert_eq!(atomic_body["contract"], "task-start-atomic/v1");
+    assert_eq!(atomic_body["contract"], "task-start-atomic/v2");
     assert_eq!(atomic_body["plan"]["action"], "create");
     assert!(atomic_body["task"].get("plan_id").is_none());
-    assert!(atomic_body["change"].get("task_id").is_none());
+    assert!(atomic_body["change"].is_null());
     let replay_body: JsonValue = parse_json(&atomic[1].body);
     assert_eq!(replay_body["plan"]["action"], "existing");
     assert!(!logged.iter().any(|row| {
@@ -1265,18 +1300,21 @@ fn native_remote_task_start_from_seeds_local_main_before_atomic_task_change() {
         &[
             "task",
             "start",
+            "--remote",
+            "origin",
             "--from",
             "docs/sprints/atomic-empty-start.md#atomic-empty-start/implement",
             "--intent",
-            "Seed the null remote Line from local main before atomic Task and Change creation",
+            "Seed the null remote Line from local main before atomic initial Task creation",
             "--json",
         ],
     );
 
-    let seed_snapshot_id = payload["change"]["fork_snapshot_id"]
+    let seed_snapshot_id = payload["worktree"]["fork_snapshot_id"]
         .as_str()
-        .expect("atomic Change must fork from the local seed");
+        .expect("atomic Task worktree must fork from the local seed");
     assert_eq!(payload["task_id"], "RT-ATOMIC");
+    assert!(payload["change"].is_null());
     assert_eq!(Some(seed_snapshot_id), local_head_before.as_deref());
     assert_eq!(
         payload["worktree"]["fork_snapshot_id"].as_str(),
@@ -1382,6 +1420,8 @@ fn native_remote_task_start_attaches_task_change_only_to_final_plan_revision() {
         &[
             "task",
             "start",
+            "--remote",
+            "origin",
             "--from",
             "docs/sprints/atomic-revise.md#atomic-revise/implement",
             "--intent",
@@ -1450,6 +1490,8 @@ fn native_remote_task_start_atomic_failure_never_falls_back_to_legacy_posts() {
         .args([
             "task",
             "start",
+            "--remote",
+            "origin",
             "--from",
             "docs/sprints/atomic-failure.md#atomic-failure/implement",
             "--intent",
@@ -1497,6 +1539,8 @@ fn native_task_start_uses_remote_task_payload_contract() {
         &[
             "task",
             "start",
+            "--remote",
+            "origin",
             "--title",
             "Bootstrap remote workflow",
             "--intent",
@@ -1518,7 +1562,6 @@ fn native_task_start_uses_remote_task_payload_contract() {
         payload_keys,
         vec![
             "automatic_reconciliation",
-            "change",
             "intent",
             "phase_timings_ms",
             "plan_backed_markdown",
@@ -1739,6 +1782,8 @@ fn native_task_start_uses_remote_base_when_local_line_is_ahead() {
         &[
             "task",
             "start",
+            "--remote",
+            "origin",
             "--title",
             "Use authoritative remote base",
             "--intent",
@@ -1749,7 +1794,7 @@ fn native_task_start_uses_remote_base_when_local_line_is_ahead() {
 
     assert_eq!(payload["task_id"].as_str(), Some("RT-REMOTE"));
     assert_eq!(
-        payload["change"]["fork_snapshot_id"].as_str(),
+        payload["worktree"]["fork_snapshot_id"].as_str(),
         Some(FIXTURE_BASE_SNAPSHOT_ID)
     );
     assert_eq!(
@@ -1773,16 +1818,10 @@ fn native_task_start_uses_remote_base_when_local_line_is_ahead() {
     assert!(logged
         .iter()
         .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks"));
-    let change_create = logged
-        .iter()
-        .find(|row| {
-            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
-        })
-        .unwrap();
-    assert_eq!(
-        parse_json(&change_create.body)["fork_snapshot_id"].as_str(),
-        Some(FIXTURE_BASE_SNAPSHOT_ID)
-    );
+    assert!(payload["change"].is_null());
+    assert!(!logged.iter().any(
+        |row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
+    ));
 }
 
 #[test]
@@ -1810,6 +1849,8 @@ fn native_task_start_uses_remote_base_when_remote_line_is_ahead() {
         &[
             "task",
             "start",
+            "--remote",
+            "origin",
             "--title",
             "Use imported remote base",
             "--intent",
@@ -1820,7 +1861,7 @@ fn native_task_start_uses_remote_base_when_remote_line_is_ahead() {
 
     assert_eq!(payload["task_id"].as_str(), Some("RT-REMOTE"));
     assert_eq!(
-        payload["change"]["fork_snapshot_id"].as_str(),
+        payload["worktree"]["fork_snapshot_id"].as_str(),
         Some(remote_snapshot_id.as_str())
     );
     assert_eq!(
@@ -1845,16 +1886,10 @@ fn native_task_start_uses_remote_base_when_remote_line_is_ahead() {
     assert!(logged
         .iter()
         .any(|row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks"));
-    let change_create = logged
-        .iter()
-        .find(|row| {
-            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
-        })
-        .unwrap();
-    assert_eq!(
-        parse_json(&change_create.body)["fork_snapshot_id"].as_str(),
-        Some(remote_snapshot_id.as_str())
-    );
+    assert!(payload["change"].is_null());
+    assert!(!logged.iter().any(
+        |row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
+    ));
 }
 
 #[test]
@@ -1869,6 +1904,8 @@ fn native_task_start_seeds_a_null_remote_base_from_local_main() {
         &[
             "task",
             "start",
+            "--remote",
+            "origin",
             "--title",
             "Use existing local main",
             "--intent",
@@ -1877,9 +1914,9 @@ fn native_task_start_seeds_a_null_remote_base_from_local_main() {
         ],
     );
 
-    let seed_snapshot_id = payload["change"]["fork_snapshot_id"]
+    let seed_snapshot_id = payload["worktree"]["fork_snapshot_id"]
         .as_str()
-        .expect("remote Change must fork from the local seed");
+        .expect("remote Task worktree must fork from the local seed");
     assert_eq!(Some(seed_snapshot_id), local_head_before.as_deref());
     assert_eq!(
         payload["worktree"]["fork_snapshot_id"].as_str(),
@@ -1916,14 +1953,7 @@ fn native_task_start_seeds_a_null_remote_base_from_local_main() {
             row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks"
         })
         .expect("expected Task create");
-    let change_create_index = logged
-        .iter()
-        .position(|row| {
-            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
-        })
-        .expect("expected Change create");
     assert!(zstd_commit_index < task_create_index);
-    assert!(zstd_commit_index < change_create_index);
     let zstd_commit = parse_json(&logged[zstd_commit_index].body);
     assert_eq!(
         zstd_commit["line_update"]["line_name"].as_str(),
@@ -1945,16 +1975,10 @@ fn native_task_start_seeds_a_null_remote_base_from_local_main() {
     assert!(committed_seed["file_count"].as_i64().unwrap() > 0);
     assert!(committed_seed["total_bytes"].as_i64().unwrap() > 0);
     assert_eq!(committed_seed["parent_snapshot_ids"], json!([]));
-    let change_create = logged
-        .iter()
-        .find(|row| {
-            row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
-        })
-        .unwrap();
-    assert_eq!(
-        parse_json(&change_create.body)["fork_snapshot_id"].as_str(),
-        Some(seed_snapshot_id)
-    );
+    assert!(payload["change"].is_null());
+    assert!(!logged.iter().any(
+        |row| row.method == "POST" && row.url == "/v1/native/repository-authorities/7/changes"
+    ));
 }
 
 #[test]
@@ -2004,26 +2028,47 @@ fn native_task_start_from_existing_worktree_performs_zero_remote_mutations() {
 #[test]
 fn native_change_create_recovers_existing_remote_task_with_contextual_id() {
     let (base_url, log, state, handle) = spawn_fake_remote();
-    let temp = init_repo(&base_url);
-    let root = temp.path();
+    let (temp, worktree) = init_worktree_repo(&base_url);
+    let _root = temp.path();
+    {
+        let mut state = state.lock().unwrap();
+        state.selected_patchset_id = Some("RT-1/P-01".into());
+        state.selected_patchset_revision_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.into());
+        state.change_rows_override = Some(Vec::new());
+    }
+    json_output(
+        &worktree,
+        &[
+            "worktree",
+            "restore",
+            "--snapshot",
+            FIXTURE_BASE_SNAPSHOT_ID,
+            "--force",
+            "--json",
+        ],
+    );
     state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
 
     let created = json_output(
-        root,
+        &worktree,
         &[
             "change",
             "create",
-            "RT-REMOTE",
+            "RT-1",
+            "--remote",
+            "origin",
             "--title",
-            "Recover remote task",
+            "Revise the exact remote candidate",
             "--base-line",
             "main",
+            "--fork-snapshot",
+            FIXTURE_BASE_SNAPSHOT_ID,
             "--json",
         ],
     );
     assert_eq!(created["change_id"], json!("C-01"));
-    assert_eq!(created["change_ref"], json!("RT-REMOTE/C-01"));
-    assert_eq!(created["task_id"], json!("RT-REMOTE"));
+    assert_eq!(created["change_ref"], json!("RT-1/C-01"));
+    assert_eq!(created["task_id"], json!("RT-1"));
     assert_eq!(created["base_line"], json!("main"));
 
     handle.join().unwrap();
@@ -2123,7 +2168,15 @@ fn native_task_namespace_reads_local_and_remote_scopes() {
         .keys()
         .cloned()
         .collect::<Vec<_>>();
-    assert_eq!(remote_show_keys, vec!["status", "task_id"]);
+    assert_eq!(
+        remote_show_keys,
+        vec![
+            "current_patchset_id",
+            "status",
+            "successful_land",
+            "task_id"
+        ]
+    );
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();

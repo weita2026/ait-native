@@ -16,12 +16,12 @@ struct HandshakeResponse {
 pub(super) async fn health(State(state): State<ServerState>) -> impl IntoResponse {
     (
         StatusCode::OK,
-        Json(json!({
+        Json(state.startup_progress.health_projection(json!({
             "ready": true,
             "authority_backend": "binary_v0",
             "repository_identity": "repository_index",
             "operational_capabilities": state.operational_binary.capabilities()["operational_capabilities"].clone(),
-        })),
+        }))),
     )
 }
 

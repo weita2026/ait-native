@@ -60,6 +60,7 @@ pub(in crate::primitives) fn workflow_sort_bound_worktree_rows(rows: &mut [JsonV
     rows.reverse();
 }
 
+#[cfg(test)]
 pub(in crate::primitives) fn workflow_find_bound_task_worktree(
     root_repo: &RepoRuntime,
     task_id: &str,
@@ -227,23 +228,86 @@ pub(in crate::primitives) fn workflow_bound_worktree_cleanup_after_local_land(
             "task_status": task_status,
         }));
     }
-    if change_status != "landed" {
+    if repo
+        .task_store()?
+        .local_task_receipt(task_id)
+        .map_err(|error| error.to_string())?
+        .is_none()
+    {
         return Ok(json!({
             "status": "skipped",
-            "reason": "change_not_landed",
+            "reason": "task_receipt_missing",
             "task_id": task_id,
             "change_status": change_status,
         }));
     }
     let root_repo = workflow_root_repo(repo)?;
-    let Some(bound_worktree) = workflow_find_bound_task_worktree(&root_repo, task_id)? else {
+    let mut registered = workflow_registered_worktree_metadata_rows(&root_repo)?
+        .into_iter()
+        .filter(|(_, metadata)| {
+            metadata_string(metadata, "bound_task_id").as_deref() == Some(task_id)
+                && metadata
+                    .get("auto_created_for_task")
+                    .and_then(JsonValue::as_bool)
+                    == Some(true)
+        });
+    let Some((worktree_name, metadata)) = registered.next() else {
         return Ok(json!({
             "status": "skipped",
             "reason": "no_bound_worktree",
             "task_id": task_id,
         }));
     };
-    let worktree_name = required_string_field(&bound_worktree, "name")?;
+    if registered.next().is_some() {
+        return Err(
+            "Task cleanup has multiple registered worktrees; preserve them and resolve ownership"
+                .into(),
+        );
+    }
+    let path = required_path_field(&JsonValue::Object(metadata), "path")?;
+    let marker = path.join(WORKTREE_CONFIG_NAME);
+    if !std::fs::symlink_metadata(&marker).is_ok_and(|metadata| metadata.file_type().is_file()) {
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_dir() => {
+                if std::fs::read_dir(&path)
+                    .map_err(|error| error.to_string())?
+                    .next()
+                    .transpose()
+                    .map_err(|error| error.to_string())?
+                    .is_some()
+                {
+                    return Err("Task cleanup is partially removed but contains files without its overlay; preserve them before recovery".into());
+                }
+                // Only an empty, exactly registered Task directory can recover
+                // after removal deleted the overlay but could not remove its root.
+                std::fs::remove_dir(&path).map_err(|error| error.to_string())?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => {
+                return Err(
+                    "Task cleanup path is aliased or unavailable; preserve it before recovery"
+                        .into(),
+                )
+            }
+        }
+    } else {
+        let worktree = discover_worktree_repo(&path)
+            .ok_or("Task cleanup cannot verify its registered worktree")?;
+        let binding =
+            current_worktree_metadata(&worktree)?.ok_or("Task cleanup has no worktree binding")?;
+        if binding.bound_task_id.as_deref() != Some(task_id)
+            || worktree
+                .authoritative_repo_root()
+                .canonicalize()
+                .map_err(|error| error.to_string())?
+                != root_repo
+                    .authoritative_repo_root()
+                    .canonicalize()
+                    .map_err(|error| error.to_string())?
+        {
+            return Err("Task cleanup worktree ownership changed after successful apply; preserve the new work".into());
+        }
+    }
     let removed = remove_one_worktree(&root_repo, &worktree_name, true, false)?;
     Ok(json!({
         "status": "removed",

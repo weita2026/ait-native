@@ -3,7 +3,7 @@ use super::*;
 #[derive(Clone, Debug)]
 pub(super) struct ServerPlanBinaryDbStore<
     D,
-    const WRITE_LAYOUT: u32 = SERVER_PLAN_BINARY_DB_LAYOUT_V1,
+    const WRITE_LAYOUT: u32 = SERVER_PLAN_BINARY_DB_LAYOUT_V2,
 > where
     D: ServerRemoteBinaryDb + Clone,
 {

@@ -368,7 +368,6 @@ pub struct AgentTokenRunManifest {
     pub project_document_loading: String,
     #[serde(default)]
     pub project_doc_max_bytes: usize,
-    pub workflow_mode: String,
     pub sprint_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sprint_card_path: Option<String>,
@@ -400,7 +399,6 @@ pub struct AgentTokenWorkflowVerification {
     pub contract: String,
     pub mode: AgentTokenMode,
     pub closed: bool,
-    pub workflow_mode: String,
     #[serde(default)]
     pub ait_edit_root_mode: crate::agent_token::AgentTokenAitEditRootMode,
     #[serde(default)]
@@ -1224,13 +1222,6 @@ fn validate_resume_protocol_revision(protocol_revision: &str) -> Result<(), Stri
         AGENT_TOKEN_VALID_OUTCOME_RESUMABLE_PROTOCOL_REVISION,
         crate::AGENT_TOKEN_LEGACY_RESUMABLE_PROTOCOL_REVISION
     ))
-}
-
-fn git_workflow_mode_label(mode: AgentTokenGitWorktreeMode) -> &'static str {
-    match mode {
-        AgentTokenGitWorktreeMode::AgentManaged => "git_local",
-        AgentTokenGitWorktreeMode::CodexAppEquivalentManaged => "codex_app_equivalent_managed",
-    }
 }
 
 fn run_manifest_execution_workspace_matches(
@@ -4011,12 +4002,6 @@ fn run_one(
             manifest.runtime.project_doc_max_bytes,
         ),
         project_doc_max_bytes: manifest.runtime.project_doc_max_bytes,
-        workflow_mode: match entry.mode {
-            AgentTokenMode::GitLinearSingleSession => {
-                git_workflow_mode_label(manifest.git_worktree_mode).to_string()
-            }
-            AgentTokenMode::AitLinearSingleSession => "solo_local".to_string(),
-        },
         sprint_mode: match entry.mode {
             AgentTokenMode::GitLinearSingleSession => "not_applicable".to_string(),
             AgentTokenMode::AitLinearSingleSession => manifest.ait_sprint_mode.as_str().to_string(),
@@ -4205,7 +4190,6 @@ fn run_one(
         git_version: versions.git.clone(),
         node_version: versions.node.clone(),
         browser_version: versions.browser.clone(),
-        workflow_mode: workflow.workflow_mode.clone(),
         ait_edit_root_mode: manifest.ait_edit_root_mode,
         git_worktree_mode: manifest.git_worktree_mode,
         sprint_mode: workflow.sprint_mode.clone(),
@@ -4262,9 +4246,6 @@ fn run_one(
         invalid_reasons.push("fixture digest linkage drifted".to_string());
     }
     if entry.mode == AgentTokenMode::AitLinearSingleSession {
-        if workflow.workflow_mode != "solo_local" {
-            invalid_reasons.push("AIT workflow mode is not solo_local".to_string());
-        }
         if workflow.sprint_mode != manifest.ait_sprint_mode.as_str() {
             invalid_reasons.push(format!(
                 "AIT sprint mode is not {}",
@@ -4475,7 +4456,7 @@ fn build_measured_prompt(
             AgentTokenMode::AitLinearSingleSession,
             AgentTokenAccountingProfile::FirstUseTotalCost,
         ) => format!(
-            "Use the local AIT repository through `{ait}`. Run `{ait} init`, then `{ait} config set --workflow-mode solo_local --sprint off --default-author-mode ai_only_experimental --default-model {model} --user-name benchmark-agent --user-email benchmark-agent@example.invalid --json`. Task start creates its internal baseline. Start exactly one unbound task with `{ait} task start --title ... --intent ... --local --json`, retain the returned `task_id`, and enter the returned physical `edit_root` using `next_action.command`. Edit and run project validation there; use `{ait} snapshot create <returned-task-id> --message ... --json` only for an intermediate checkpoint, then pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
+            "Use the local AIT repository through `{ait}`. Run `{ait} init`, then `{ait} config set --sprint off --default-author-mode ai_only_experimental --default-model {model} --user-name benchmark-agent --user-email benchmark-agent@example.invalid --json`. Task start creates its internal baseline. Start exactly one unbound task with `{ait} task start --title ... --intent ... --local --json`, retain the returned `task_id`, and enter the returned physical `edit_root` using `next_action.command`. Edit and run project validation there; use `{ait} snapshot create <returned-task-id> --message ... --json` only for an intermediate checkpoint, then pass that `task_id` directly to `{ait} task finish <returned-task-id> --message ... --local --json`. Local read-only inspection of this repository is neither required nor prohibited. Do not invoke `git` for any purpose, including after project validation. This candidate intentionally has no Git repository.",
             ait = manifest.runtime.ait_program.display(),
             model = manifest.model.model_id,
         ),
@@ -4928,8 +4909,6 @@ fn bootstrap_ait(
         &[
             "config",
             "set",
-            "--workflow-mode",
-            "solo_local",
             "--sprint",
             sprint_mode,
             "--task-review",
@@ -4956,8 +4935,6 @@ fn bootstrap_ait(
             &[
                 "config",
                 "set",
-                "--workflow-mode",
-                "solo_local",
                 "--sprint",
                 manifest.ait_sprint_mode.as_str(),
                 "--task-review",
@@ -5090,7 +5067,7 @@ fn bootstrap_ait(
         &["config", "show", "--json"],
         workspace,
     )?;
-    validate_solo_local_config(&config, manifest.ait_sprint_mode)?;
+    validate_local_config(&config, manifest.ait_sprint_mode)?;
     let worktree_add_dir = config
         .pointer("/task_worktree/ephemeral_root/value")
         .and_then(serde_json::Value::as_str)
@@ -7084,7 +7061,6 @@ fn verify_workflow(
                 contract: AGENT_TOKEN_WORKFLOW_VERIFICATION_CONTRACT.to_string(),
                 mode,
                 closed: reasons.is_empty(),
-                workflow_mode: git_workflow_mode_label(manifest.git_worktree_mode).to_string(),
                 ait_edit_root_mode: manifest.ait_edit_root_mode,
                 git_worktree_mode: manifest.git_worktree_mode,
                 sprint_mode: "not_applicable".to_string(),
@@ -7121,13 +7097,6 @@ fn verify_workflow(
             if let Err(error) = status.as_ref() {
                 reasons.push(error.clone());
             }
-            let workflow_mode = config
-                .as_ref()
-                .ok()
-                .and_then(|value| value.pointer("/workflow_mode/value"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown")
-                .to_string();
             let sprint_mode = config
                 .as_ref()
                 .ok()
@@ -7161,11 +7130,6 @@ fn verify_workflow(
                 .and_then(|value| value.get("current_line"))
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
-            if workflow_mode != "solo_local" {
-                reasons.push(format!(
-                    "AIT workflow_mode is {workflow_mode}, expected solo_local"
-                ));
-            }
             let expected_sprint_mode = manifest.ait_sprint_mode.as_str();
             if sprint_mode != expected_sprint_mode {
                 reasons.push(format!(
@@ -7224,7 +7188,6 @@ fn verify_workflow(
                 contract: AGENT_TOKEN_WORKFLOW_VERIFICATION_CONTRACT.to_string(),
                 mode,
                 closed: reasons.is_empty(),
-                workflow_mode,
                 ait_edit_root_mode: manifest.ait_edit_root_mode,
                 git_worktree_mode: manifest.git_worktree_mode,
                 sprint_mode,
@@ -7246,26 +7209,30 @@ fn verify_workflow(
     }
 }
 
-fn validate_solo_local_config(
+fn validate_local_config(
     config: &serde_json::Value,
     expected_sprint_mode: AgentTokenAitSprintMode,
 ) -> Result<(), String> {
-    let workflow = config
-        .pointer("/workflow_mode/value")
-        .and_then(serde_json::Value::as_str);
+    let local_scopes = [
+        "/workflow_default_scope/workflow/value",
+        "/workflow_default_scope/task/value",
+        "/workflow_default_scope/change/value",
+    ]
+    .into_iter()
+    .all(|path| config.pointer(path).and_then(serde_json::Value::as_str) == Some("local"));
     let sprint = config
         .pointer("/sprint/value")
         .and_then(serde_json::Value::as_str);
     let default_remote = config.get("default_remote");
     let server_url = config.pointer("/agent_runtime/server_url");
-    if workflow != Some("solo_local")
+    if !local_scopes
         || sprint != Some(expected_sprint_mode.as_str())
         || default_remote.is_some_and(|value| !value.is_null())
         || server_url.is_some_and(|value| !value.is_null())
     {
         return Err(
             format!(
-                "AIT bootstrap did not resolve to solo_local, sprint {}, null default_remote, and null server_url",
+                "AIT bootstrap did not resolve to local authority, sprint {}, null default_remote, and null server_url",
                 expected_sprint_mode.as_str()
             ),
         );
@@ -8339,12 +8306,6 @@ fn validate_agent_token_campaign_evidence_internal(
                     } else {
                         "workspace"
                     };
-                    let expected_workflow_mode = match run.mode {
-                        AgentTokenMode::GitLinearSingleSession => {
-                            git_workflow_mode_label(manifest.git_worktree_mode)
-                        }
-                        AgentTokenMode::AitLinearSingleSession => "solo_local",
-                    };
                     if run_manifest.ait_edit_root_mode != manifest.ait_edit_root_mode
                         || run_manifest.git_worktree_mode != manifest.git_worktree_mode
                         || !run_manifest_execution_workspace_matches(
@@ -8352,7 +8313,6 @@ fn validate_agent_token_campaign_evidence_internal(
                             &run_manifest.execution_workspace,
                             expected_execution_workspace,
                         )
-                        || run_manifest.workflow_mode != expected_workflow_mode
                     {
                         errors.push(format!(
                             "run {} edit-root, Git-worktree ownership, or execution-root evidence differs",
@@ -8432,14 +8392,6 @@ fn validate_agent_token_campaign_evidence_internal(
                         run.run_id
                     ));
                 }
-                if run.mode == AgentTokenMode::GitLinearSingleSession
-                    && workflow.workflow_mode != git_workflow_mode_label(manifest.git_worktree_mode)
-                {
-                    errors.push(format!(
-                        "run {} Git workflow ownership label differs",
-                        run.run_id
-                    ));
-                }
                 if run.mode == AgentTokenMode::AitLinearSingleSession {
                     let expected_sprint_card = (manifest.ait_sprint_mode
                         == AgentTokenAitSprintMode::On)
@@ -8449,8 +8401,7 @@ fn validate_agent_token_campaign_evidence_internal(
                         .then(|| sprint_item_ref(&run.run_id));
                     let expected_closed = (manifest.ait_sprint_mode == AgentTokenAitSprintMode::On)
                         .then_some(!run.provider_refusal);
-                    if workflow.workflow_mode != "solo_local"
-                        || workflow.sprint_mode != manifest.ait_sprint_mode.as_str()
+                    if workflow.sprint_mode != manifest.ait_sprint_mode.as_str()
                         || workflow.sprint_card_path != expected_sprint_card
                         || workflow.sprint_item_ref != expected_sprint_item
                         || workflow.sprint_item_closed != expected_closed
@@ -8803,12 +8754,11 @@ fn validate_agent_token_campaign_evidence_internal(
                         ));
                     }
                     if run.mode == AgentTokenMode::AitLinearSingleSession
-                        && (environment.workflow_mode != "solo_local"
-                            || environment.sprint_mode != manifest.ait_sprint_mode.as_str()
+                        && (environment.sprint_mode != manifest.ait_sprint_mode.as_str()
                             || environment.ait_server_connected)
                     {
                         errors.push(format!(
-                            "run {} environment violates solo_local/sprint-{}/no-server",
+                            "run {} environment violates local authority/sprint-{}/no-server",
                             run.run_id,
                             manifest.ait_sprint_mode.as_str()
                         ));
@@ -8824,6 +8774,56 @@ fn validate_agent_token_campaign_evidence_internal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn local_bootstrap_config(sprint: AgentTokenAitSprintMode) -> serde_json::Value {
+        serde_json::json!({
+            "workflow_default_scope": {
+                "workflow": {"value": "local", "source": "core_route"},
+                "task": {"value": "local", "source": "core_route"},
+                "change": {"value": "local", "source": "core_route"}
+            },
+            "sprint": {"value": sprint.as_str(), "source": "repo_config"},
+            "default_remote": null,
+            "agent_runtime": {"server_url": null}
+        })
+    }
+
+    #[test]
+    fn local_config_accepts_current_config_show_scope_shape() {
+        for sprint in [AgentTokenAitSprintMode::Off, AgentTokenAitSprintMode::On] {
+            assert!(validate_local_config(&local_bootstrap_config(sprint), sprint).is_ok());
+        }
+    }
+
+    #[test]
+    fn local_config_requires_each_core_route_to_be_local() {
+        for route in ["workflow", "task", "change"] {
+            let mut config = local_bootstrap_config(AgentTokenAitSprintMode::Off);
+            config["workflow_default_scope"][route]["value"] = serde_json::json!("remote");
+            assert!(validate_local_config(&config, AgentTokenAitSprintMode::Off).is_err());
+            config["workflow_default_scope"]
+                .as_object_mut()
+                .unwrap()
+                .remove(route);
+            assert!(validate_local_config(&config, AgentTokenAitSprintMode::Off).is_err());
+        }
+        let mut legacy = local_bootstrap_config(AgentTokenAitSprintMode::Off);
+        legacy["workflow_default_scope"] = serde_json::json!({"value": "local"});
+        assert!(validate_local_config(&legacy, AgentTokenAitSprintMode::Off).is_err());
+    }
+
+    #[test]
+    fn local_config_preserves_sprint_and_remote_authority_guards() {
+        let config = local_bootstrap_config(AgentTokenAitSprintMode::Off);
+        assert!(validate_local_config(&config, AgentTokenAitSprintMode::On).is_err());
+        for path in ["/default_remote", "/agent_runtime/server_url"] {
+            let mut configured_remote = config.clone();
+            *configured_remote.pointer_mut(path).unwrap() = serde_json::json!("remote");
+            assert!(
+                validate_local_config(&configured_remote, AgentTokenAitSprintMode::Off).is_err()
+            );
+        }
+    }
 
     fn test_manifest() -> AgentTokenCampaignManifest {
         AgentTokenCampaignManifest {
@@ -10246,7 +10246,7 @@ mod tests {
             Some(Path::new("/benchmark/ait-task-worktree")),
         );
         assert!(first_use_prompt.contains("ait init"));
-        assert!(first_use_prompt.contains("--workflow-mode solo_local --sprint off"));
+        assert!(first_use_prompt.contains("--sprint off"));
         assert!(
             first_use_prompt.contains("snapshot create <returned-task-id> --message ... --json")
         );
@@ -10645,7 +10645,6 @@ mod tests {
         )
         .unwrap();
         assert!(verification.closed, "{:?}", verification.reasons);
-        assert_eq!(verification.workflow_mode, "codex_app_equivalent_managed");
     }
 
     #[test]

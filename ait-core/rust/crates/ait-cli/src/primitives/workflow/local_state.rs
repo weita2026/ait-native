@@ -1,7 +1,11 @@
 use super::*;
+#[cfg(test)]
 use ait_core::task_workflow_store::{
-    close_task_with_task_workflow_task_store, get_change_with_task_workflow_change_store,
-    get_task_with_task_workflow_task_store, land_change_with_task_workflow_change_store,
+    close_task_with_task_workflow_task_store, land_change_with_task_workflow_change_store,
+    TaskWorkflowChangeLander,
+};
+use ait_core::task_workflow_store::{
+    get_change_with_task_workflow_change_store, get_task_with_task_workflow_task_store,
     list_changes_with_task_workflow_change_store,
 };
 
@@ -25,6 +29,7 @@ where
     list_changes_with_task_workflow_change_store(change_store).map_err(|err| err.to_string())
 }
 
+#[cfg(test)]
 pub(in crate::primitives) fn workflow_local_change_land_with_change_store<S>(
     change_store: &S,
     change_id: &str,
@@ -55,6 +60,7 @@ where
     get_task_with_task_workflow_task_store(task_store, task_id).map_err(|err| err.to_string())
 }
 
+#[cfg(test)]
 pub(in crate::primitives) fn workflow_local_task_close_with_task_store<S>(
     task_store: &S,
     task_id: &str,
@@ -65,65 +71,6 @@ where
 {
     close_task_with_task_workflow_task_store(task_store, task_id, status)
         .map_err(|err| err.to_string())
-}
-
-pub(in crate::primitives) fn workflow_landing_summary_landed_snapshot_id(
-    landing_summary: Option<&JsonValue>,
-) -> Option<String> {
-    landing_summary
-        .and_then(JsonValue::as_object)
-        .and_then(|summary| summary.get("result"))
-        .and_then(JsonValue::as_object)
-        .and_then(|result| workflow_json_text(result.get("landed_snapshot_id")))
-}
-
-pub(in crate::primitives) fn workflow_landing_summary_effectively_landed(
-    landing_summary: Option<&JsonValue>,
-) -> bool {
-    let Some(summary) = landing_summary.and_then(JsonValue::as_object) else {
-        return false;
-    };
-    let status = workflow_json_text(summary.get("status"))
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    matches!(
-        status.as_str(),
-        "succeeded" | "landed" | "complete" | "completed"
-    ) && workflow_landing_summary_landed_snapshot_id(landing_summary).is_some()
-}
-
-pub(in crate::primitives) fn workflow_change_effectively_landed(
-    change: &JsonValue,
-    landing_summary: Option<&JsonValue>,
-) -> bool {
-    string_field(change, "status").as_deref() == Some("landed")
-        || string_field(change, "landed_snapshot_id").is_some()
-        || string_field(change, "landed_at").is_some()
-        || workflow_landing_summary_effectively_landed(landing_summary)
-}
-
-pub(in crate::primitives) fn workflow_project_landed_change(
-    change: &JsonValue,
-    landing_summary: Option<&JsonValue>,
-) -> JsonValue {
-    let mut payload = change.clone();
-    if let Some(object) = payload.as_object_mut() {
-        object.insert(
-            "status".to_string(),
-            JsonValue::String("landed".to_string()),
-        );
-        if !object.contains_key("landed_snapshot_id") {
-            if let Some(landed_snapshot_id) =
-                workflow_landing_summary_landed_snapshot_id(landing_summary)
-            {
-                object.insert(
-                    "landed_snapshot_id".to_string(),
-                    JsonValue::String(landed_snapshot_id),
-                );
-            }
-        }
-    }
-    payload
 }
 
 pub(in crate::primitives) fn workflow_projected_land_state(

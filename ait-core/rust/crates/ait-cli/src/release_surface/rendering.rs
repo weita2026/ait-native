@@ -1,13 +1,22 @@
 use super::*;
 
 pub fn render_release_text(record: &JsonValue) {
+    println!("{}", format_release_text(record));
+}
+
+pub fn format_release_text(record: &JsonValue) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::new();
     if string_field(record, "command").as_deref() == Some("release native-source") {
-        println!(
+        writeln!(
+            &mut text,
             "ait release native-source {}",
             string_field(record, "release_id").unwrap_or_default()
-        );
+        )
+        .expect("String formatting");
         for field in ["status", "version", "snapshot_id", "profile", "target"] {
-            println!(
+            writeln!(
+                &mut text,
                 "{}: {}",
                 if field == "snapshot_id" {
                     "snapshot"
@@ -15,24 +24,33 @@ pub fn render_release_text(record: &JsonValue) {
                     field
                 },
                 string_field(record, field).unwrap_or_default()
-            );
+            )
+            .expect("String formatting");
         }
-        println!(
+        writeln!(
+            &mut text,
             "descriptor: {}",
             string_field(record, "descriptor_path").unwrap_or_default()
-        );
-        println!(
+        )
+        .expect("String formatting");
+        writeln!(
+            &mut text,
             "descriptor sha256: {}",
             string_field(record, "descriptor_sha256").unwrap_or_default()
-        );
-        return;
+        )
+        .expect("String formatting");
+        text.pop();
+        return text;
     }
-    println!(
+    writeln!(
+        &mut text,
         "ait release {}",
         string_field(record, "release_id").unwrap_or_default()
-    );
+    )
+    .expect("String formatting");
     for field in ["status", "version", "line", "snapshot_id", "profile"] {
-        println!(
+        writeln!(
+            &mut text,
             "{}: {}",
             if field == "snapshot_id" {
                 "snapshot"
@@ -40,13 +58,14 @@ pub fn render_release_text(record: &JsonValue) {
                 field
             },
             string_field(record, field).unwrap_or_default()
-        );
+        )
+        .expect("String formatting");
     }
     if let Some(summary) = release_check_summary_text(record) {
-        println!("checks: {summary}");
+        writeln!(&mut text, "checks: {summary}").expect("String formatting");
     }
     if let Some(summary) = release_artifact_summary_text(record) {
-        println!("artifacts: {summary}");
+        writeln!(&mut text, "artifacts: {summary}").expect("String formatting");
     }
     if string_field(record, "profile").as_deref() == Some(FAMILY_RELEASE_PROFILE) {
         let components = record
@@ -61,12 +80,18 @@ pub fn render_release_text(record: &JsonValue) {
             .and_then(JsonValue::as_array)
             .map(Vec::len)
             .unwrap_or_default();
-        println!(
+        writeln!(
+            &mut text,
             "family channel: {}; components: {components}; targets: {targets}",
             string_field(record, "channel").unwrap_or_default()
-        );
+        )
+        .expect("String formatting");
         if string_field(record, "status").as_deref() == Some("ready_for_protected_ci") {
-            println!("promotion: protected CI handoff only; registry writes: no");
+            writeln!(
+                &mut text,
+                "promotion: protected CI handoff only; registry writes: no"
+            )
+            .expect("String formatting");
         }
     } else if is_generic_release_record(record) {
         let adapter = record
@@ -80,9 +105,9 @@ pub fn render_release_text(record: &JsonValue) {
             .and_then(|value| value.get("declared_artifact_count"))
             .and_then(JsonValue::as_u64)
             .unwrap_or_default();
-        println!(
+        writeln!(&mut text,
             "release adapter: {GENERIC_RELEASE_PROFILE}; components: {components}; declared artifacts: {artifacts}"
-        );
+        ).expect("String formatting");
     } else if let Some(readiness) = record.get("native_distribution") {
         let built = readiness
             .get("built_count")
@@ -93,10 +118,12 @@ pub fn render_release_text(record: &JsonValue) {
             .and_then(JsonValue::as_u64)
             .unwrap_or_default();
         let ready = bool_field(readiness, "multi_ecosystem_ready");
-        println!(
+        writeln!(
+            &mut text,
             "native matrix: {built}/{configured} built; ready: {}",
             if ready { "yes" } else { "no" }
-        );
+        )
+        .expect("String formatting");
         let missing = readiness
             .get("missing_targets")
             .and_then(JsonValue::as_array)
@@ -105,7 +132,8 @@ pub fn render_release_text(record: &JsonValue) {
             .filter_map(JsonValue::as_str)
             .collect::<Vec<_>>();
         if !missing.is_empty() {
-            println!("native missing: {}", missing.join(", "));
+            writeln!(&mut text, "native missing: {}", missing.join(", "))
+                .expect("String formatting");
         }
     }
     if let Some(detail) = record
@@ -113,19 +141,21 @@ pub fn render_release_text(record: &JsonValue) {
         .and_then(|value| value.get("detail"))
         .and_then(JsonValue::as_str)
     {
-        println!("next: {detail}");
+        writeln!(&mut text, "next: {detail}").expect("String formatting");
     }
     let detail_rows = release_check_detail_rows(record);
     if !detail_rows.is_empty() {
-        println!();
-        println!("release check detail");
+        writeln!(&mut text).expect("String formatting");
+        writeln!(&mut text, "release check detail").expect("String formatting");
         for row in detail_rows {
-            println!(
+            writeln!(
+                &mut text,
                 "- {} [{}]: {}",
                 string_field(&row, "check_id").unwrap_or_default(),
                 string_field(&row, "status").unwrap_or_default(),
                 string_field(&row, "details").unwrap_or_default()
-            );
+            )
+            .expect("String formatting");
         }
     }
     if let Some(path) = record
@@ -134,9 +164,11 @@ pub fn render_release_text(record: &JsonValue) {
         .and_then(JsonValue::as_str)
     {
         if !path.trim().is_empty() {
-            println!("formula draft: {path}");
+            writeln!(&mut text, "formula draft: {path}").expect("String formatting");
         }
     }
+    text.pop();
+    text
 }
 
 pub(super) fn release_check_summary_text(record: &JsonValue) -> Option<String> {

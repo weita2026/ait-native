@@ -1,0 +1,41 @@
+{
+  "command": "external status",
+  "repo_name": "ait-core",
+  "manifest_path": "ait-external.toml",
+  "lockfile_path": "ait-external.lock",
+  "externals": [
+    {
+      "name": "ait-db",
+      "repo_name": "ait-db",
+      "repository_index": 11,
+      "snapshot": "SNP-DB-LINKED",
+      "materialize_to": ".ait-external/ait-db",
+      "state": "linked",
+      "linked": true,
+      "dirty": false,
+      "outdated": false,
+      "lock_drift": false,
+      "link_path": "../ait-db"
+    },
+    {
+      "name": "ait-codec",
+      "repo_name": "ait-codec",
+      "repository_index": 12,
+      "snapshot": "SNP-CODEC-RECURSIVE",
+      "materialize_to": ".ait-external/ait-db/.ait-external/ait-codec",
+      "state": "missing",
+      "linked": false,
+      "dirty": false,
+      "outdated": false,
+      "lock_drift": false,
+      "link_path": null
+    }
+  ],
+  "summary": {
+    "missing": 1,
+    "linked": 1,
+    "dirty": 0,
+    "outdated": 0,
+    "lock_drift": 0
+  }
+}

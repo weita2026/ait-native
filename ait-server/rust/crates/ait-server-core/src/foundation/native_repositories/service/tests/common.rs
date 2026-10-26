@@ -9,24 +9,36 @@ pub(super) fn native_line_binary_db(label: &str) -> FilesystemServerRemoteBinary
         fs::remove_dir_all(&root).expect("stale binary db root should remove");
     }
     fs::create_dir_all(&root).expect("current Binary DB fixture root should create");
-    for path in SERVER_BINARY_DB_BIN_SCHEMAS
+    for (path, layout_id) in SERVER_BINARY_DB_BIN_SCHEMAS
         .iter()
-        .map(|schema| schema.path)
+        .map(|schema| (schema.path, schema.layout_id))
         .chain(
             SERVER_BINARY_DB_INDEX_SCHEMAS
                 .iter()
-                .map(|schema| schema.path),
+                .map(|schema| (schema.path, schema.layout_id)),
         )
     {
-        fs::write(root.join(path), SERVER_BINARY_DB_LAYOUT_ID.to_le_bytes())
+        fs::write(root.join(path), layout_id.to_le_bytes())
             .expect("current Binary DB fixture file should initialize");
     }
-    FilesystemServerRemoteBinaryDb::test_fixture(
+    let db = FilesystemServerRemoteBinaryDb::test_fixture(
         RepoId::new("REPO-BINARY-LINE"),
         RepoName::new("repo-bin"),
         StorePath::from(root),
         StoreGeneration::new(1),
+    );
+    crate::foundation::workflow_binary_v0_adapter::BinaryDbServerWorkflowV0Store::new_frozen(
+        db.clone(),
     )
+    .resolve_user_actor(
+        &crate::foundation::workflow_binary_v0_adapter::UserActorIdentity::new(
+            "fixture",
+            "fixture@example.test",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    db
 }
 
 pub(super) fn seed_native_binary_snapshot(db: &FilesystemServerRemoteBinaryDb, snapshot_id: &str) {
@@ -36,6 +48,7 @@ pub(super) fn seed_native_binary_snapshot(db: &FilesystemServerRemoteBinaryDb, s
         .append_snapshot(
             snapshot_id,
             ServerBinarySnapshotRecord {
+                actor_index_plus1: 0,
                 snapshot_meta: 0,
                 history_flags: 0,
                 payload_len: 0,
@@ -63,6 +76,17 @@ pub(super) fn create_native_binary_repository<D>(service: &BinaryDbNativeReposit
 where
     D: ServerRemoteBinaryDb + BinaryDbIndexAppender + Clone + Send + Sync + 'static,
 {
+    crate::foundation::workflow_binary_v0_adapter::BinaryDbServerWorkflowV0Store::new_frozen(
+        service.db().clone(),
+    )
+    .resolve_user_actor(
+        &crate::foundation::workflow_binary_v0_adapter::UserActorIdentity::new(
+            "fixture",
+            "fixture@example.test",
+        )
+        .unwrap(),
+    )
+    .unwrap();
     service
         .create_repository(RepositoryCreateRequest {
             repo_name: "repo-bin".to_string(),

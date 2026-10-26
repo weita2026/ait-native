@@ -33,7 +33,7 @@ pub(super) fn make_db() -> (FilesystemServerRemoteBinaryDb, PathBuf, BinaryWrite
 pub(super) fn task_file_id() -> BinaryFileId {
     BinaryFileId::new(
         "task.bin",
-        1,
+        2,
         crate::foundation::workflow_binary_v0::TASK_RECORD_SIZE,
         BinaryDbFileFamily::Workflow,
     )

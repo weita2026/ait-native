@@ -79,6 +79,12 @@ where
                 .ok_or_else(|| "runtime backend request field `target` is required".to_string())?,
             "target",
         )?;
+        if request_object.contains_key("workflow_mode") || target.contains_key("workflow_mode") {
+            return Err(
+                "Retired execution field `workflow_mode`; resubmit with explicit target.mode."
+                    .to_string(),
+            );
+        }
         let mode = required_text(target.get("mode"), "target.mode")?;
 
         match mode.as_str() {
@@ -146,9 +152,11 @@ pub fn agent_runtime_backend_execute_json(request: &JsonValue) -> Result<JsonVal
 }
 
 fn validate_local_target(target: &Map<String, JsonValue>) -> Result<(), String> {
-    let workflow_mode = required_text(target.get("workflow_mode"), "target.workflow_mode")?;
-    if workflow_mode != "solo_local" {
-        return Err("local runtime backend workflow_mode must be `solo_local`".to_string());
+    if target.contains_key("workflow_mode") {
+        return Err(
+            "Retired execution field `workflow_mode`; resubmit with explicit target.mode."
+                .to_string(),
+        );
     }
     required_text(target.get("repo_name"), "target.repo_name")?;
     let repo_root = required_text(target.get("repo_root"), "target.repo_root")?;

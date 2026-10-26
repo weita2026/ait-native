@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { createFixturePayloadTarballs } from "../scripts/fixture-payloads.mjs";
 import { hostTarget, nativeBuild, TARGETS } from "../scripts/native-build.mjs";
 import { spawnNpmSync } from "../scripts/npm-command.mjs";
+import { ADDON_FILES, assertPackageFiles, ENVELOPE_FILES } from "../scripts/package-inventory.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_NAME = "@wa120/ait-native";
@@ -51,17 +52,13 @@ function renderStorefrontReadme(template, version) {
   );
   const readme = template.replace(README_VERSION_TOKEN, version);
   for (const required of [
-    "AIT turns an ordinary coding request into an isolated, sprint-bound repository",
-    "individual developers and maintainers",
+    "direct in-process Node-API binding",
     `npm install --global ${PACKAGE_NAME}@${version}`,
-    "ait init",
-    "## What initialization provides",
-    "`AGENTS.md`",
+    "## Node.js API",
+    "NativeRuntime",
+    "taskWorkflowConfigShow",
+    "JavaScript CLI",
     OFFICIAL_WEBSITE,
-    "## Upgrading from 0.x",
-    "There is no `ait install` command in 1.0.",
-    "ait workflow ready <task-id> --apply",
-    "ait workflow finish <task-id> --apply",
   ]) {
     assert.equal(
       readme.includes(required),
@@ -179,7 +176,7 @@ async function validateContract(target, version) {
           payload.version === version &&
           payload.component === "ait-node" &&
           payload.binding_repository === "ait-core" &&
-          payload.binding_snapshot === "SNP-D8DD5ACBA74B" &&
+          payload.binding_snapshot === "SNP-E05379CAEDF7" &&
           payload.addon === "native/ait_napi.node"
         );
       },
@@ -266,6 +263,7 @@ async function buildPortable() {
     );
     const readme = renderStorefrontReadme(readmeTemplate, PACKAGE_VERSION);
     await writeFile(path.join(packageRoot, "README.md"), readme, { mode: 0o644 });
+    await assertPackageFiles(packageRoot, ENVELOPE_FILES);
 
     const dryRun = runNpm([
       "pack",
@@ -279,20 +277,7 @@ async function buildPortable() {
     assert.equal(inventory[0].name, PACKAGE_NAME);
     assert.equal(inventory[0].version, PACKAGE_VERSION);
     const packedPaths = new Set(inventory[0].files.map((entry) => entry.path));
-    const expectedPaths = new Set([
-      "LICENSE",
-      "NOTICE",
-      "README.md",
-      "bin/ait.mjs",
-      "lib/npm-payload-contract.json",
-      "package.json",
-      "src/agent.js",
-      "src/contract.js",
-      "src/errors.js",
-      "src/index.d.ts",
-      "src/index.js",
-      "src/runtime.js",
-    ]);
+    const expectedPaths = new Set(ENVELOPE_FILES);
     assert.deepEqual(packedPaths, expectedPaths);
     assert.equal(
       [...packedPaths].some(
@@ -414,6 +399,7 @@ async function smokePortable(payloadContract) {
       path.join(ROOT, "scripts", "installed-smoke.mjs"),
       installRoot,
     ]);
+    assert.deepEqual(installedPackage.bin, { ait: "bin/ait.mjs" });
     const cli = run(process.execPath, [
       path.join(installRoot, "node_modules", PACKAGE_NAME, "bin", "ait.mjs"),
       "--version",
@@ -456,7 +442,14 @@ async function smokeAddon(target, payload) {
       tarball,
     ]);
     const packageRoot = path.join(temporaryRoot, "node_modules", payload.package);
+    await assertPackageFiles(packageRoot, ADDON_FILES);
     const packageJson = await readJson(path.join(packageRoot, "package.json"));
+    const provenance = await readJson(path.join(packageRoot, "provenance.json"));
+    assert.equal(provenance.binding_repository, payload.binding_repository);
+    assert.equal(provenance.binding_snapshot, payload.binding_snapshot);
+    const installedAddon = await readFile(path.join(packageRoot, ...payload.addon.split("/")));
+    assert.equal(provenance.source_artifact.sha256, createHash("sha256").update(installedAddon).digest("hex"));
+    assert.equal(provenance.source_artifact.size_bytes, installedAddon.length);
     assert.deepEqual(
       packageJson.libc,
       payload.libc === null ? undefined : [payload.libc],
@@ -468,18 +461,58 @@ async function smokeAddon(target, payload) {
         "const addon = require(process.argv[1]);",
         "process.stdout.write(JSON.stringify({",
         "  info: JSON.parse(addon.bindingInfoJson()),",
-        "  run_cli_type: typeof addon.runCli,",
+        "  exposes_cli: typeof addon.runCli === 'function',",
         "}));",
       ].join("\n"),
       packageRoot,
     ]);
-    const { info, run_cli_type: runCliType } = JSON.parse(addonSmoke.stdout);
+    const { info, exposes_cli: exposesCli } = JSON.parse(addonSmoke.stdout);
     assert.equal(info.contract, "ait.language.binding.v1");
     assert.equal(info.version, PACKAGE_VERSION);
     assert.equal(info.runtime_authority, "rust");
     assert.equal(info.node_binding, "napi");
     assert.equal(info.process_transport_allowed, false);
-    assert.equal(runCliType, "function");
+    assert.deepEqual(info.supported_surfaces, ["ait-core"]);
+    assert.equal(exposesCli, false);
+    run(process.execPath, [
+      "-e",
+      [
+        "const assert = require('node:assert/strict');",
+        "const addon = require(process.argv[1]);",
+        "for (const [name, args] of [",
+        "  ['agentWorkerCapabilitiesJson', []],",
+        "  ['agentManagementJson', ['{}']],",
+        "  ['agentWorkerTransactionJson', ['{}']],",
+        "]) {",
+        "  assert.throws(() => addon[name](...args), (error) => error instanceof Error && error.message.includes('Chat integrations are retired in AIT 1.2.0'));",
+        "}",
+      ].join("\n"),
+      packageRoot,
+    ]);
+    const repository = path.join(temporaryRoot, "repository with spaces");
+    await mkdir(repository);
+    run(process.execPath, [
+      "-e",
+      [
+        "const assert = require('node:assert/strict');",
+        "const addon = require(process.argv[1]);",
+        "const root = process.argv[2];",
+        "addon.taskWorkflowInit(root, {name: 'installed-addon-smoke'});",
+        "addon.taskWorkflowConfigSet(root, {agent_teams: 'disabled', sprint: 'off'});",
+        "const changed = addon.configureRepository(root, {plan_language: 'ja-JP'});",
+        "assert.equal(addon.configurationError(changed), null);",
+        "assert.match(addon.encodeJson(addon.taskWorkflowConfigShow(root)), /ja-JP/);",
+        "const inventory = addon.lineInventory(root);",
+        "assert.equal(typeof inventory.current_line, 'string');",
+        "assert.ok(addon.formatLineList(inventory).length > 0);",
+        "assert.deepEqual(addon.taskWorkflowTaskList(root, {local: true, all: true}), []);",
+        "assert.throws(() => addon.taskWorkflowTaskShow(root, 'LNT-9999', {local: true}), Error);",
+        "assert.throws(() => addon.lineShow(root, undefined, 'missing-remote'), Error);",
+        "assert.equal(addon.encodeJson({large: 9007199254740993n}), '{\"large\":9007199254740993}');",
+      ].join("\n"),
+      packageRoot,
+      repository,
+    ]);
     return {
       action: "smoke",
       installed: `${payload.package}@${payload.version}`,
