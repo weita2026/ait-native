@@ -190,11 +190,13 @@ jq 'del(.gates.core_quality)' \
   >"${missing_core_quality_evidence}/ait-release.pre-rc-qualification.json"
 qualification_run=${temporary_root}/qualification-run.json
 qualification_artifact=${temporary_root}/qualification-artifact.json
-jq -S -n --arg commit "${qualified_commit}" '
+jq -S -n --arg commit "${qualified_commit}" \
+  --arg name "AIT pre-RC qualification / ${qualified_commit}" '
   {
     id: 90,
     run_attempt: 1,
-    name: "ait pre-RC qualification",
+    name: $name,
+    display_title: $name,
     path: ".github/workflows/ait-release-pre-rc-qualification.yml",
     event: "workflow_dispatch",
     status: "completed",
@@ -212,6 +214,67 @@ jq -S -n --arg name "ait-pre-rc-qualification-${qualified_commit}" '
   }
 ' >"${qualification_artifact}"
 
+expect_bad_qualification_run() {
+  local label=$1
+  local filter=$2
+  local expected_error=$3
+  local record=${temporary_root}/${label}-run.json
+  jq --arg commit "${qualified_commit}" "${filter}" \
+    "${qualification_run}" >"${record}"
+  expect_failure "${label}" "${operator}" bind-qualification \
+    --source-root "${source_root}" \
+    --run-record "${record}" \
+    --artifact-record "${qualification_artifact}" \
+    --evidence-root "${qualification_evidence}" \
+    --output "${temporary_root}/${label}-qualification.json"
+  grep -F "${expected_error}" "${temporary_root}/${label}.stderr" >/dev/null
+}
+
+run_rejection="workflow run 90 is not the exact successful AIT pre-RC qualification / ${qualified_commit} run"
+expect_bad_qualification_run retained-source-qa \
+  '.name = ("Native retained-source QA / " + $commit)' "${run_rejection}"
+expect_bad_qualification_run old-static-name \
+  '.name = "ait pre-RC qualification"' "${run_rejection}"
+expect_bad_qualification_run wrong-name-commit \
+  '.name = ("AIT pre-RC qualification / " + ("0" * 40))' "${run_rejection}"
+expect_bad_qualification_run wrong-workflow-path \
+  '.path = ".github/workflows/other.yml"' "${run_rejection}"
+expect_bad_qualification_run incomplete-qualification \
+  '.status = "in_progress"' "${run_rejection}"
+expect_bad_qualification_run failed-qualification \
+  '.conclusion = "failure"' "${run_rejection}"
+expect_bad_qualification_run invalid-run-attempt \
+  '.run_attempt = 0' "${run_rejection}"
+expect_bad_qualification_run wrong-control-commit \
+  '.head_sha = ("0" * 40)' \
+  'pre-RC qualification workflow did not run from the repair commit'
+
+wrong_qualification_artifact=${temporary_root}/wrong-qualification-artifact.json
+jq '.workflow_run.id = 91' "${qualification_artifact}" \
+  >"${wrong_qualification_artifact}"
+expect_failure wrong-qualification-artifact "${operator}" bind-qualification \
+  --source-root "${source_root}" \
+  --run-record "${qualification_run}" \
+  --artifact-record "${wrong_qualification_artifact}" \
+  --evidence-root "${qualification_evidence}" \
+  --output "${temporary_root}/wrong-qualification-artifact-output.json"
+grep -F 'workflow artifact 190 is not the exact' \
+  "${temporary_root}/wrong-qualification-artifact.stderr" >/dev/null
+
+wrong_control_evidence=${temporary_root}/wrong-control-evidence
+mkdir "${wrong_control_evidence}"
+jq '.source.workflow_control_commit = ("0" * 40)' \
+  "${qualification_evidence}/ait-release.pre-rc-qualification.json" \
+  >"${wrong_control_evidence}/ait-release.pre-rc-qualification.json"
+expect_failure wrong-control-evidence "${operator}" bind-qualification \
+  --source-root "${source_root}" \
+  --run-record "${qualification_run}" \
+  --artifact-record "${qualification_artifact}" \
+  --evidence-root "${wrong_control_evidence}" \
+  --output "${temporary_root}/wrong-control-evidence-qualification.json"
+grep -F 'pre-RC qualification evidence is incomplete or inconsistent' \
+  "${temporary_root}/wrong-control-evidence.stderr" >/dev/null
+
 expect_failure missing-core-quality "${operator}" bind-qualification \
   --source-root "${source_root}" \
   --run-record "${qualification_run}" \
@@ -220,15 +283,6 @@ expect_failure missing-core-quality "${operator}" bind-qualification \
   --output "${temporary_root}/missing-core-quality-qualification.json"
 grep -F 'pre-RC qualification evidence is incomplete or inconsistent' \
   "${temporary_root}/missing-core-quality.stderr" >/dev/null
-
-jq '.conclusion = "failure"' "${qualification_run}" \
-  >"${temporary_root}/failed-qualification-run.json"
-expect_failure failed-qualification "${operator}" bind-qualification \
-  --source-root "${source_root}" \
-  --run-record "${temporary_root}/failed-qualification-run.json" \
-  --artifact-record "${qualification_artifact}" \
-  --evidence-root "${qualification_evidence}" \
-  --output "${temporary_root}/failed-qualification.json"
 
 tagged_repair=${temporary_root}/tagged-repair
 git clone -q "${source_root}" "${tagged_repair}"

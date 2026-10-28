@@ -629,7 +629,7 @@ case "${mode}" in
     fi
     require_real_directory "${evidence_root}" 'pre-RC qualification evidence root'
     validate_workflow_run "${run_record}" "${run_id}" \
-      'ait pre-RC qualification' \
+      "AIT pre-RC qualification / ${source_commit}" \
       '.github/workflows/ait-release-pre-rc-qualification.yml'
     control_commit=$(jq -er '.head_sha' "${run_record}")
     [[ ${control_commit} == "${source_commit}" ]] ||
