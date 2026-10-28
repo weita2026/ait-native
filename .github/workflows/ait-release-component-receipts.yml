@@ -237,7 +237,7 @@ jobs:
             --arg commit "${qualified_commit}" \
             --arg control "${qualification_control_commit}" '
               .id == $id and .run_attempt == $attempt and
-              .name == "ait pre-RC qualification" and
+              .name == ("AIT pre-RC qualification / " + $commit) and
               .path == ".github/workflows/ait-release-pre-rc-qualification.yml" and
               .event == "workflow_dispatch" and
               .status == "completed" and .conclusion == "success" and

@@ -747,7 +747,7 @@ async function validateProtectedWorkflows() {
     "workflow_control_commit: $control_commit",
     "ait.release.operator.pre-tag-admission/v1",
     "ci/release_pre_rc_delta.mjs",
-    "ait pre-RC qualification",
+    '.name == ("AIT pre-RC qualification / " + $commit)',
     "qualified repair commit gained a release tag after qualification",
     "ait-release.pre-tag-admission.json",
   ]) {

@@ -91,7 +91,7 @@ for required_workflow_text in \
   'public_git_commit' \
   'ait.release.operator.pre-tag-admission/v1' \
   'ci/release_pre_rc_delta.mjs' \
-  'ait pre-RC qualification' \
+  '.name == ("AIT pre-RC qualification / " + $commit)' \
   'qualified repair commit gained a release tag after qualification' \
   'ait-release.pre-tag-admission.json' \
   'persist-credentials: false' \
@@ -126,6 +126,128 @@ for required_workflow_text in \
     exit 65
   fi
 done
+
+# Execute the exact jq filters embedded in the hosted admission step. A text
+# search alone cannot prove that GitHub's run and artifact records bind.
+extract_workflow_filter() {
+  local start=$1
+  local end=$2
+  local output=$3
+  awk -v start="${start}" -v end="${end}" '
+    index($0, start) { found = 1; capture = 1; next }
+    capture && index($0, end) { closed = 1; exit }
+    capture { print }
+    END { if (!found || !closed) exit 1 }
+  ' "${workflow}" >"${output}"
+  test -s "${output}"
+}
+
+run_filter=${temporary_root}/qualification-run-filter.jq
+artifact_filter=${temporary_root}/qualification-artifact-filter.jq
+extract_workflow_filter '--arg control "${qualification_control_commit}"' \
+  '"${run_record}" >/dev/null' "${run_filter}"
+extract_workflow_filter '--arg digest "${qualification_artifact_digest}"' \
+  '"${artifact_record}" >/dev/null' "${artifact_filter}"
+
+qualified_commit=aad49fe7d848ca0ccc82afb4132b78a2757bcf98
+other_commit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+qualification_run_id=40741983291
+qualification_artifact_id=12840776329
+qualification_artifact_digest=sha256:dbe02e011e364a3105fd6874a6731be262a64f02878b38cd5572d055153e5a43
+qualification_run=${temporary_root}/qualification-run.json
+qualification_artifact=${temporary_root}/qualification-artifact.json
+jq -S -n --arg commit "${qualified_commit}" \
+  --arg name "AIT pre-RC qualification / ${qualified_commit}" \
+  --argjson id "${qualification_run_id}" '
+    {
+      id: $id, run_attempt: 1, name: $name, display_title: $name,
+      path: ".github/workflows/ait-release-pre-rc-qualification.yml",
+      event: "workflow_dispatch", status: "completed", conclusion: "success",
+      head_sha: $commit
+    }
+  ' >"${qualification_run}"
+jq -S -n --arg name "ait-pre-rc-qualification-${qualified_commit}" \
+  --arg digest "${qualification_artifact_digest}" \
+  --argjson id "${qualification_artifact_id}" \
+  --argjson run_id "${qualification_run_id}" '
+    {
+      id: $id, name: $name, digest: $digest, expired: false,
+      workflow_run: {id: $run_id}
+    }
+  ' >"${qualification_artifact}"
+
+matches_qualification_run() {
+  local record=$1
+  local control=${2:-${qualified_commit}}
+  jq -e --argjson id "${qualification_run_id}" --argjson attempt 1 \
+    --arg commit "${qualified_commit}" --arg control "${control}" \
+    -f "${run_filter}" "${record}" >/dev/null
+}
+
+matches_qualification_artifact() {
+  local record=$1
+  jq -e --argjson id "${qualification_artifact_id}" \
+    --argjson run_id "${qualification_run_id}" \
+    --arg name "ait-pre-rc-qualification-${qualified_commit}" \
+    --arg digest "${qualification_artifact_digest}" \
+    -f "${artifact_filter}" "${record}" >/dev/null
+}
+
+matches_qualification_run "${qualification_run}"
+matches_qualification_artifact "${qualification_artifact}"
+
+expect_run_rejection() {
+  local label=$1
+  local filter=$2
+  local record=${temporary_root}/${label}-run.json
+  jq --arg commit "${qualified_commit}" --arg other "${other_commit}" \
+    "${filter}" "${qualification_run}" >"${record}"
+  if matches_qualification_run "${record}" \
+    2>"${temporary_root}/${label}.stderr"; then
+    printf 'hosted qualification run accepted %s\n' "${label}" >&2
+    return 1
+  fi
+  test ! -s "${temporary_root}/${label}.stderr"
+}
+
+expect_run_rejection old-static-name '.name = "ait pre-RC qualification"'
+expect_run_rejection retained-source-qa \
+  '.name = ("Native retained-source QA / " + $commit)'
+expect_run_rejection wrong-name-commit \
+  '.name = ("AIT pre-RC qualification / " + $other)'
+expect_run_rejection wrong-workflow-path '.path = ".github/workflows/other.yml"'
+expect_run_rejection wrong-run-id '.id = 1'
+expect_run_rejection wrong-run-attempt '.run_attempt = 2'
+expect_run_rejection wrong-run-event '.event = "push"'
+expect_run_rejection incomplete-run '.status = "in_progress"'
+expect_run_rejection failed-run '.conclusion = "failure"'
+expect_run_rejection wrong-source-commit '.head_sha = $other'
+if matches_qualification_run "${qualification_run}" "${other_commit}" \
+  2>"${temporary_root}/wrong-control-commit.stderr"; then
+  printf 'hosted qualification run accepted a wrong control commit\n' >&2
+  exit 1
+fi
+test ! -s "${temporary_root}/wrong-control-commit.stderr"
+
+expect_artifact_rejection() {
+  local label=$1
+  local filter=$2
+  local record=${temporary_root}/${label}-artifact.json
+  jq "${filter}" "${qualification_artifact}" >"${record}"
+  if matches_qualification_artifact "${record}" \
+    2>"${temporary_root}/${label}.stderr"; then
+    printf 'hosted qualification artifact accepted %s\n' "${label}" >&2
+    return 1
+  fi
+  test ! -s "${temporary_root}/${label}.stderr"
+}
+
+expect_artifact_rejection wrong-artifact-id '.id = 1'
+expect_artifact_rejection wrong-artifact-run '.workflow_run.id = 1'
+expect_artifact_rejection wrong-artifact-name '.name = "other"'
+expect_artifact_rejection wrong-artifact-digest '.digest = "sha256:bad"'
+expect_artifact_rejection expired-artifact '.expired = true'
+
 public_source_root_count=$(grep -F -c -- \
   '--public-source-root "${AIT_PUBLIC_SOURCE_ROOT}"' "${workflow}")
 if test "${public_source_root_count}" -ne 6; then
