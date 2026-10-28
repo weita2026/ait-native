@@ -304,6 +304,137 @@ jq -e '
   ([.builds.include[].expected_component_artifact_count] | add) == 31
 ' "${projection}" >/dev/null
 
+projection_filter=${temporary_root}/hosted-projection-filter.jq
+check_filter=${temporary_root}/hosted-check-filter.jq
+build_filter=${temporary_root}/hosted-build-filter.jq
+extract_workflow_filter '--arg version "${AIT_FAMILY_VERSION}"' \
+  '"${projection}" >/dev/null' "${projection_filter}"
+extract_workflow_filter '--argjson receipt_count "${AIT_RECEIPT_COUNT}"' \
+  '"${check}" >/dev/null' "${check_filter}"
+extract_workflow_filter "--arg release_id \"\${release_id}\" '" \
+  '"${build}" >/dev/null' "${build_filter}"
+
+family_version=$(jq -r '.family.version' "${projection}")
+source_commit=a3c908dc3f671382fc1800b37c62e53a2791fa93
+other_commit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+release_id=REL-FAM-RECEIPT-TEST
+jq -e --arg snapshot SNP-849658E7DE4B \
+  --arg version "${family_version}" -f "${projection_filter}" \
+  "${projection}" >/dev/null
+
+expect_projection_rejection() {
+  local label=$1
+  local filter=$2
+  local record=${temporary_root}/${label}-projection.json
+  jq "${filter}" "${projection}" >"${record}"
+  if jq -e --arg snapshot SNP-849658E7DE4B \
+    --arg version "${family_version}" -f "${projection_filter}" \
+    "${record}" >/dev/null 2>"${temporary_root}/${label}.stderr"; then
+    printf 'hosted projection accepted %s\n' "${label}" >&2
+    return 1
+  fi
+  test ! -s "${temporary_root}/${label}.stderr"
+}
+
+expect_projection_rejection stale-component-count \
+  '.expected_component_artifact_count = 43'
+expect_projection_rejection missing-component-count \
+  '.expected_component_artifact_count = 30'
+expect_projection_rejection extra-component-count \
+  '.expected_component_artifact_count = 32'
+expect_projection_rejection wrong-family-version '.family.version = "0.0.0"'
+expect_projection_rejection wrong-source-count '.expected_source_count = 4'
+expect_projection_rejection wrong-receipt-count '.expected_receipt_count = 30'
+
+check_record=${temporary_root}/hosted-family-check.json
+build_record=${temporary_root}/hosted-family-build.json
+jq -S -n --arg release_id "${release_id}" --arg commit "${source_commit}" '
+  {
+    release_id: $release_id, status: "checked",
+    check_summary: {decision: "pass"},
+    component_receipts: [range(31) | {git_commit: $commit}],
+    artifacts: [range(31) | {role: "component-artifact"}]
+  }
+' >"${check_record}"
+jq -S -n --arg release_id "${release_id}" '
+  {
+    release_id: $release_id, status: "built",
+    check_summary: {decision: "pass"},
+    artifacts: (
+      [range(31) | {role: "component-artifact"}] +
+      [range(10) | {role: "license-material"}] +
+      [range(2) | {role: "family-metadata"}]
+    ),
+    promotion: {authorized: false, performed: false, registry_write: false}
+  }
+' >"${build_record}"
+jq -e '(.artifacts | length) == 43 and
+  ([.artifacts[] | select(.role == "component-artifact")] | length) == 31' \
+  "${build_record}" >/dev/null
+
+matches_hosted_check() {
+  jq -e --arg release_id "${release_id}" --arg commit "${source_commit}" \
+    --argjson receipt_count 31 -f "${check_filter}" "$1" >/dev/null
+}
+matches_hosted_build() {
+  jq -e --arg release_id "${release_id}" -f "${build_filter}" "$1" >/dev/null
+}
+matches_hosted_check "${check_record}"
+matches_hosted_build "${build_record}"
+
+expect_check_rejection() {
+  local label=$1
+  local filter=$2
+  local record=${temporary_root}/${label}-check.json
+  jq --arg other "${other_commit}" "${filter}" "${check_record}" >"${record}"
+  if matches_hosted_check "${record}" 2>"${temporary_root}/${label}.stderr"; then
+    printf 'hosted family check accepted %s\n' "${label}" >&2
+    return 1
+  fi
+  test ! -s "${temporary_root}/${label}.stderr"
+}
+
+expect_check_rejection stale-check-artifacts \
+  '.artifacts += [range(12) | {role: "component-artifact"}]'
+expect_check_rejection missing-check-artifact '.artifacts |= .[0:30]'
+expect_check_rejection extra-check-artifact \
+  '.artifacts += [{role: "component-artifact"}]'
+expect_check_rejection missing-check-receipt '.component_receipts |= .[0:30]'
+expect_check_rejection extra-check-receipt \
+  '.component_receipts += [{git_commit: "extra"}]'
+expect_check_rejection wrong-check-commit \
+  '.component_receipts[0].git_commit = $other'
+expect_check_rejection wrong-check-release '.release_id = "other"'
+expect_check_rejection wrong-check-status '.status = "pending"'
+expect_check_rejection failed-check-decision '.check_summary.decision = "fail"'
+
+expect_build_rejection() {
+  local label=$1
+  local filter=$2
+  local record=${temporary_root}/${label}-build.json
+  jq "${filter}" "${build_record}" >"${record}"
+  if matches_hosted_build "${record}" 2>"${temporary_root}/${label}.stderr"; then
+    printf 'hosted family build accepted %s\n' "${label}" >&2
+    return 1
+  fi
+  test ! -s "${temporary_root}/${label}.stderr"
+}
+
+expect_build_rejection stale-build-components \
+  '.artifacts |= map(.role = "component-artifact")'
+expect_build_rejection missing-build-component \
+  '.artifacts[0].role = "family-metadata"'
+expect_build_rejection extra-build-component \
+  '.artifacts[31].role = "component-artifact"'
+expect_build_rejection wrong-build-release '.release_id = "other"'
+expect_build_rejection wrong-build-status '.status = "checked"'
+expect_build_rejection failed-build-decision '.check_summary.decision = "fail"'
+expect_build_rejection authorized-build '.promotion.authorized = true'
+expect_build_rejection performed-build '.promotion.performed = true'
+expect_build_rejection published-build '.promotion.registry_write = true'
+
+grep -F 'echo "- component artifacts: \`31\`"' "${workflow}" >/dev/null
+
 for required_verifier_text in \
   'control_root=' \
   'AIT_RELEASE_SOURCE_CONTROL_SHA' \
