@@ -24,6 +24,9 @@ fi
 
 cleanup() {
   if [ "$cleanup_owned_root" -eq 1 ]; then
+    # Fixture seeds can contain readonly directories in this exclusive mktemp tree.
+    # Physical find traversal excludes symlinks and leaves their targets unchanged.
+    find "$owned_root" -type d -exec chmod u+rwx {} +
     rm -rf -- "$owned_root"
   fi
 }

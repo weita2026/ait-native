@@ -4146,7 +4146,7 @@ function loadContract() {
       payload.package !== expectedPackage ||
       payload.component !== "ait-node" ||
       payload.binding_repository !== "ait-core" ||
-      payload.binding_snapshot !== "SNP-88F62DE03EDC" ||
+      payload.binding_snapshot !== "SNP-98ACF1D6AC6D" ||
       payload.license !== "Apache-2.0" ||
       payload.version !== contract.family_version ||
       payload.addon !== "native/ait_napi.node"

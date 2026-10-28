@@ -668,6 +668,236 @@ fn script_region_between<'a>(script: &'a str, start: &str, end: &str) -> &'a str
     &guarded[..end_index + end.len()]
 }
 
+#[cfg(unix)]
+mod owned_ci_cleanup {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Fixture {
+        temp: TempDir,
+        bin: PathBuf,
+        external: PathBuf,
+        record: PathBuf,
+        cargo_log: PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let uid = Command::new("id").arg("-u").output().unwrap();
+            assert!(uid.status.success());
+            assert_ne!(
+                String::from_utf8_lossy(&uid.stdout).trim(),
+                "0",
+                "cleanup acceptance requires a non-root process"
+            );
+            let temp = TempDir::new().unwrap();
+            let bin = temp.path().join("bin");
+            fs::create_dir(&bin).unwrap();
+            let external = temp.path().join("external seed");
+            fs::create_dir_all(external.join("nested")).unwrap();
+            fs::write(external.join("nested/marker"), b"external seed bytes\n").unwrap();
+            fs::set_permissions(
+                external.join("nested/marker"),
+                fs::Permissions::from_mode(0o444),
+            )
+            .unwrap();
+            for path in [&external, &external.join("nested")] {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o555)).unwrap();
+            }
+            let fixture = Self {
+                record: temp.path().join("owned-root"),
+                cargo_log: temp.path().join("cargo-calls"),
+                temp,
+                bin,
+                external,
+            };
+            fixture.executable(
+                "cargo",
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$1" >> "$CI_CLEANUP_CARGO_LOG"
+if [ "$1" = test ]; then
+  printf '%s\n' "${TMPDIR%/tmp}" > "$CI_CLEANUP_RECORD"
+  mkdir -p "$TMPDIR/main-seed/nested"
+  printf 'readonly fixture\n' > "$TMPDIR/main-seed/nested/marker"
+  /bin/chmod 0444 "$TMPDIR/main-seed/nested/marker"
+  ln -s "$CI_CLEANUP_EXTERNAL" "$TMPDIR/external-link"
+  /bin/chmod 0555 "$TMPDIR/main-seed/nested" "$TMPDIR/main-seed" "$TMPDIR" "${TMPDIR%/tmp}"
+  exit "$CI_CLEANUP_TEST_STATUS"
+fi
+"#,
+            );
+            fixture
+        }
+
+        fn executable(&self, name: &str, contents: &str) {
+            let path = self.bin.join(name);
+            fs::write(&path, contents).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        fn run(&self, supplied_root: Option<&Path>, test_status: u8) -> std::process::Output {
+            let mut paths = vec![self.bin.clone()];
+            paths.extend(env::split_paths(&env::var_os("PATH").unwrap()));
+            let mut command = Command::new("sh");
+            command
+                .arg(repo_root_for_patch_ci_manifest().join("ci/run.sh"))
+                .arg("all")
+                .env("PATH", env::join_paths(paths).unwrap())
+                .env("TMPDIR", self.temp.path())
+                .env("CI_CLEANUP_RECORD", &self.record)
+                .env("CI_CLEANUP_CARGO_LOG", &self.cargo_log)
+                .env("CI_CLEANUP_EXTERNAL", &self.external)
+                .env("CI_CLEANUP_TEST_STATUS", test_status.to_string())
+                .env_remove("AIT_RUNNER_ATTEMPT_ROOT");
+            if let Some(root) = supplied_root {
+                command.env("AIT_RUNNER_ATTEMPT_ROOT", root);
+            }
+            command.output().unwrap()
+        }
+
+        fn owned_root(&self) -> PathBuf {
+            PathBuf::from(fs::read_to_string(&self.record).unwrap().trim())
+        }
+
+        fn assert_external_unchanged(&self) {
+            assert_eq!(
+                fs::read(self.external.join("nested/marker")).unwrap(),
+                b"external seed bytes\n"
+            );
+            assert_eq!(
+                fs::metadata(&self.external).unwrap().permissions().mode() & 0o777,
+                0o555
+            );
+            assert_eq!(
+                fs::metadata(self.external.join("nested"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o555
+            );
+            assert_eq!(
+                fs::metadata(self.external.join("nested/marker"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o444
+            );
+        }
+
+        fn restore_owned_directories(path: &Path) {
+            let metadata = fs::symlink_metadata(path).unwrap();
+            if !metadata.is_dir() {
+                return;
+            }
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+            for entry in fs::read_dir(path).unwrap() {
+                Self::restore_owned_directories(&entry.unwrap().path());
+            }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            Self::restore_owned_directories(self.temp.path());
+        }
+    }
+
+    #[test]
+    fn self_owned_readonly_tree_is_removed_without_touching_external_symlink_target() {
+        let fixture = Fixture::new();
+        let output = fixture.run(None, 0);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let root = fixture.owned_root();
+        assert_eq!(
+            root.parent().unwrap(),
+            fs::canonicalize(fixture.temp.path()).unwrap()
+        );
+        assert!(root
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("ait-core-ci."));
+        assert!(!root.exists());
+        assert_eq!(
+            fs::read_to_string(&fixture.cargo_log).unwrap(),
+            "fmt\ntest\nclippy\n"
+        );
+        fixture.assert_external_unchanged();
+    }
+
+    #[test]
+    fn supplied_root_permissions_and_cleanup_remain_with_outer_owner() {
+        let fixture = Fixture::new();
+        let root = fixture.temp.path().join("runner-owned");
+        let output = fixture.run(Some(&root), 0);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(root.exists());
+        for path in [&root, &root.join("tmp"), &root.join("tmp/main-seed/nested")] {
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o555
+            );
+        }
+        assert_eq!(
+            fs::read(root.join("tmp/main-seed/nested/marker")).unwrap(),
+            b"readonly fixture\n"
+        );
+        assert!(fs::symlink_metadata(root.join("tmp/external-link"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fixture.assert_external_unchanged();
+        Fixture::restore_owned_directories(&root);
+        fs::remove_dir_all(&root).unwrap();
+        assert!(!root.exists());
+        fixture.assert_external_unchanged();
+    }
+
+    #[test]
+    fn failed_tests_stay_failed_after_successful_self_owned_cleanup() {
+        let fixture = Fixture::new();
+        let output = fixture.run(None, 23);
+        assert_eq!(output.status.code(), Some(23));
+        assert!(!fixture.owned_root().exists());
+        assert_eq!(
+            fs::read_to_string(&fixture.cargo_log).unwrap(),
+            "fmt\ntest\n"
+        );
+        fixture.assert_external_unchanged();
+    }
+
+    #[test]
+    fn failed_cleanup_remains_failed_after_successful_checks() {
+        for command in ["chmod", "rm"] {
+            let fixture = Fixture::new();
+            fixture.executable(
+                command,
+                "#!/bin/sh\nprintf 'injected cleanup failure\\n' >&2\nexit 42\n",
+            );
+            let output = fixture.run(None, 0);
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("injected cleanup failure"));
+            assert!(fixture.owned_root().exists());
+            assert_eq!(
+                fs::read_to_string(&fixture.cargo_log).unwrap(),
+                "fmt\ntest\nclippy\n"
+            );
+            fixture.assert_external_unchanged();
+        }
+    }
+}
+
 #[test]
 fn repo_native_ci_entrypoints_cover_workspace_and_guard_lineage_schema() {
     let root = repo_root_for_patch_ci_manifest();
