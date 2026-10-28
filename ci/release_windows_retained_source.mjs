@@ -29,6 +29,12 @@ export const FIXTURE_LOCAL_FINISH_PREFIX = "fixture_local_finish_";
 export const CORE_WORKSPACE_LOCK_CASE = "workspace_lock::tests::nested_rust_workspace_command_borrows_outer_lock";
 export const CORE_WORKSPACE_LOCK_PREFIX = "workspace_lock::tests::";
 export const CORE_WINDOWS_CI_FIXTURE_CASE = "routed_resume::windows_ci_entry_checks_proof_from_normal_and_verbatim_workspaces";
+export const CORE_WINDOWS_CONFIG_CASES = [
+  "config_surface::tests::config_mutation_holds_exclusive_ownership_through_validation_and_write",
+  "config_surface::tests::config_mutations_respect_shared_cleanup_and_exclusive_provisioning_guards",
+  "config_surface::tests::config_mutation_reuses_the_config_inode_across_repeated_set_and_unset",
+  "config_surface::tests::config_validation_and_write_errors_preserve_original_bytes_and_release_lock",
+];
 const CORE_WORKSPACE_LOCK_CASES = [
   "workspace_command_lock_path_matches_hash_contract_shape",
   "workspace_command_lock_records_metadata_after_blocking_acquire",
@@ -160,6 +166,28 @@ export function runCoreWindowsCiFixtureCase(cargo, manifest) {
   assert.equal((stdout.match(/^test result:/gm) ?? []).length, 1, "Windows CI fixture needs one complete summary");
   assert(/^test result: ok\. 1 passed; 0 failed; 0 ignored;/m.test(stdout),
     "Windows CI fixture must execute once with zero ignored");
+}
+
+export function runCoreWindowsConfigCases(cargo, manifest) {
+  const flags = ["-p", "ait-cli", "--lib"];
+  for (const [index, name] of CORE_WINDOWS_CONFIG_CASES.entries()) {
+    const label = `core-windows-config-${index + 1}`;
+    const listing = cargo(`${label}-case-list`, manifest,
+      [...flags, name, "--", "--exact", "--list"]);
+    assert.equal(selectNativeCase(listing, name), name, `require the exact Windows config identity: ${name}`);
+    assert.equal((listing.match(/: test\r?$/gm) ?? []).length, 1,
+      `Windows config listing must contain exactly one case: ${name}`);
+    const stdout = cargo(label, manifest,
+      [...flags, name, "--", "--exact", "--test-threads=1", "--color", "never"]);
+    requirePassedCase(stdout, name);
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.equal((stdout.match(new RegExp(`^test ${escaped} \\.\\.\\. ok\\r?$`, "gm")) ?? []).length, 1,
+      `Windows config case must pass once: ${name}`);
+    assert.equal((stdout.match(/^test result:/gm) ?? []).length, 1,
+      `Windows config case needs one complete summary: ${name}`);
+    assert(/^test result: ok\. 1 passed; 0 failed; 0 ignored;/m.test(stdout),
+      `Windows config case must execute once with zero ignored: ${name}`);
+  }
 }
 
 function nativeCommandEvent(descriptor, event, detail) {
@@ -470,6 +498,7 @@ function executeCases({ target, root, env, run, targetDir, cargo }) {
   runCoreEditRootCases(cargo, coreManifest);
   runCoreCloseoutPrerequisites(cargo, coreManifest);
   runCoreWindowsCiFixtureCase(cargo, coreManifest);
+  runCoreWindowsConfigCases(cargo, coreManifest);
   const serverFlags = ["-p", "ait-server", "--lib"];
   const serverList = cargo("server-native-case-list", serverManifest, [...serverFlags, "--", "--list"]);
   const serverNames = SERVER_CASES.map(name => selectNativeCase(serverList, name));

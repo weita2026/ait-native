@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
-import { requiresRetainedSource, selectNativeCase, requirePassedCase, runNativeWindowsQa, selectCoreEditRootCases, runCoreEditRootCases, CORE_EDIT_ROOT_PREFIX, CORE_CLEANUP_PREFIX, FIXTURE_LOCAL_FINISH_PREFIX, CORE_WORKSPACE_LOCK_CASE, CORE_WORKSPACE_LOCK_PREFIX, runCoreWorkspaceLockCases, CORE_WINDOWS_CI_FIXTURE_CASE, runCoreWindowsCiFixtureCase, selectNativePrefixCases, runCoreCloseoutPrerequisites, SERVER_CASES, CORE_CASE } from "./release_windows_retained_source.mjs";
+import { requiresRetainedSource, selectNativeCase, requirePassedCase, runNativeWindowsQa, selectCoreEditRootCases, runCoreEditRootCases, CORE_EDIT_ROOT_PREFIX, CORE_CLEANUP_PREFIX, FIXTURE_LOCAL_FINISH_PREFIX, CORE_WORKSPACE_LOCK_CASE, CORE_WORKSPACE_LOCK_PREFIX, runCoreWorkspaceLockCases, CORE_WINDOWS_CI_FIXTURE_CASE, runCoreWindowsCiFixtureCase, CORE_WINDOWS_CONFIG_CASES, runCoreWindowsConfigCases, selectNativePrefixCases, runCoreCloseoutPrerequisites, SERVER_CASES, CORE_CASE } from "./release_windows_retained_source.mjs";
 // The workflow imports this module from inline Node with the target as argv[1].
 // That argument is not a script path and must not trigger CLI entry detection.
 const imported = spawnSync(process.execPath, ["--input-type=module", "-e",
@@ -62,6 +62,61 @@ const finishNames = ["closes_the_worktree_with_one_apply_receipt", "preserves_no
 const listing = names => names.map(name => `${name}: test`).join("\r\n") + "\r\n";
 const passed = names => names.map(name => `test ${name} ... ok`).join("\r\n") +
   `\r\ntest result: ok. ${names.length} passed; 0 failed; 0 ignored; 0 measured\r\n`;
+assert.equal(CORE_WINDOWS_CONFIG_CASES.length, 4);
+const configManifest = "/fixed/ait-core/rust/Cargo.toml";
+for (const failure of [null, "missing", "duplicate-list", "wrong-list", "wrong-case", "ignored", "zero", "duplicate-output", "duplicate-summary", "command-failure"]) {
+  const calls = [];
+  const execute = () => runCoreWindowsConfigCases((label, manifest, flags) => {
+    calls.push({ label, manifest, flags });
+    const index = Number(/^core-windows-config-(\d)/.exec(label)?.[1]) - 1;
+    const name = CORE_WINDOWS_CONFIG_CASES[index];
+    if (label.endsWith("-case-list")) {
+      if (index === 0 && failure === "missing") return listing([]);
+      if (index === 0 && failure === "duplicate-list") return listing([name, name]);
+      if (index === 0 && failure === "wrong-list") return listing([`unreviewed::${name}`]);
+      return listing([name]);
+    }
+    if (index === 0 && failure === "command-failure") throw new Error("config command failed");
+    let output = passed([name]);
+    if (index === 0 && failure === "wrong-case") output = output.replace(name, "another_case");
+    if (index === 0 && failure === "ignored") output = output.replace(" ... ok", " ... ignored");
+    if (index === 0 && failure === "zero") output = "test result: ok. 0 passed; 0 failed; 0 ignored;\n";
+    if (index === 0 && failure === "duplicate-output") output = `test ${name} ... ok\n` + output;
+    if (index === 0 && failure === "duplicate-summary") output += "test result: ok. 1 passed; 0 failed; 0 ignored;\n";
+    return output;
+  }, configManifest);
+  if (failure === null) execute(); else assert.throws(execute);
+  assert.equal(calls.length, failure === null ? 8 : ["missing", "duplicate-list", "wrong-list"].includes(failure) ? 1 : 2);
+  for (const call of calls) {
+    const index = Number(/^core-windows-config-(\d)/.exec(call.label)?.[1]) - 1;
+    const name = CORE_WINDOWS_CONFIG_CASES[index];
+    assert.equal(call.manifest, configManifest);
+    assert.deepEqual(call.flags, call.label.endsWith("-case-list")
+      ? ["-p", "ait-cli", "--lib", name, "--", "--exact", "--list"]
+      : ["-p", "ait-cli", "--lib", name, "--", "--exact", "--test-threads=1", "--color", "never"]);
+  }
+}
+// The release path must invoke the four controls, not merely export a helper.
+{
+  const source = fs.readFileSync(new URL("./release_windows_retained_source.mjs", import.meta.url), "utf8");
+  const reached = [];
+  const context = vm.createContext({ path,
+    runCoreEditRootCases() { reached.push("edit-root"); },
+    runCoreCloseoutPrerequisites() { reached.push("closeout"); },
+    runCoreWindowsCiFixtureCase() { reached.push("ci-fixture"); },
+    runCoreWindowsConfigCases(cargo, manifest) { reached.push("config"); runCoreWindowsConfigCases(cargo, manifest); } });
+  vm.runInContext(source.slice(source.indexOf("function executeCases("), source.indexOf("// Explicit non-release QA")) + "\nthis.execute = executeCases;", context);
+  assert.throws(() => context.execute({ root: "/fixed", cargo(label, manifest, flags) {
+    if (!label.startsWith("core-windows-config-")) throw new Error("stop after config dispatch");
+    assert.equal(manifest, configManifest);
+    const index = Number(/^core-windows-config-(\d)/.exec(label)?.[1]) - 1;
+    const name = CORE_WINDOWS_CONFIG_CASES[index];
+    reached.push(label);
+    return label.endsWith("-case-list") ? listing([name]) : passed([name]);
+  } }), /stop after config dispatch/);
+  assert.deepEqual(reached, ["edit-root", "closeout", "ci-fixture", "config",
+    ...CORE_WINDOWS_CONFIG_CASES.flatMap((_, index) => [`core-windows-config-${index + 1}-case-list`, `core-windows-config-${index + 1}`])]);
+}
 for (const failure of [null, "missing", "duplicate-list", "prefixed-identity", "wrong-identity", "ignored", "zero", "partial", "duplicate-summary", "command-failure"]) {
   const calls = [];
   const execute = () => runCoreWindowsCiFixtureCase((label, manifest, flags) => {

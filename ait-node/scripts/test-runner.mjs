@@ -51,9 +51,18 @@ export function runRequiredSuites(files, {
     const fileNames = new Set([
       file, path.resolve(cwd, file), path.basename(file),
       pathToFileURL(path.resolve(cwd, file)).href,
-    ]);
+    ].map((name) => name
+      .replaceAll("\b", "\\b")
+      .replaceAll("\f", "\\f")
+      .replaceAll("\t", "\\t")
+      .replaceAll("\n", "\\n")
+      .replaceAll("\r", "\\r")
+      .replaceAll("\v", "\\v")
+      .replaceAll("\\", "\\\\")
+      .replaceAll("#", "\\#")));
     // Node may count an empty module as a successful file test. Require an
     // explicitly registered case/suite in addition to non-skipped test counts.
+    // Known file identities use the same escaping as the TAP reporter.
     const declaredCase = [...result.stdout.matchAll(/^# Subtest: (.+)$/gm)]
       .some((match) => !fileNames.has(match[1].trim()));
     if (tests === null || skipped === null || todo === null || tests - skipped - todo <= 0 || !declaredCase) {

@@ -13,6 +13,7 @@ use ait_core::json_support::{json, JsonMap, JsonValue};
 use ait_core::server_operational::ServerRepositoryAuthorityConfig;
 use std::env;
 use std::fs;
+use std::io::{Read, Seek, Write};
 use std::path::Path;
 
 const DEFAULT_PLAN_TASK_BINDING_MODE: &str = "required";
@@ -984,42 +985,61 @@ fn read_json_object(path: &Path) -> JsonMap<String, JsonValue> {
     parse_object_or_empty(&content)
 }
 
-fn write_json_pretty(path: &Path, payload: &JsonValue) -> Result<(), String> {
+fn write_json_pretty(file: &mut fs::File, payload: &JsonValue) -> Result<(), String> {
     let encoded = encode_value_pretty_with_newline_error_string(payload)?;
-    fs::write(path, encoded).map_err(|err| err.to_string())
+    file.rewind().map_err(|err| err.to_string())?;
+    file.write_all(encoded.as_bytes())
+        .map_err(|err| err.to_string())?;
+    file.set_len(encoded.len() as u64)
+        .map_err(|err| err.to_string())?;
+    file.flush().map_err(|err| err.to_string())
 }
 
 /// Coordinate config writes with team provisioning without touching Agent storage.
-/// The writer preserves this inode. Team provisioning takes the exclusive
-/// lease; ordinary config writes share a guard and keep their solo behavior.
+/// Provisioning uses an exclusive lease; cleanup can hold a shared lease.
+/// Mutations also require exclusive access and preserve this inode.
 pub(crate) fn lock_root_config(repo: &RepoRuntime, exclusive: bool) -> Result<fs::File, String> {
     let file = fs::File::open(repo.authoritative_repo_root().join(".ait/config.json"))
         .map_err(|e| e.to_string())?;
+    lock_config_file(&file, exclusive)?;
+    Ok(file)
+}
+
+fn lock_config_file(file: &fs::File, exclusive: bool) -> Result<(), String> {
     let result = if exclusive {
-        fs2::FileExt::try_lock_exclusive(&file)
+        fs2::FileExt::try_lock_exclusive(file)
     } else {
-        fs2::FileExt::try_lock_shared(&file)
+        fs2::FileExt::try_lock_shared(file)
     };
     result.map_err(|_| {
         "operation_busy: Repository configuration is in use; retry after preparation completes"
             .to_string()
-    })?;
-    Ok(file)
+    })
 }
 
 fn update_root_config(
     repo: &RepoRuntime,
     updater: impl FnOnce(&mut JsonMap<String, JsonValue>) -> Result<(), String>,
 ) -> Result<(), String> {
-    let _config_lock = lock_root_config(repo, false)?;
     let config_path = repo
         .authoritative_repo_root()
         .join(".ait")
         .join("config.json");
-    let mut config = read_json_object(&config_path);
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&config_path)
+        .map_err(|err| err.to_string())?;
+    lock_config_file(&file, true)?;
+    // Windows byte-range locks apply to other handles in this process too.
+    // Keep both the read and rewrite on the exclusive lock's owning handle.
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|err| err.to_string())?;
+    let mut config = parse_object_or_empty(&content);
     updater(&mut config)?;
     PlanPreferences::from_config(&config)?;
-    write_json_pretty(&config_path, &JsonValue::Object(config))
+    write_json_pretty(&mut file, &JsonValue::Object(config))
 }
 
 #[cfg(test)]

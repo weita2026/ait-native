@@ -7,8 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveNativeManifest } from "../scripts/native-build.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const VERSION = "1.2.0";
-const CORE_SNAPSHOT = "SNP-849658E7DE4B";
+const VERSION = "1.1.4";
+const CORE_SNAPSHOT = "SNP-375417263DBF";
 const PACKAGE_NAME = "@wa120/ait-native";
 const PRODUCT_DESCRIPTION =
   "Agent-first, language-neutral workflow for verified repository changes";
@@ -209,7 +209,7 @@ test("published runtime loads an addon directly and has no process relay", async
 test("native build validates the locked external and public monorepo layouts", async () => {
   const build = await readFile(path.join(ROOT, "scripts", "native-build.mjs"), "utf8");
 
-  assert.match(build, /SNP-849658E7DE4B/);
+  assert.match(build, /SNP-375417263DBF/);
   assert.match(build, /\.ait-external-marker\.json/);
   assert.match(build, /ait-monorepo-source\.json/);
   assert.match(build, /ait-release-family\.json/);
@@ -280,7 +280,7 @@ test("cross-platform CI uses one logical runner and builds the addon first", asy
   const windows = await readFile(path.join(ROOT, "ci", "run.ps1"), "utf8");
   for (const source of [unix, windows]) {
     assert.match(source, /native:build/);
-    assert.match(source, /1\.2\.0/);
+    assert.match(source, /1\.1\.4/);
     assert.match(source, /ait-external/);
     assert.doesNotMatch(source, /1\.1\.0-rc\.1(?!\d)/);
   }

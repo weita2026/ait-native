@@ -452,6 +452,103 @@ fn initialized_repo() -> (TempDir, RepoRuntime) {
 }
 
 #[test]
+fn config_mutation_reuses_the_config_inode_across_repeated_set_and_unset() {
+    let (temp, repo) = initialized_repo();
+    let path = temp.path().join(".ait/config.json");
+    #[cfg(unix)]
+    let inode = {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(&path).unwrap();
+        (metadata.dev(), metadata.ino())
+    };
+    for model in ["long-model-name-".repeat(32), "short".into(), "next".into()] {
+        config_set_from_payload(&repo, &json!({"default_model":model})).unwrap();
+        let fresh = RepoRuntime::discover_from_path(temp.path()).unwrap();
+        assert_eq!(config_show(&fresh).unwrap()["default_model"], model);
+        let bytes = std::fs::read_to_string(&path).unwrap();
+        assert!(bytes.ends_with('\n'));
+        assert_eq!(
+            crate::json_support::parse_value(&bytes, "config").unwrap()["default_model"],
+            model
+        );
+    }
+    config_unset(&repo, ConfigUnsetKey::DefaultModel).unwrap();
+    let fresh = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    assert!(config_show(&fresh).unwrap()["default_model"].is_null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!((metadata.dev(), metadata.ino()), inode);
+    }
+}
+
+#[test]
+fn config_mutations_respect_shared_cleanup_and_exclusive_provisioning_guards() {
+    let (temp, repo) = initialized_repo();
+    let path = temp.path().join(".ait/config.json");
+    for exclusive in [false, true] {
+        let before = std::fs::read(&path).unwrap();
+        let lease = super::lock_root_config(&repo, exclusive).unwrap();
+        let error = config_set_from_payload(&repo, &json!({"default_model":"busy"})).unwrap_err();
+        assert!(error.contains("operation_busy"));
+        let error = config_unset(&repo, ConfigUnsetKey::DefaultModel).unwrap_err();
+        assert!(error.contains("operation_busy"));
+        drop(lease);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        config_set_from_payload(&repo, &json!({"default_model":"released"})).unwrap();
+        config_unset(&repo, ConfigUnsetKey::DefaultModel).unwrap();
+    }
+}
+
+#[test]
+fn config_mutation_holds_exclusive_ownership_through_validation_and_write() {
+    let (temp, repo) = initialized_repo();
+    let path = temp.path().join(".ait/config.json");
+    super::update_root_config(&repo, |config| {
+        let contender = std::fs::File::open(&path).unwrap();
+        assert!(fs2::FileExt::try_lock_shared(&contender).is_err());
+        assert!(fs2::FileExt::try_lock_exclusive(&contender).is_err());
+        #[cfg(windows)]
+        {
+            // A second handle in this process is not the exclusive lock owner.
+            let error = std::fs::read(&path).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(33));
+        }
+        config.insert("default_model".into(), json!("same-handle"));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        parse_object_or_empty(&std::fs::read_to_string(&path).unwrap())["default_model"],
+        "same-handle"
+    );
+    let lease = super::lock_root_config(&repo, true).unwrap();
+    drop(lease);
+}
+
+#[test]
+fn config_validation_and_write_errors_preserve_original_bytes_and_release_lock() {
+    let (temp, repo) = initialized_repo();
+    let path = temp.path().join(".ait/config.json");
+    let before = std::fs::read(&path).unwrap();
+    super::update_root_config(&repo, |config| {
+        config.insert("default_model".into(), json!("must-not-persist"));
+        Err("injected validation failure".into())
+    })
+    .unwrap_err();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let mut read_only = std::fs::File::open(&path).unwrap();
+    super::write_json_pretty(
+        &mut read_only,
+        &json!({"default_model":"must-not-truncate"}),
+    )
+    .unwrap_err();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    config_set_from_payload(&repo, &json!({"default_model":"after-error"})).unwrap();
+}
+
+#[test]
 #[cfg(unix)]
 fn config_show_separates_current_worktree_from_active_root_pointer() {
     use std::os::unix::fs::symlink;
