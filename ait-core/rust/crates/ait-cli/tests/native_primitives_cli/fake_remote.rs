@@ -314,6 +314,8 @@ fn spawn_closeout_recovery_remote(
     let log_clone = Arc::clone(&log);
     let state = Arc::new(Mutex::new(CloseoutRecoveryRemoteState::default()));
     let state_clone = Arc::clone(&state);
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let requests_clone = Arc::clone(&requests);
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = Arc::clone(&stop);
     let handle = thread::spawn(move || loop {
@@ -338,10 +340,15 @@ fn spawn_closeout_recovery_remote(
         });
         if method == "POST" && url == "/v1/native/repository-authorities/7/task-land" {
             let request_state = Arc::clone(&state_clone);
-            thread::spawn(move || {
-                let response = response_for_closeout_recovery(&method, &url, &body, &request_state);
-                let _ = request.respond(response);
-            });
+            let fixture_seed = request_state.lock().unwrap().fixture_seed;
+            let handler = thread::Builder::new()
+                .name(format!("closeout-{fixture_seed:#x}"))
+                .spawn(move || {
+                    let response = response_for_closeout_recovery(&method, &url, &body, &request_state);
+                    let _ = request.respond(response);
+                })
+                .unwrap();
+            requests_clone.lock().unwrap().push(handler);
             continue;
         }
         let response = response_for_closeout_recovery(&method, &url, &body, &state_clone);
@@ -354,8 +361,26 @@ fn spawn_closeout_recovery_remote(
         CloseoutRecoveryServerHandle {
             stop,
             handle: Some(handle),
+            requests,
         },
     )
+}
+
+fn spawn_closeout_iteration(
+    fixture_seed: u64,
+    boundary: CloseoutMutationBoundary,
+    land_delay: Duration,
+    task_delay: Duration,
+) -> SpawnedFakeRemote<CloseoutRecoveryRemoteState, CloseoutRecoveryServerHandle> {
+    let iteration = spawn_closeout_recovery_remote();
+    iteration.2.lock().unwrap().reset_iteration(
+        fixture_seed,
+        boundary,
+        land_delay,
+        boundary,
+        task_delay,
+    );
+    iteration
 }
 
 fn repository_payload(repo_name: &str) -> JsonValue {
@@ -1979,6 +2004,8 @@ fn response_for_closeout_recovery(
                 replayed,
                 response_delay,
                 fixture_seed,
+                mut accepted_response,
+                response_gate,
             ) = {
                 let mut guard = state.lock().unwrap();
                 guard.land_submit_attempts += 1;
@@ -2031,6 +2058,8 @@ fn response_for_closeout_recovery(
                     replayed,
                     response_delay,
                     guard.fixture_seed,
+                    guard.accepted.clone(),
+                    (!replayed).then(|| guard.response_gate.clone()).flatten(),
                 )
             };
             if retryable_busy_while_in_flight {
@@ -2041,6 +2070,9 @@ fn response_for_closeout_recovery(
                         "fixture_seed": fixture_seed
                     }),
                 );
+            }
+            if let Some(gate) = &response_gate {
+                gate.pause();
             }
             thread::sleep(response_delay);
             if starts_in_flight_mutation {
@@ -2054,6 +2086,7 @@ fn response_for_closeout_recovery(
                     guard.accepted = Some(current_closeout_acceptance(&request, &guard));
                 }
                 guard.land_mutation_in_flight = false;
+                accepted_response = guard.accepted.clone();
             }
             if timeout_before_mutation {
                 return json_response(
@@ -2073,12 +2106,7 @@ fn response_for_closeout_recovery(
                     }),
                 );
             }
-            let mut response = state
-                .lock()
-                .unwrap()
-                .accepted
-                .clone()
-                .expect("actual atomic acceptance");
+            let mut response = accepted_response.expect("actual atomic acceptance");
             response["replayed"] = json!(replayed);
             response["idempotency_key"] = request["idempotency_key"].clone();
             json_response(200, &response)

@@ -210,7 +210,6 @@ fn native_task_land_recovers_land_submit_from_authoritative_land_state() {
     );
     let temp = init_repo(&base_url);
     let root = temp.path();
-    write_file(&root.join("ci/patch_ci.json"), "{}\n");
 
     let payload = closeout_recovery_json(root, 0xA17_0001, "land-response-lost");
 
@@ -460,21 +459,19 @@ fn panic_payload_text(payload: Box<dyn std::any::Any + Send>) -> String {
 }
 
 fn run_seeded_closeout_repetition(
-    base_url: &str,
-    state: &Arc<Mutex<CloseoutRecoveryRemoteState>>,
     fixture_seed: u64,
     land_delay: Duration,
     task_delay: Duration,
 ) -> PathBuf {
+    // Each iteration owns its server and state, including delayed POST workers.
+    let (base_url, _log, state, handle) = spawn_closeout_iteration(
+        fixture_seed,
+        CloseoutMutationBoundary::MutateBeforeResponse,
+        land_delay,
+        task_delay,
+    );
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        state.lock().unwrap().reset_iteration(
-            fixture_seed,
-            CloseoutMutationBoundary::MutateBeforeResponse,
-            land_delay,
-            CloseoutMutationBoundary::MutateBeforeResponse,
-            task_delay,
-        );
-        let temp = init_repo(base_url);
+        let temp = init_repo(&base_url);
         let root = fs::canonicalize(temp.path()).unwrap();
         let started = Instant::now();
         let payload = closeout_recovery_json(&root, fixture_seed, "seeded-repetition");
@@ -490,9 +487,10 @@ fn run_seeded_closeout_repetition(
             "fixture_seed={fixture_seed:#x} fixture_root={}",
             root.display()
         );
-        assert_closeout_mutated_once(state, fixture_seed);
+        assert_closeout_mutated_once(&state, fixture_seed);
         root
     }));
+    handle.join().unwrap();
     match result {
         Ok(root) => root,
         Err(payload) => panic!(
@@ -512,13 +510,10 @@ fn deterministic_recovery_jitter(seed: u64, stream: u32) -> Duration {
 
 #[test]
 fn native_task_land_recovery_passes_fifty_deterministic_isolated_repetitions() {
-    let (base_url, _log, state, handle) = spawn_closeout_recovery_remote();
     let mut fixture_roots = BTreeSet::new();
     for repetition in 0..50_u64 {
         let fixture_seed = 0xA17_D37E_0000_0000_u64.wrapping_add(repetition);
         let root = run_seeded_closeout_repetition(
-            &base_url,
-            &state,
             fixture_seed,
             Duration::from_millis(30),
             Duration::from_millis(30),
@@ -535,19 +530,16 @@ fn native_task_land_recovery_passes_fifty_deterministic_isolated_repetitions() {
         );
     }
     assert_eq!(fixture_roots.len(), 50);
-    handle.join().unwrap();
 }
 
 #[test]
 fn native_task_land_recovery_passes_thirty_seeded_bounded_jitter_repetitions() {
-    let (base_url, _log, state, handle) = spawn_closeout_recovery_remote();
     let mut fixture_roots = BTreeSet::new();
     for repetition in 0..30_u64 {
         let fixture_seed = 0xA17_5177_0000_0000_u64.wrapping_add(repetition);
         let land_delay = deterministic_recovery_jitter(fixture_seed, 13);
         let task_delay = deterministic_recovery_jitter(fixture_seed, 37);
-        let root =
-            run_seeded_closeout_repetition(&base_url, &state, fixture_seed, land_delay, task_delay);
+        let root = run_seeded_closeout_repetition(fixture_seed, land_delay, task_delay);
         assert!(
             fixture_roots.insert(root.clone()),
             "fixture root reused: fixture_seed={fixture_seed:#x} fixture_root={}",
@@ -560,6 +552,155 @@ fn native_task_land_recovery_passes_thirty_seeded_bounded_jitter_repetitions() {
         );
     }
     assert_eq!(fixture_roots.len(), 30);
+}
+
+#[test]
+fn native_closeout_fixture_isolates_delayed_response_and_in_flight_iterations() {
+    fn atomic_reply(
+        base_url: &str,
+        request: &JsonValue,
+    ) -> (u16, JsonValue) {
+        use std::io::Read;
+        let mut stream = std::net::TcpStream::connect(base_url.strip_prefix("http://").unwrap()).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+        let body = encode_json(request);
+        write!(stream,
+            "POST /v1/native/repository-authorities/7/task-land HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(), body).unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        let separator = response.windows(4).position(|part| part == b"\r\n\r\n").unwrap();
+        let header = std::str::from_utf8(&response[..separator]).unwrap();
+        let status = header.split_whitespace().nth(1).unwrap().parse().unwrap();
+        (status, parse_json_bytes(&response[separator + 4..]))
+    }
+
+    for boundary in [
+        CloseoutMutationBoundary::MutateBeforeResponse,
+        CloseoutMutationBoundary::MutationInFlight,
+    ] {
+        let (base_a, _log_a, state_a, server_a) =
+            spawn_closeout_iteration(0xa, boundary, Duration::ZERO, Duration::ZERO);
+        let gate = Arc::new(CloseoutResponseGate::default());
+        {
+            let mut state = state_a.lock().unwrap();
+            state.patchset_revision_snapshot_id = Some(FIXTURE_REVISION_SNAPSHOT_ID.into());
+            state.response_gate = Some(Arc::clone(&gate));
+        }
+        let request_a = json!({
+            "contract":"task-land-atomic/v2", "task_or_change_ref":"RT-1",
+            "idempotency_key":"iteration-a"
+        });
+        let original = {
+            let base = base_a.clone();
+            let request = request_a.clone();
+            thread::Builder::new()
+                .name("delayed-iteration-0xa".into())
+                .spawn(move || atomic_reply(&base, &request))
+                .unwrap()
+        };
+        gate.wait_until_entered();
+        let (status, replay) = atomic_reply(&base_a, &request_a);
+        if boundary == CloseoutMutationBoundary::MutateBeforeResponse {
+            assert_eq!(status, 200);
+            assert_eq!(replay["replayed"], true);
+            assert_closeout_mutated_once(&state_a, 0xa);
+        } else {
+            assert_eq!(status, 503);
+            assert!(state_a.lock().unwrap().accepted.is_none());
+        }
+
+        // B starts while A's worker is still paused, using the same ownership
+        // boundary as every deterministic/jitter iteration.
+        let (base_b, _log_b, state_b, server_b) = spawn_closeout_iteration(
+            0xb,
+            CloseoutMutationBoundary::MutateBeforeResponse,
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        assert_ne!(base_a, base_b);
+        assert!(!Arc::ptr_eq(&state_a, &state_b));
+        {
+            let mut state = state_b.lock().unwrap();
+            state.patchset_revision_snapshot_id = Some(FIXTURE_FINISHED_SNAPSHOT_ID.into());
+        }
+        let request_b = json!({
+            "contract":"task-land-atomic/v2", "task_or_change_ref":"RT-1",
+            "idempotency_key":"iteration-b"
+        });
+        let (status, response_b) = atomic_reply(&base_b, &request_b);
+        assert_eq!(status, 200);
+        let accepted_b = state_b.lock().unwrap().accepted.clone();
+
+        gate.release();
+        let (status, response_a) = original.join().unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(response_a["idempotency_key"], "iteration-a");
+        assert_eq!(response_a["landed_snapshot_id"], FIXTURE_REVISION_SNAPSHOT_ID);
+        assert_eq!(response_b["idempotency_key"], "iteration-b");
+        assert_eq!(response_b["landed_snapshot_id"], FIXTURE_FINISHED_SNAPSHOT_ID);
+        assert_eq!(state_b.lock().unwrap().accepted, accepted_b);
+        assert_closeout_mutated_once(&state_a, 0xa);
+        assert_closeout_mutated_once(&state_b, 0xb);
+        let (status, replay) = atomic_reply(&base_a, &request_a);
+        assert_eq!(status, 200);
+        assert_eq!(replay["replayed"], true);
+        assert_eq!(replay["land"], response_a["land"]);
+        assert_closeout_mutated_once(&state_a, 0xa);
+        server_a.join().unwrap();
+        server_b.join().unwrap();
+    }
+}
+
+#[test]
+fn native_task_land_dirty_canonical_delta_preserves_head_bytes_and_worktree() {
+    let (base_url, _log, state, handle) = spawn_closeout_recovery_remote();
+    let (temp, worktree) = init_worktree_repo(&base_url);
+    let root = temp.path();
+    let root_source = fs::read(root.join("src/lib.rs")).unwrap();
+    let head = local_line_head(root, "main");
+    state.lock().unwrap().patchset_revision_snapshot_id =
+        Some(seed_snapshot(&worktree, "accepted Remote source"));
+    let repo = RepoRuntime::discover_from_path(&worktree).unwrap();
+    let payload = task_land_apply(
+        &repo, "RT-1", None, None::<fn(&JsonValue) -> Result<(), String>>,
+    ).unwrap();
+    assert_eq!(payload["apply_status"], "done");
+    assert_eq!(payload["local_line_sync"]["status"], "failed");
+    assert_eq!(payload["local_line_sync"]["reason"], "local_reconciliation_required");
+    assert_eq!(payload["local_line_sync"]["detail"], "Canonical workspace has unsaved changes in the Remote delta.");
+    assert_eq!(payload["bound_worktree_cleanup"]["status"], "deferred");
+    assert_eq!(local_line_head(root, "main"), head);
+    assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), root_source);
+    assert!(worktree.exists());
+    assert!(root.join(".ait/worktrees/rt-1.json").exists());
+    assert_closeout_mutated_once(&state, 0);
+    handle.join().unwrap();
+}
+
+#[test]
+fn native_task_land_same_head_dirty_canonical_preserves_head_and_bytes() {
+    let (base_url, _log, state, handle) = spawn_closeout_recovery_remote();
+    let temp = init_repo(&base_url);
+    let root = temp.path();
+    let head = local_line_head(root, "main");
+    let source = fs::read(root.join("src/lib.rs")).unwrap();
+    let untracked = root.join("ci/patch_ci.json");
+    write_file(&untracked, "{}\n");
+    let repo = RepoRuntime::discover_from_path(root).unwrap();
+    let payload = task_land_apply(
+        &repo, "RT-1", None, None::<fn(&JsonValue) -> Result<(), String>>,
+    ).unwrap();
+    assert_eq!(payload["apply_status"], "done");
+    assert_eq!(payload["local_line_sync"]["status"], "failed");
+    assert_eq!(payload["local_line_sync"]["same_head"], true);
+    assert_eq!(payload["local_line_sync"]["reason"], "local_reconciliation_required");
+    assert_eq!(payload["bound_worktree_cleanup"]["status"], "deferred");
+    assert_eq!(local_line_head(root, "main"), head);
+    assert_eq!(fs::read(root.join("src/lib.rs")).unwrap(), source);
+    assert_eq!(fs::read_to_string(untracked).unwrap(), "{}\n");
+    assert_closeout_mutated_once(&state, 0);
     handle.join().unwrap();
 }
 
@@ -568,6 +709,7 @@ fn native_task_land_current_worktree_skips_unrelated_backlog_refresh() {
     let (base_url, _log, state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
     let root = temp.path();
+    restore_fixture_canonical_base(root);
     let patchset_revision_snapshot_id =
         seed_snapshot(&worktree, "task land clean current worktree");
     state.lock().unwrap().patchset_revision_snapshot_id = Some(patchset_revision_snapshot_id);
@@ -978,6 +1120,7 @@ fn assert_guarded_remote_finish_recovers_plan_sync(teams: bool, existing_summary
 fn assert_workflow_finish_cli_preserves_review_gates(reference: &str) {
     let (base_url, log, state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
+    restore_fixture_canonical_base(temp.path());
     let config_path = temp.path().join(".ait/config.json");
     let mut config: JsonValue = parse_json_file(&config_path);
     config["workflow_default_scope"] = json!("local");
@@ -1326,6 +1469,7 @@ fn native_task_land_apply_force_removes_current_worktree_after_completion() {
     let (base_url, _log, state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
     let root = temp.path();
+    restore_fixture_canonical_base(root);
     write_file(
         &worktree.join("src/lib.rs"),
         "pub fn repo_root_version() -> &'static str { \"root\" }\n",
@@ -1405,6 +1549,7 @@ fn native_task_land_promotes_clean_completed_worktree_to_cli_main_seed() {
     let (base_url, _log, state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
     let root = temp.path();
+    restore_fixture_canonical_base(root);
     let client_runtime_root = root.join("client-runtime");
     let config_path = root.join(".ait/config.json");
     let mut config = parse_json_file(&config_path);

@@ -26,13 +26,14 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tiny_http::{Response, Server};
 
 const FIXTURE_BASE_SNAPSHOT_ID: &str = "SNP-C95DCC8C7848";
+const FIXTURE_BASE_SOURCE: &str = "pub fn example() -> &'static str { \"ok\" }\n";
 const FIXTURE_REVISION_SNAPSHOT_ID: &str = "SNP-A11CE5EED001";
 const FIXTURE_FINISHED_SNAPSHOT_ID: &str = "SNP-A11CE5EED002";
 const FIXTURE_REPOSITORY_INDEX: u32 = 7;
@@ -123,6 +124,43 @@ enum CloseoutMutationBoundary {
     TimeoutBeforeMutation,
 }
 
+#[derive(Default)]
+struct CloseoutResponseGate {
+    // (entered, released), independent of the mutable acceptance state.
+    state: Mutex<(bool, bool)>,
+    changed: Condvar,
+}
+
+impl CloseoutResponseGate {
+    fn pause(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.0 = true;
+        self.changed.notify_all();
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, Duration::from_secs(2), |state| !state.1)
+            .unwrap();
+        assert!(state.1, "fixture response gate was not released");
+    }
+
+    fn wait_until_entered(&self) {
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(
+                self.state.lock().unwrap(),
+                Duration::from_secs(2),
+                |state| !state.0,
+            )
+            .unwrap();
+        assert!(state.0, "fixture response gate was not reached");
+    }
+
+    fn release(&self) {
+        self.state.lock().unwrap().1 = true;
+        self.changed.notify_all();
+    }
+}
+
 struct CloseoutRecoveryRemoteState {
     revision_change: bool,
     accepted: Option<JsonValue>,
@@ -151,6 +189,7 @@ struct CloseoutRecoveryRemoteState {
     land_mutation_in_flight: bool,
     atomic_task_land_idempotency_key: Option<String>,
     fixture_seed: u64,
+    response_gate: Option<Arc<CloseoutResponseGate>>,
 }
 
 impl Default for CloseoutRecoveryRemoteState {
@@ -183,6 +222,7 @@ impl Default for CloseoutRecoveryRemoteState {
             land_mutation_in_flight: false,
             atomic_task_land_idempotency_key: None,
             fixture_seed: 0,
+            response_gate: None,
         }
     }
 }
@@ -219,6 +259,7 @@ impl CloseoutRecoveryRemoteState {
         self.land_mutation_in_flight = false;
         self.atomic_task_land_idempotency_key = None;
         self.fixture_seed = fixture_seed;
+        self.response_gate = None;
     }
 }
 
@@ -242,12 +283,27 @@ impl CloseoutPlanFixture {
 struct CloseoutRecoveryServerHandle {
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
+    requests: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
 }
 
 impl CloseoutRecoveryServerHandle {
     fn join(mut self) -> thread::Result<()> {
         self.stop.store(true, Ordering::Release);
-        self.handle.take().expect("closeout server handle").join()
+        self.handle.take().expect("closeout server handle").join()?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let requests = std::mem::take(&mut *self.requests.lock().unwrap());
+        for request in requests {
+            while !request.is_finished() {
+                assert!(
+                    Instant::now() < deadline,
+                    "fixture handler did not stop: {}",
+                    request.thread().name().unwrap_or("unnamed")
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+            request.join()?;
+        }
+        Ok(())
     }
 }
 
@@ -328,10 +384,7 @@ fn seed_binary_line(root: &Path, line_name: &str, snapshot_id: &str) {
 fn init_repo_with_fixture_workflow(base_url: &str) -> TempDir {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    write_file(
-        &root.join("src/lib.rs"),
-        "pub fn example() -> &'static str { \"ok\" }\n",
-    );
+    write_file(&root.join("src/lib.rs"), FIXTURE_BASE_SOURCE);
     initialize_repo(&InitRequest {
         root: root.to_path_buf(),
         name: Some("fixture-ait".to_string()),
@@ -686,6 +739,10 @@ fn init_worktree_repo_with_rt1_publication(
 
 fn init_worktree_repo(base_url: &str) -> (TempDir, std::path::PathBuf) {
     init_worktree_repo_with_rt1_publication(base_url, true)
+}
+
+fn restore_fixture_canonical_base(root: &Path) {
+    write_file(&root.join("src/lib.rs"), FIXTURE_BASE_SOURCE);
 }
 
 fn init_local_draft_worktree_repo(base_url: &str) -> (TempDir, std::path::PathBuf) {

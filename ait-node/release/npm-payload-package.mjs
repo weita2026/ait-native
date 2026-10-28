@@ -123,7 +123,7 @@ export function validateContract(contract) {
       payload.package !== expectedPackage ||
       payload.version !== contract.family_version ||
       payload.binding_repository !== "ait-core" ||
-      payload.binding_snapshot !== "SNP-393E8BA4ADFB" ||
+      payload.binding_snapshot !== "SNP-88F62DE03EDC" ||
       payload.license !== "Apache-2.0" ||
       payload.addon !== "native/ait_napi.node"
     ) {
