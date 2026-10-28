@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn ai_only_code_review_uses_existing_policy_semantics() {
+    let mut patchset = json!({
+        "author_mode":"ai_only_experimental",
+        "diff_stats":{"paths":{"modified":["src/lib.rs"]}}
+    });
+    assert!(workflow_requires_code_review_summary(
+        Some(&patchset),
+        None,
+        None
+    ));
+    assert!(!workflow_requires_code_review_summary(
+        Some(&patchset),
+        None,
+        Some(&json!({"effective_requirements":{"require_code_review_summary":false}})),
+    ));
+    patchset["author_mode"] = json!("human_only");
+    assert!(!workflow_requires_code_review_summary(
+        Some(&patchset),
+        None,
+        None
+    ));
+}
+
+#[test]
 fn review_lane_counts_keep_bot_and_user_actors_distinct_without_requiring_humans() {
     let summary = json!({"reviews":[
         {"patchset_id":"P-1","reviewer":"Einstein","reviewer_kind":"user","action":"task_approve"},

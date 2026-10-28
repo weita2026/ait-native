@@ -10,6 +10,7 @@ use ait_core::workflow_package::PackageCompletion;
 
 mod authority;
 mod finish_cleanup;
+mod replay;
 
 struct AncestryRemote {
     rows: BTreeMap<String, JsonValue>,
@@ -511,10 +512,18 @@ fn package_alias_and_conflicting_origin_owners_stop_before_plan_sync_or_capture(
 }
 
 fn fixture_with_receipt_boundary(self_boundary: bool) -> Fixture {
+    fixture_with_authority(self_boundary, "fixture", None)
+}
+
+fn fixture_with_authority(
+    self_boundary: bool,
+    repo_name: &str,
+    namespace: Option<&str>,
+) -> Fixture {
     let temp = tempfile::tempdir().unwrap();
     init_repo(&InitRequest {
         root: temp.path().into(),
-        name: Some("fixture".into()),
+        name: Some(repo_name.into()),
         default_line: "main".into(),
         policy_profile: "prototype".into(),
         default_author_mode: "ai_with_human_review".into(),
@@ -524,6 +533,15 @@ fn fixture_with_receipt_boundary(self_boundary: bool) -> Fixture {
     .unwrap();
     let mut repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
     repo.config.insert("repository_index".into(), json!(0));
+    if let Some(namespace) = namespace {
+        repo.config
+            .insert("id_namespace_prefix".into(), json!(namespace));
+        update_root_config(&repo, |config| {
+            config.insert("repository_index".into(), json!(0));
+            config.insert("id_namespace_prefix".into(), json!(namespace));
+        })
+        .unwrap();
+    }
     let content = repo
         .local_content_maintenance_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
         .unwrap();
@@ -534,13 +552,13 @@ fn fixture_with_receipt_boundary(self_boundary: bool) -> Fixture {
         required_string_field(
             &content
                 .create_snapshot_content_with_workflow_binding(
-                    "fixture",
+                    repo_name,
                     line,
                     parents,
                     Some(message),
                     binding.is_some(),
                     SnapshotAuthoringOptions::default(),
-                    binding.map(|owner| (owner, "")),
+                    binding.map(|owner| (owner, namespace.unwrap_or(""))),
                 )
                 .unwrap(),
             "snapshot_id",
@@ -557,10 +575,10 @@ fn fixture_with_receipt_boundary(self_boundary: bool) -> Fixture {
     let tasks = repo.task_store().unwrap();
     let task = TaskStore::create_task(
         &tasks,
-        "fixture",
+        repo_name,
         "Feature",
         "Preserve source receipt",
-        None,
+        namespace,
         None,
         None,
         None,
@@ -610,7 +628,7 @@ fn fixture_with_receipt_boundary(self_boundary: bool) -> Fixture {
     let remote = RemoteRow {
         name: "origin".into(),
         url: "http://127.0.0.1:1".into(),
-        repo_name: Some("fixture".into()),
+        repo_name: Some(repo_name.into()),
     };
     let entry = workflow_completed_local_entry_if_present(&repo, &id, Some("origin"))
         .unwrap()
@@ -1754,12 +1772,13 @@ fn assert_finish_response_failure_never_replays_or_writes_unproven_mappings(repl
     )
     .unwrap();
     if !review_blocked && !direct_confirmed {
+        // Observation does not explicitly request guarded reconciliation.
         let repeated = workflow_package_finish(
             &fixture.repo,
             &fixture.id,
             Some("origin"),
             &identity,
-            true,
+            false,
             None,
             None,
         )

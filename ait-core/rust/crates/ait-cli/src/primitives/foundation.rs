@@ -7,6 +7,7 @@ use ait_core::local_snapshot::{LocalSnapshotBlobReadStore, LocalSnapshotTreeRead
 
 pub(super) const AI_RELATED_AUTHOR_MODES: &[&str] = &[
     "ai_generated",
+    "ai_only_experimental",
     "ai_with_human_review",
     "human_with_ai_assist",
 ];

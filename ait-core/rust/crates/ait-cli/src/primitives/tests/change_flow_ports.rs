@@ -831,13 +831,17 @@ fn remote_revision_creation_forks_current_reviewed_revision_instead_of_main() {
             "Actual correction",
             "main",
             assertion,
+            Some("S0"),
         )
         .unwrap();
         assert_eq!(created["change_ref"], "RT-0108/C-01");
         assert_eq!(created["fork_snapshot_id"], "S1");
         assert_eq!(tasks.changes.len(), 1);
         assert_eq!(tasks.changes[0]["fork_snapshot_id"], "S1");
-        assert_eq!(closeout.patchset_reads, vec!["RT-0108/P-01"]);
+        assert_eq!(
+            closeout.patchset_reads,
+            vec!["RT-0108/P-01", "RT-0108/P-01"]
+        );
     }
 }
 
@@ -877,7 +881,8 @@ fn remote_revision_creation_rejects_bad_assertions_or_candidate_without_effects(
                 "RT-0108",
                 "Actual correction",
                 "main",
-                assertion
+                assertion,
+                Some("S0"),
             )
             .is_err(),
             "case {case}"
@@ -901,6 +906,7 @@ fn remote_revision_creation_rechecks_candidate_before_creation_and_keeps_no_cand
         "Actual correction",
         "main",
         None,
+        Some("S0"),
     )
     .unwrap_err();
     assert!(error.contains("candidate changed"), "{error}");
@@ -915,10 +921,60 @@ fn remote_revision_creation_rechecks_candidate_before_creation_and_keeps_no_cand
         "Initial explicit revision",
         "main",
         None,
+        Some("S0"),
     )
     .unwrap();
     assert_eq!(created["fork_snapshot_id"], "S0");
     assert!(closeout.patchset_reads.is_empty());
+}
+
+#[test]
+fn remote_revision_creation_rejects_late_target_and_equal_id_identity_changes_without_effects() {
+    for case in 0..6 {
+        let (mut tasks, mut closeout) = remote_revision_fixture();
+        let original_task = tasks.tasks.clone();
+        let original = closeout.patchsets["RT-0108/P-01"].clone();
+        if case < 2 {
+            let base = tasks.lines[0].clone();
+            let mut advanced = base.clone();
+            advanced["head_snapshot_id"] = json!("S2");
+            tasks.line_read_sequence = if case == 0 {
+                VecDeque::from([advanced])
+            } else {
+                VecDeque::from([base, advanced])
+            };
+        } else {
+            let mut changed = original.clone();
+            match case {
+                2 => changed["task_id"] = json!("RT-0109"),
+                3 => changed["revision_snapshot_id"] = json!("S2"),
+                4 => changed["base_snapshot_id"] = json!("S2"),
+                _ => changed["invalidated"] = json!(true),
+            }
+            closeout.patchset_read_sequence = VecDeque::from([original.clone(), changed]);
+        }
+        let error = super::change_flow::change_create_remote_revision_with_remotes(
+            &mut tasks,
+            &mut closeout,
+            "fixture-ait",
+            "RT-0108",
+            "Actual correction",
+            "main",
+            Some("S1"),
+            Some("S0"),
+        )
+        .unwrap_err();
+        assert!(!error.is_empty(), "case {case}");
+        assert!(tasks.changes.is_empty(), "case {case}");
+        assert_eq!(tasks.tasks, original_task, "case {case}");
+        assert_eq!(closeout.patchsets["RT-0108/P-01"], original, "case {case}");
+        assert!(
+            closeout.ci_runs.is_empty()
+                && closeout.reviews.is_empty()
+                && closeout.land_submissions.is_empty(),
+            "case {case}"
+        );
+    }
 }
 
 #[test]

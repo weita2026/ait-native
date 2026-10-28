@@ -196,14 +196,7 @@ pub(super) fn workflow_task_change_reference(
             "Task lookup for {requested} returned another Task."
         ));
     }
-    if !matches!(
-        string_field(&task, "status").as_deref(),
-        Some("active" | "completed")
-    ) {
-        return Err(format!(
-            "Task {requested} is not active or completed; it cannot prepare or finish work."
-        ));
-    }
+    workflow_validate_task_lifecycle(requested, &task)?;
     if !local {
         return Ok(requested.to_string());
     }
@@ -218,6 +211,18 @@ pub(super) fn workflow_task_change_reference(
         return Ok(requested.to_string());
     }
     Err(format!("Task {requested} is still local work. Finish it locally before preparing its completed history for remote review."))
+}
+
+fn workflow_validate_task_lifecycle(requested: &str, task: &JsonValue) -> Result<(), String> {
+    if !matches!(
+        string_field(task, "status").as_deref(),
+        Some("active" | "completed")
+    ) {
+        return Err(format!(
+            "Task {requested} is not active or completed; it cannot prepare or finish work."
+        ));
+    }
+    Ok(())
 }
 
 pub fn workflow_ready_payload(
@@ -669,35 +674,17 @@ where
         land_result,
         base_stale_converged_snapshot_id.clone(),
     );
-    let root_repo = workflow_root_repo(repo)?;
-    let previous_head_snapshot_id = {
-        let _range = perfetto_range!("ait.task_land.local.target_line_read");
-        local_line_head_snapshot_id(&root_repo, &target_line)?
-    };
-    if let Some(landed_snapshot_id) = landed_snapshot_id.as_deref() {
-        let _range = perfetto_range!("ait.task_land.local.target_line_update");
-        set_local_line_head(&root_repo, &target_line, Some(landed_snapshot_id))?;
-    }
-    let workspace_restore = {
-        let _range = perfetto_range!("ait.task_land.local.workspace_restore");
-        workflow_repo_root_restore_after_land(
-            repo,
-            &target_line,
-            previous_head_snapshot_id.as_deref(),
-            landed_snapshot_id.as_deref(),
-        )?
-    };
-    let mut local_sync = json!({
-        "status": if string_field(&workspace_restore, "status").as_deref() == Some("failed") {
-            "failed"
-        } else {
-            "synced"
-        },
-        "line": target_line,
-        "landed_snapshot_id": landed_snapshot_id,
-        "auto_rebase": true,
-        "workspace_restore": workspace_restore,
-    });
+    let task_hint = string_field(land_result, "task_id")
+        .or_else(|| change_id.split_once('/').map(|(task, _)| task.to_string()))
+        .or_else(|| is_task_id(change_id).then(|| change_id.to_string()));
+    let mut local_sync = workflow_sync_trusted_remote_snapshot(
+        repo,
+        &target_line,
+        landed_snapshot_id
+            .as_deref()
+            .ok_or("Remote finish Snapshot is missing")?,
+        task_hint.as_deref(),
+    )?;
     if base_stale_converged_snapshot_id.is_some() {
         local_sync["status_source"] =
             JsonValue::String("base_stale_target_line_already_at_revision".to_string());
@@ -737,26 +724,211 @@ pub(super) fn workflow_attach_local_land_sync_from_atomic_response(
     landed_snapshot_id: &str,
 ) -> Result<JsonValue, String> {
     let _sync_range = perfetto_range!("ait.task_land.local.atomic_response_sync");
+    let local_sync = workflow_sync_trusted_remote_snapshot(
+        repo,
+        target_line,
+        landed_snapshot_id,
+        Some(task_id),
+    )?;
+    let mut payload = land_result.clone();
+    let mut result = payload
+        .get("result")
+        .and_then(JsonValue::as_object)
+        .cloned()
+        .unwrap_or_default();
+    result.insert("target_line".to_string(), json!(target_line));
+    result.insert("landed_snapshot_id".to_string(), json!(landed_snapshot_id));
+    payload["result"] = JsonValue::Object(result);
+    payload["local_sync"] = local_sync;
+    payload["bound_worktree_cleanup"] = json!({
+        "status": "deferred",
+        "reason": "task_land_main_seed_finalizer",
+        "task_id": task_id,
+        "detail": "The Task worktree remains available until CLI main-seed promotion succeeds.",
+    });
+    Ok(payload)
+}
+
+fn workflow_sync_trusted_remote_snapshot(
+    repo: &RepoRuntime,
+    target_line: &str,
+    landed_snapshot_id: &str,
+    task_id: Option<&str>,
+) -> Result<JsonValue, String> {
     let root_repo = workflow_root_repo(repo)?;
+    run_locked_workspace_command(
+        &root_repo,
+        "ait remote finish Local synchronization",
+        || {
+            let root_repo = workflow_root_repo(repo)?;
+            workflow_sync_trusted_remote_snapshot_locked(
+                repo,
+                &root_repo,
+                target_line,
+                landed_snapshot_id,
+                task_id,
+            )
+        },
+    )
+}
+
+fn workflow_sync_trusted_remote_snapshot_locked(
+    invoking_repo: &RepoRuntime,
+    root_repo: &RepoRuntime,
+    target_line: &str,
+    landed_snapshot_id: &str,
+    task_id: Option<&str>,
+) -> Result<JsonValue, String> {
     let previous_head_snapshot_id = {
         let _range = perfetto_range!("ait.task_land.local.target_line_read");
-        local_line_head_snapshot_id(&root_repo, target_line)?
+        local_line_head_snapshot_id(root_repo, target_line)?
     };
+    let held = |detail: String| {
+        json!({
+            "status": "failed",
+            "reason": "local_reconciliation_required",
+            "detail": detail,
+            "line": target_line,
+            "line_head_snapshot_id": previous_head_snapshot_id,
+            "landed_snapshot_id": landed_snapshot_id,
+            "auto_rebase": false,
+            "same_head": false,
+            "local_head_contains_landed_snapshot": false,
+            "source": "task-land-atomic/v2",
+            "workspace_restore": {"status":"skipped","reason":"local_reconciliation_required"},
+        })
+    };
+    let store = root_repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(
+        &root_repo.workspace_root(),
+    )?;
+    if snapshot_by_id_with_snapshot_store(&store, landed_snapshot_id)?.is_none() {
+        return Ok(held(
+            "Accepted Remote Snapshot is absent from this Local authority.".into(),
+        ));
+    }
+    let Some(previous) = previous_head_snapshot_id.as_deref() else {
+        return Ok(held(
+            "Local target has no provable Snapshot boundary.".into(),
+        ));
+    };
+    if snapshot_by_id_with_snapshot_store(&store, previous)?.is_none() {
+        return Ok(held("Local target Snapshot is missing.".into()));
+    }
     let same_head = previous_head_snapshot_id.as_deref() == Some(landed_snapshot_id);
     let local_head_contains_landed_snapshot = if same_head {
         false
     } else {
         snapshot_distance_if_ancestor(
-            &root_repo,
+            root_repo,
             Some(landed_snapshot_id),
             previous_head_snapshot_id.as_deref(),
         )?
         .is_some()
     };
     let preserve_local_head = same_head || local_head_contains_landed_snapshot;
+    if preserve_local_head
+        && target_line == root_repo.default_line_name()
+        && root_repo.current_line_name()? == target_line
+        && workflow_workspace_status(root_repo, None, None)?["clean"].as_bool() != Some(true)
+    {
+        let mut result = held("Canonical workspace differs from its preserved Local head; keep it available for Local reconciliation.".into());
+        result["same_head"] = json!(same_head);
+        result["local_head_contains_landed_snapshot"] = json!(local_head_contains_landed_snapshot);
+        return Ok(result);
+    }
+    if !preserve_local_head
+        && snapshot_distance_if_ancestor(root_repo, Some(previous), Some(landed_snapshot_id))?
+            .is_none()
+    {
+        return Ok(held("Local and accepted Remote histories diverge; preserve pending Local work before the next batch.".into()));
+    }
     if !preserve_local_head {
+        let guard_repo = if invoking_repo.is_worktree() {
+            let Some(task_id) = task_id else {
+                return Ok(held(
+                    "Invoking worktree has no accepted Task identity.".into(),
+                ));
+            };
+            if let Err(error) = resolve_task_scoped_execution_repo(
+                invoking_repo,
+                task_id,
+                false,
+                false,
+                None,
+                "Remote finish Local synchronization",
+            ) {
+                return Ok(held(error));
+            }
+            let Some(metadata) = current_worktree_metadata(invoking_repo)? else {
+                return Ok(held("Invoking worktree has no current binding.".into()));
+            };
+            if active_root_worktree_binding_name(root_repo)
+                .is_some_and(|name| name != metadata.name)
+            {
+                return Ok(held(
+                    "Canonical workspace is pinned to a different Task worktree.".into(),
+                ));
+            }
+            if workflow_workspace_status(invoking_repo, None, None)?["clean"].as_bool()
+                != Some(true)
+            {
+                return Ok(held("Invoking Task worktree has unsaved changes.".into()));
+            }
+            invoking_repo
+        } else {
+            root_repo
+        };
+        if let Err(error) = guard_repo_root_pinned_bound_worktree(
+            guard_repo,
+            None,
+            "Remote finish Local synchronization",
+        ) {
+            return Ok(held(error));
+        }
+        if target_line == root_repo.default_line_name()
+            && root_repo.current_line_name()? != target_line
+        {
+            return Ok(held(
+                "Canonical workspace is selected on a different Line.".into(),
+            ));
+        }
+        let paths = if target_line == root_repo.default_line_name() {
+            root_repo
+                .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(
+                    &root_repo.workspace_root(),
+                )?
+                .snapshot_tree_path_delta(Some(previous), Some(landed_snapshot_id))?
+                .affected_paths
+                .into_iter()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let preview = restore_workspace_paths_selected(
+            root_repo,
+            Some(landed_snapshot_id),
+            &paths,
+            Some(previous),
+            false,
+            true,
+        )?;
+        if preview["workspace_dirty"].as_bool() != Some(false) {
+            return Ok(held(
+                "Canonical workspace has unsaved changes in the Remote delta.".into(),
+            ));
+        }
         let _range = perfetto_range!("ait.task_land.local.target_line_update");
-        set_local_line_head(&root_repo, target_line, Some(landed_snapshot_id))?;
+        if let Err(error) = root_repo.line_store()?.compare_and_swap_line_head(
+            target_line,
+            Some(previous),
+            Some(landed_snapshot_id),
+            &system_event_timestamp(),
+        ) {
+            let mut result = held(error);
+            result["line_head_snapshot_id"] =
+                json!(local_line_head_snapshot_id(root_repo, target_line)?);
+            return Ok(result);
+        }
     }
     let workspace_restore = if same_head {
         json!({
@@ -775,8 +947,8 @@ pub(super) fn workflow_attach_local_land_sync_from_atomic_response(
         })
     } else {
         let _range = perfetto_range!("ait.task_land.local.workspace_restore");
-        workflow_repo_root_restore_after_land(
-            repo,
+        workflow_repo_root_restore_after_remote_sync(
+            root_repo,
             target_line,
             previous_head_snapshot_id.as_deref(),
             Some(landed_snapshot_id),
@@ -805,29 +977,7 @@ pub(super) fn workflow_attach_local_land_sync_from_atomic_response(
         "source": "task-land-atomic/v2",
         "workspace_restore": workspace_restore,
     });
-    let mut payload = land_result.clone();
-    let mut result = payload
-        .get("result")
-        .and_then(JsonValue::as_object)
-        .cloned()
-        .unwrap_or_default();
-    result.insert(
-        "target_line".to_string(),
-        JsonValue::String(target_line.to_string()),
-    );
-    result.insert(
-        "landed_snapshot_id".to_string(),
-        JsonValue::String(landed_snapshot_id.to_string()),
-    );
-    payload["result"] = JsonValue::Object(result);
-    payload["local_sync"] = local_sync;
-    payload["bound_worktree_cleanup"] = json!({
-        "status": "deferred",
-        "reason": "task_land_main_seed_finalizer",
-        "task_id": task_id,
-        "detail": "The Task worktree remains available until CLI main-seed promotion succeeds.",
-    });
-    Ok(payload)
+    Ok(local_sync)
 }
 
 pub fn workflow_land_apply<F>(

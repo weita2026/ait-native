@@ -368,6 +368,37 @@ jq -e \
   ' "${temporary_root}/delta.json" >/dev/null
 
 git -C "${fixture}" checkout -q --detach "${qualified_commit}"
+printf '# AIT\nCurrent stable: 1.1.4; 1.2.0 is unreleased.\nRelease source: v1.2.3-rc.4\nInstall ait-native==1.1.4\n' \
+  >"${fixture}/README.md"
+git -C "${fixture}" add README.md
+git -C "${fixture}" commit -qm 'qualified prepublication README'
+readme_qualified_commit=$(git -C "${fixture}" rev-parse HEAD)
+write_family 1.2.3-rc.5 1.2.3rc5 SNP-AAAAAAAAAAAA
+printf '# AIT\nCurrent stable: 1.1.4; 1.2.0 is unreleased.\nRelease source: v1.2.3-rc.5\nInstall ait-native==1.1.4\n' \
+  >"${fixture}/README.md"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'release source version with stable README availability'
+readme_release_commit=$(git -C "${fixture}" rev-parse HEAD)
+node "${delta}" --repository "${fixture}" \
+  --qualified-commit "${readme_qualified_commit}" \
+  --release-commit "${readme_release_commit}" >"${temporary_root}/readme-delta.json"
+jq -e '.decision == "pass" and (.normalized_version_paths | index("README.md") != null)' \
+  "${temporary_root}/readme-delta.json" >/dev/null
+
+git -C "${fixture}" checkout -q --detach "${readme_qualified_commit}"
+write_family 1.2.3-rc.5 1.2.3rc5 SNP-AAAAAAAAAAAA
+printf '# AIT\nCurrent stable: 1.1.4; 1.2.0 is unreleased.\nRelease source: v1.2.3-rc.5\nInstall ait-native==1.2.0\n' \
+  >"${fixture}/README.md"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'premature install availability'
+readme_premature_commit=$(git -C "${fixture}" rev-parse HEAD)
+expect_failure premature-readme-delta node "${delta}" --repository "${fixture}" \
+  --qualified-commit "${readme_qualified_commit}" \
+  --release-commit "${readme_premature_commit}"
+grep -F 'release delta contains non-version changes: README.md' \
+  "${temporary_root}/premature-readme-delta.stderr" >/dev/null
+
+git -C "${fixture}" checkout -q --detach "${qualified_commit}"
 write_component_authority_family \
   1.2.3 1.2.3 SNP-111111111111 SNP-CCCCCCCCCCCC
 git -C "${fixture}" add -A

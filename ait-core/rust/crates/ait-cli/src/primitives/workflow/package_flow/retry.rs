@@ -248,6 +248,7 @@ pub(crate) fn workflow_package_accepted_retry(
     expected: Option<&PackageWorkflowExpectedIdentity>,
     explicit_author_mode: Option<&str>,
     allow_ready_reprepare: bool,
+    apply_accepted_finish: bool,
 ) -> Result<Option<JsonValue>, String> {
     let stopped = |identity, detail: &str| {
         Some(apply::state(
@@ -476,6 +477,10 @@ pub(crate) fn workflow_package_accepted_retry(
         if requested != sealed {
             return Err("Explicit author mode conflicts with the original accepted Patchset; keep its sealed mode, package and Job".into());
         }
+    }
+    if apply_accepted_finish {
+        return apply::reconcile_accepted_finish(repo, reference, &remote, &repo_name, &completion)
+            .map(Some);
     }
     let mut output = apply::accepted_mapping_pending(reference, &completion)
         .expect("formal GET proves acceptance without complete source membership");

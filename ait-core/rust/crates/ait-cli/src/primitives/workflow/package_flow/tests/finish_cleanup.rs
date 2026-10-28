@@ -17,6 +17,23 @@ fn committed_cleanup_replay_skips_review_ci_and_preserves_idempotent_closeout() 
 }
 
 #[test]
+fn committed_formal_acceptance_allows_explicit_guarded_reconciliation() {
+    finish_script_with_formal(
+        true,
+        &[
+            Reply::Pending,
+            Reply::UnknownOwner,
+            Reply::Lost,
+            Reply::Retired,
+            Reply::WrongIdentity,
+            Reply::MissingMapping,
+            Reply::Confirmed,
+        ],
+        true,
+    );
+}
+
+#[test]
 fn initial_postcommit_pending_only_retries_cleanup_on_the_next_explicit_invocation() {
     finish_script(false, &[Reply::Pending, Reply::Confirmed]);
 }
@@ -41,6 +58,10 @@ fn committed_replay_preserves_exact_identity_and_entire_batch_validation() {
 }
 
 fn finish_script(initially_committed: bool, replies: &[Reply]) {
+    finish_script_with_formal(initially_committed, replies, false);
+}
+
+fn finish_script_with_formal(initially_committed: bool, replies: &[Reply], formal_available: bool) {
     let mut fixture = fixture();
     let identity = pinned(&fixture);
     let original = TaskStore::get_task(&fixture.repo.task_store().unwrap(), &fixture.id).unwrap();
@@ -72,6 +93,7 @@ fn finish_script(initially_committed: bool, replies: &[Reply]) {
             } else {
                 serde_json::from_str(&body).unwrap()
             };
+            let receipt = json!({"repository_index":0,"task_id":"RT-0001","change_id":null,"change_ref":null,"submission_id":"RT-0001/L-01","patchset_id":"RT-0001/P-01","status":"succeeded","target_line":"main","target_line_index":0,"mode":"direct","base_snapshot_id":expected.base_snapshot_id,"revision_snapshot_id":expected.revision_snapshot_id,"landed_snapshot_id":expected.revision_snapshot_id,"pre_land_target_snapshot_id":expected.base_snapshot_id,"created_at":"2026-10-20T00:00:00Z","updated_at":"2026-10-20T00:00:00Z"});
             let (status, response) = if path == "/healthz" {
                 assert_eq!(method, "GET");
                 (
@@ -94,10 +116,29 @@ fn finish_script(initially_committed: bool, replies: &[Reply]) {
                 )
             } else if path.contains("/snapshots/") {
                 assert_eq!(method, "GET");
-                // The formal GET cannot prove complete sealed membership.
+                if formal_available {
+                    (
+                        200,
+                        json!({"snapshot_id":expected.revision_snapshot_id,"workflow_owner":{"task_id":"RT-0001","change_ref":null}}),
+                    )
+                } else {
+                    (
+                        404,
+                        json!({"detail":"Original full source proof is unavailable through GET"}),
+                    )
+                }
+            } else if formal_available && path.contains("/tasks/") {
+                assert_eq!(method, "GET");
+                (200, json!({"task_id":"RT-0001","successful_land":receipt}))
+            } else if formal_available && path.contains("/lands/") {
+                assert_eq!(method, "GET");
+                (200, receipt)
+            } else if formal_available && path.contains("/patchsets/") {
+                assert_eq!(method, "GET");
+                let manifest = json!({"idempotency_key":format!("workflow-package:{}:{}",expected.package_hash,expected.worker_job_index),"target_line":"main","base_snapshot_id":expected.base_snapshot_id,"revision_snapshot_id":expected.revision_snapshot_id,"aggregate":{"task_id":"RT-0001","patchset_id":"RT-0001/P-01","patchset_index":9}});
                 (
-                    404,
-                    json!({"detail":"Original full source proof is unavailable through GET"}),
+                    200,
+                    json!({"patchset_id":"RT-0001/P-01","task_id":"RT-0001","base_snapshot_id":expected.base_snapshot_id,"revision_snapshot_id":expected.revision_snapshot_id,"summary":format!("ait-history-promotion/v1 {manifest}")}),
                 )
             } else if path.ends_with("/worker-jobs/0") && method == "POST" {
                 assert!(
@@ -193,6 +234,7 @@ fn finish_script(initially_committed: bool, replies: &[Reply]) {
         let after = TaskStore::get_task(&fixture.repo.task_store().unwrap(), &fixture.id).unwrap();
         let code = match reply {
             Reply::Confirmed => "done",
+            _ if formal_available => "restore_publication_mappings",
             Reply::Pending => "finish_incomplete",
             _ => "completion_unknown",
         };
@@ -205,15 +247,24 @@ fn finish_script(initially_committed: bool, replies: &[Reply]) {
             }
         } else {
             assert_ne!(result["apply_status"], "done");
-            assert!(result["closeout_status"].is_null());
+            if formal_available {
+                assert_eq!(result["closeout_status"], "partial");
+                assert_eq!(result["completion"]["patchset_id"], "RT-0001/P-01");
+                assert_eq!(result["completion"]["submission_id"], "RT-0001/L-01");
+            } else {
+                assert!(result["closeout_status"].is_null());
+            }
             assert_eq!(after, previous, "unconfirmed cleanup cannot write mappings");
             if matches!(reply, Reply::Pending | Reply::UnknownOwner) {
                 let summary = result["next_action"]["summary"].as_str().unwrap();
-                assert!(summary.contains("Server reported unresolved cleanup"));
-                assert!(summary.contains(
-                    "Formal acceptance and complete mappings remain independently unverified"
-                ));
-                assert!(summary.contains("same finish"));
+                if !formal_available {
+                    assert!(summary.contains("Server reported unresolved cleanup"));
+                    assert!(summary.contains(
+                        "Formal acceptance and complete mappings remain independently unverified"
+                    ));
+                    assert!(summary.contains("same finish"));
+                }
+                assert!(summary.contains("PACKAGE_FINISH_CLEANUP_"));
             }
         }
         assert_eq!(after["local_finish"], original["local_finish"]);

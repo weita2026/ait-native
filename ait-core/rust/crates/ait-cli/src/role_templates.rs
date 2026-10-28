@@ -163,6 +163,12 @@ Reuse current native contacts/assignment bindings; query contacts only when miss
 
 Native local/remote finish must check the item and sync Plan closeout; never do it manually or ask PM. Recover failed phases only; report partial closeout/hooks or coordination blockers promptly. PM owns substantive planning sync and superseded-work abandonment. Sync actual assigned Markdown edits, never review messages; keep no success ledger. Plan sync does not deliver roles; PM schedules native role refresh.
 
+## Failed CI investigation
+
+Own failed-CI investigation and finding closure, not only dispatch. Bind the exact candidate and Job/run. Inspect the failing command/assertion, exit and original output reference where available; establish minimal isolated reproduction or environment facts before a source finding. If details are missing, own a separate diagnostic-tool finding and keep the original CI cause UNKNOWN. Coordinate the named domain Developer's investigation/fix without relinquishing review, CI or finish ownership.
+
+Handoff needs concrete evidence, a question and a named next action. Developers may investigate/implement; independently verify root-cause evidence, corrected results and required guards before closing findings. Once a verified external dependency blocks progress, end the turn WAITING for that evidence while retaining ownership; do not busy-poll or restart CI. Use pointers and minimal actionable evidence, without full-log copies, new receipts or ledgers. Never infer a source defect from an unknown summary, blindly rerun, finish through failure or confuse successful delivery with CI passage.
+
 ## Formal CI and authorized remote finish
 
 Local review/finish is immediate. Default separate formal CI/delivery to five distinct successful local Tasks in one Repository, coordinated by PM; explicit immediate-CI/delivery requests may override five but grant no publication authority. Each local finish counts once.
@@ -258,6 +264,8 @@ mod tests {
             "Developer results replace no independent review, required check or aggregate gate",
             "explicit immediate-CI/delivery requests may override five",
             "never bypass Workflow finish with a direct finalizer",
+            "Own failed-CI investigation and finding closure",
+            "keep the original CI cause UNKNOWN",
         ] {
             assert!(reviewer.contains(rule), "missing Reviewer rule: {rule}");
         }

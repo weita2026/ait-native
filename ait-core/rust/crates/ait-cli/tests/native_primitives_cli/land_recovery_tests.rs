@@ -635,6 +635,11 @@ fn native_workflow_finish_apply_delegates_final_closeout_to_atomic_task_land() {
     let (base_url, log, state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
     let root = temp.path();
+    // Happy-path cleanup requires the canonical root to match its captured base.
+    write_file(
+        &root.join("src/lib.rs"),
+        "pub fn example() -> &'static str { \"ok\" }\n",
+    );
     write_file(
         &worktree.join("src/lib.rs"),
         "pub fn repo_root_version() -> &'static str { \"root\" }\n",
@@ -726,12 +731,28 @@ fn native_workflow_finish_task_input_preserves_exact_review_policy_and_atomic_cl
 
 #[test]
 fn guarded_remote_finish_recovers_plan_sync_with_original_apply_receipt() {
+    assert_guarded_remote_finish_recovers_plan_sync(false, false);
+}
+
+#[test]
+fn guarded_ai_only_team_finish_records_or_reuses_code_review_before_apply() {
+    for existing_summary in [false, true] {
+        assert_guarded_remote_finish_recovers_plan_sync(true, existing_summary);
+    }
+}
+
+fn assert_guarded_remote_finish_recovers_plan_sync(teams: bool, existing_summary: bool) {
     let (base_url, log, state, handle) = spawn_closeout_recovery_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
     let root = temp.path();
+    write_file(&root.join("src/lib.rs"), "pub fn example() -> &'static str { \"ok\" }\n");
     let config_path = root.join(".ait/config.json");
     let mut config = parse_json_file(&config_path);
-    config["agent_teams"] = json!(false);
+    config["agent_teams"] = json!(teams);
+    if teams {
+        config["sprint"] = json!("on");
+        bind_fixture_reviewers(root);
+    }
     write_file(&config_path, &encode_json_pretty(&config));
     let artifact = "docs/sprints/remote-closeout.md";
     let original = "# Finish [plan-ref: finish/root]\n\n- [ ] Ship [ref: finish/ship]\n- [ ] Other [ref: finish/other]\n";
@@ -756,8 +777,9 @@ fn guarded_remote_finish_recovers_plan_sync_with_original_apply_receipt() {
         });
         state.patchset_revision_snapshot_id = Some(revision_id.clone());
         state.guarded_base_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
-        state.enforce_reviewer_workflow = true;
-        state.code_review_recorded = false;
+        state.enforce_reviewer_workflow = !teams;
+        state.ai_only_candidate = teams;
+        state.code_review_recorded = existing_summary;
         state.task_review_recorded = false;
         state.policy_evaluated = false;
     }
@@ -770,13 +792,16 @@ fn guarded_remote_finish_recovers_plan_sync_with_original_apply_receipt() {
         "base_snapshot_id":FIXTURE_BASE_SNAPSHOT_ID
     });
     write_file(&expected_path, &encode_json_pretty(&expected));
+    let environment = if teams {
+        vec![("CODEX_THREAD_ID", "einstein-session"), ("CODEX_SESSION_ID", "einstein-session")]
+    } else { Vec::new() };
     let guarded_finish = |root: &Path, identity: &Path| {
         command_output_with_env(root, &[
         "workflow", "finish", "RT-1", "--apply", "--remote", "origin",
         "--expected-identity", identity.to_str().unwrap(),
         "--reviewer", "Einstein", "--review-message", "Reviewed files: src/lib.rs; Findings: none; Risks: low; Tests: cargo test passed; Recommendation: finish.",
         "--json", "--full"
-    ], &[])
+    ], &environment)
     };
     for (field, value) in [
         ("repository_index", json!(8)),
@@ -813,11 +838,12 @@ fn guarded_remote_finish_recovers_plan_sync_with_original_apply_receipt() {
         assert_eq!(state.plan_closeout.as_ref().unwrap().revisions.len(), 1);
         state.guarded_base_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
         state.recorded_reviews.clear();
-        state.code_review_recorded = false;
+        state.code_review_recorded = existing_summary;
         state.task_review_recorded = false;
         state.policy_evaluated = false;
     }
     assert_eq!(fs::read_to_string(root.join(artifact)).unwrap(), original);
+    let successful_attempt_start = log.lock().unwrap().len();
     let first_output = guarded_finish(&worktree, &expected_path);
     assert_eq!(
         first_output.status.code(),
@@ -906,23 +932,27 @@ fn guarded_remote_finish_recovers_plan_sync_with_original_apply_receipt() {
         json_output(root, &["snapshot", "list", "--all", "--json"]),
         before
     );
-    assert_eq!(
-        fs::read_to_string(root.join(artifact)).unwrap(),
-        original.replacen("- [ ] Ship", "- [x] Ship", 1)
-    );
+    let mut expected_markdown = original.replacen("- [ ] Ship", "- [x] Ship", 1);
+    if teams {
+        assert_eq!(recovered["team_finish_log"]["status"], "synced", "{recovered}");
+        let review_id = recovered["team_finish_log"]["review_id"].as_str().unwrap();
+        expected_markdown.push_str(&format!("\n- Reviewed and remote finished: RT-1/P-01 | ref: finish/ship | review: {review_id}\n"));
+    }
+    assert_eq!(fs::read_to_string(root.join(artifact)).unwrap(), expected_markdown);
     let state = state.lock().unwrap();
-    assert_eq!(state.plan_closeout.as_ref().unwrap().revisions.len(), 4,
+    assert_eq!(state.plan_closeout.as_ref().unwrap().revisions.len(), if teams {5} else {4},
         "original, failed closure, restored local Plan, successful closure remain in native history");
     drop(state);
     let requests = log.lock().unwrap();
-    let apply_index = requests
+    let apply_index = successful_attempt_start + requests[successful_attempt_start..]
         .iter()
         .position(|r| r.url.ends_with("/task-land"))
         .unwrap();
     for action in ["code_review_summary", "task_approve"] {
-        assert!(requests[..apply_index]
-            .iter()
-            .any(|r| r.url.ends_with("/reviews") && r.body.contains(action)));
+        let expected = if action == "code_review_summary" && existing_summary {0} else {1};
+        let matching = |r: &&RecordedRequest| r.method == "POST" && r.url.ends_with("/reviews") && r.body.contains(action);
+        assert_eq!(requests[successful_attempt_start..apply_index].iter().filter(matching).count(), expected, "{action}");
+        assert_eq!(requests[successful_attempt_start..].iter().filter(matching).count(), expected, "receipt retry must reuse {action}");
     }
     assert!(requests[..apply_index]
         .iter()

@@ -92,15 +92,262 @@ where
         {
             return Err("Immutable package Land differs from requested acceptance".into());
         }
-        // Existing immutable summaries do not contain the complete Change set
-        // or Local Change ownership labels. A caller-supplied manifest cannot
-        // prove its omission/substitution against the sealed hash after cleanup.
-        // Source assertions cannot erase formal acceptance or establish full
-        // mapping membership. Preserve accepted IDs without Local writeback.
+        // Only the durable zero-Change case has complete mapping membership
+        // without the original archive. Unsupported or unavailable additional
+        // proof retains the immutable acceptance and its incomplete projection;
+        // the runtime may still prefer its original full native response.
+        let entries = self
+            .accepted_zero_change_entries(&read, &manifest, index, patchset)
+            .ok();
+        let outcome = if entries.is_some() {
+            "confirmed"
+        } else {
+            "incomplete"
+        };
         Ok(Some(
-            json!({"outcome":"incomplete","expected_identity":request.expected_identity,
-            "patchset_id":patchset_id,"submission_id":self.land_id(&task_id,land.land_ordinal),"entries":[]}),
+            json!({"outcome":outcome,"expected_identity":request.expected_identity,
+            "patchset_id":patchset_id,"submission_id":self.land_id(&task_id,land.land_ordinal),
+            "entries":entries.unwrap_or_default()}),
         ))
+    }
+
+    fn accepted_zero_change_entries(
+        &self,
+        read: &BinaryDbReadTxn<'_, D>,
+        value: &JsonValue,
+        patchset_index: u32,
+        patchset: V0PatchsetRecord,
+    ) -> Result<Vec<JsonValue>, String> {
+        let history: PersistedHistoryManifest =
+            serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+        if history.contract != "ait-history-promotion/v3"
+            || history.correction.is_some()
+            || history.stage_ordinal.is_some()
+            || history.aggregate.task_index != patchset.task_index
+            || history.aggregate.patchset_index != patchset_index
+            || history.aggregate.change_index.is_some()
+            || history.aggregate.change_ref.is_some()
+            || patchset.change_ordinal_plus1 != 0
+            || history.entries.last().map(|entry| entry.task_index) != Some(patchset.task_index)
+            || history
+                .entries
+                .iter()
+                .any(|entry| entry.pre_land_target_snapshot_id == entry.landed_snapshot_id)
+        {
+            return Err("Accepted package has no complete zero-Change Task inventory".into());
+        }
+        // record_count accepts an unconfigured absent family. These Remote
+        // families are required, so missing/header-only are distinguished first.
+        for (file, layout) in [
+            (WorkflowBinaryV0Codec::change_file(), 2),
+            (WorkflowBinaryV0Codec::snapshot_link_file(), 2),
+            (
+                WorkflowBinaryV0Codec::chain_index_file("task_change_index.bin"),
+                1,
+            ),
+            (
+                WorkflowBinaryV0Codec::chain_index_file("task_snapshot_index.bin"),
+                1,
+            ),
+        ] {
+            if read.layout_id(file).map_err(|error| error.to_string())? != layout {
+                return Err("Accepted package required family profile differs".into());
+            }
+        }
+        let tasks = history
+            .entries
+            .iter()
+            .map(|entry| entry.task_index)
+            .collect::<BTreeSet<_>>();
+        if tasks.len() != history.entries.len() {
+            return Err("Accepted package repeats a source Task".into());
+        }
+        // Enumerate the entire allocated family, including retired rows.
+        // A filtered list or an empty index cannot establish membership.
+        for index in 0..read
+            .record_count(WorkflowBinaryV0Codec::change_file())
+            .map_err(|error| error.to_string())?
+        {
+            let change = self
+                .read_change(read, index)
+                .map_err(|error| error.to_string())?;
+            if tasks.contains(&change.task_index) {
+                return Err("Accepted source Task has allocated Change history".into());
+            }
+        }
+        for task in &tasks {
+            let inventory = WorkflowBinaryV0Codec::decode_ordinal_index(
+                &read
+                    .read_record(
+                        WorkflowBinaryV0Codec::chain_index_file("task_change_index.bin"),
+                        *task,
+                    )
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            if inventory.count != 0
+                || inventory.latest_index_plus1 != 0
+                || inventory.next_ordinal != 0
+            {
+                return Err("Accepted source Task Change inventory is inconsistent".into());
+            }
+        }
+        // This bounded proof requires the complete original receipt chain to
+        // cover the accepted range. An independently rebased/unknown source
+        // range needs the original complete source and remains incomplete.
+        self.validate_history_receipt_batch(
+            read,
+            &history.entries,
+            &history.base_snapshot_id,
+            &history.revision_snapshot_id,
+        )?;
+        let rows = value["entries"]
+            .as_array()
+            .ok_or("Missing accepted Task entries")?;
+        let mut local_tasks = BTreeSet::new();
+        let mut mappings = Vec::new();
+        let mut roots = BTreeSet::from([
+            patchset.base_snapshot_index,
+            patchset.revision_snapshot_index,
+        ]);
+        let mut required_owners = vec![(patchset.revision_snapshot_index, patchset.task_index)];
+        for (row, entry) in rows.iter().zip(&history.entries) {
+            let local = row["local_task_id"]
+                .as_str()
+                .filter(|id| !id.trim().is_empty())
+                .ok_or("Missing original Local Task label")?;
+            if !local_tasks.insert(local)
+                || entry.change_index.is_some()
+                || entry.change_ref.is_some()
+            {
+                return Err("Accepted source Task mapping is ambiguous".into());
+            }
+            self.workflow_owner(read, &entry.task_id)?;
+            let receipt = self
+                .read_patchset(read, entry.receipt_patchset_index)
+                .map_err(|error| error.to_string())?;
+            let local_receipt: PersistedLocalLandReceipt = serde_json::from_value(
+                parse_summary(
+                    &self.history_patchset_summary(read, entry.receipt_patchset_index)?,
+                    LOCAL_LAND_RECEIPT_SUMMARY_PREFIX,
+                )?
+                .ok_or("Missing original Local receipt")?,
+            )
+            .map_err(|error| error.to_string())?;
+            if local_receipt.contract != "ait-local-land-receipt/v2"
+                || local_receipt.local_task_id != local
+                || local_receipt.local_change_id.is_some()
+                || local_receipt.local_change_ref.is_some()
+                || local_receipt.change_ref.is_some()
+            {
+                return Err("Original Local receipt has unresolved Change provenance".into());
+            }
+            required_owners.push((receipt.revision_snapshot_index, entry.task_index));
+            roots.extend([receipt.base_snapshot_index, receipt.revision_snapshot_index]);
+            mappings
+                .push(json!({"local_task_id":local,"remote_task_id":entry.task_id,"changes":[]}));
+        }
+        let link_file = WorkflowBinaryV0Codec::snapshot_link_file();
+        let link_count = read
+            .record_count(link_file.clone())
+            .map_err(|error| error.to_string())?;
+        let links = read
+            .read_records(link_file, 0, link_count)
+            .map_err(|error| error.to_string())?
+            .iter()
+            .map(|raw| {
+                WorkflowBinaryV0Codec::decode_snapshot_link(raw).map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut owners = BTreeMap::new();
+        let mut ordinals = BTreeMap::<u32, BTreeMap<u8, u32>>::new();
+        for (index, link) in links.iter().enumerate() {
+            if !tasks.contains(&link.task_index) {
+                continue;
+            }
+            if link.link_meta & SNAPSHOT_LINK_TOMBSTONE != 0
+                || link.change_index_plus1 != 0
+                || owners
+                    .insert(link.content_snapshot_index, link.task_index)
+                    .is_some()
+                || ordinals
+                    .entry(link.task_index)
+                    .or_default()
+                    .insert(link.snapshot_ordinal, index as u32)
+                    .is_some()
+                || self
+                    .immutable_snapshot_line(read, link.content_snapshot_index)?
+                    .0
+                    .created_at_s
+                    != link.created_at_s
+            {
+                return Err("Accepted source Snapshot closure differs".into());
+            }
+            roots.insert(link.content_snapshot_index);
+        }
+        // Foreign or retired duplicate links cannot supply or contradict one
+        // of the selected owners. No per-Snapshot full-family rescans are needed.
+        for link in &links {
+            if owners
+                .get(&link.content_snapshot_index)
+                .is_some_and(|task| *task != link.task_index)
+            {
+                return Err("Accepted Snapshot has conflicting numeric owners".into());
+            }
+        }
+        for (snapshot, task) in required_owners {
+            if owners.get(&snapshot) != Some(&task) {
+                return Err("Accepted original receipt has no exact fixed Snapshot owner".into());
+            }
+        }
+        for task in &tasks {
+            let allocated = ordinals
+                .get(task)
+                .ok_or("Accepted source has no Snapshot links")?;
+            let index = WorkflowBinaryV0Codec::decode_task_snapshot_index(
+                &read
+                    .read_record(
+                        WorkflowBinaryV0Codec::chain_index_file("task_snapshot_index.bin"),
+                        *task,
+                    )
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            let (&last_ordinal, &last_index) = allocated
+                .last_key_value()
+                .ok_or("Accepted source Snapshot inventory is empty")?;
+            if usize::from(index.count) != allocated.len()
+                || usize::from(last_ordinal) + 1 != allocated.len()
+                || index.latest_index_plus1 != last_index + 1
+            {
+                return Err("Accepted source Snapshot index contradicts fixed ownership".into());
+            }
+        }
+        let roots = roots.into_iter().collect::<Vec<_>>();
+        let dag = self.load_history_snapshot_dag_for_roots(read, &roots)?;
+        let mut active = BTreeSet::new();
+        let mut complete = BTreeSet::new();
+        for root in &roots {
+            let mut pending = vec![(*root, false)];
+            while let Some((index, leaving)) = pending.pop() {
+                if leaving {
+                    active.remove(&index);
+                    complete.insert(index);
+                } else if !complete.contains(&index) {
+                    if !active.insert(index) {
+                        return Err("Accepted source Snapshot ancestry is cyclic".into());
+                    }
+                    pending.push((index, true));
+                    pending.extend(
+                        self.history_snapshot_parents(read, &dag, index)?
+                            .into_iter()
+                            .map(|parent| (parent, false)),
+                    );
+                }
+            }
+            self.snapshot_file_map(read, *root)?;
+        }
+        Ok(mappings)
     }
 
     /// Resolve a prepared candidate only through its immutable original key

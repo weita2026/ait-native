@@ -36,6 +36,8 @@ pub(super) type TestDb = FilesystemServerRemoteBinaryDb;
 mod actor_registration;
 #[path = "tests/legacy_history.rs"]
 mod legacy_history;
+#[path = "tests/package_accepted_zero.rs"]
+mod package_accepted_zero;
 #[path = "tests/review_actors.rs"]
 mod review_actors;
 #[path = "tests/task_owned.rs"]

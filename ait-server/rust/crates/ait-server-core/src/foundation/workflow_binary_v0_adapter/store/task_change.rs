@@ -343,6 +343,11 @@ where
             if binding["task_id"].as_str() != Some(task_id) {
                 return Err("Explicit revision fork belongs to another Task".into());
             }
+            if line.head_snapshot_index() != Some(candidate.base_snapshot_index) {
+                return Err(
+                    "STALE_TARGET_LINE: target no longer equals the exact candidate base".into(),
+                );
+            }
             fork_snapshot_index_plus1 = candidate.revision_snapshot_index + 1;
         } else if let Some(requested_fork) = requested_fork {
             let actual = fork_snapshot_index_plus1
@@ -894,8 +899,10 @@ where
         self.request_actor(payload)?;
         let task_id = Self::required_text(payload, "task_id")?;
         let now = Self::now_s()?;
+        // The candidate belongs to Workflow, while its live target head belongs
+        // to Content. Hold their existing composite exclusion through commit.
         let mut tx =
-            BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerWorkflow)
+            BinaryDbWriteTxn::begin_serving(&self.db, BinaryDbCommandScope::ServerSnapshotCapture)
                 .map_err(|error| Self::error(operation, error))?;
         let task_index = self.task_index_for_id(&tx, &task_id)?;
         let actor_index_plus1 = self.request_actor_in_write(&tx, payload)?;

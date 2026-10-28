@@ -1,17 +1,57 @@
 // Current Task-owned closeout fixture. Legacy Change routes remain separate.
 // Successful receipts are recorded only when the simulated atomic mutation runs.
+fn current_closeout_runner_ci(state: &CloseoutRecoveryRemoteState) -> Option<JsonValue> {
+    let (marker, passes) = state.runner_ci_result.as_ref()?;
+    let completed = marker.is_file();
+    let status = if !completed {
+        "pending"
+    } else if *passes {
+        "pass"
+    } else {
+        "fail"
+    };
+    let job = json!({
+        "repository_index":7,"patchset_index":1,"worker_job_index":11,
+        "job_type":"patchset.ci","state":if completed {"succeeded"} else {"queued"},
+        "patchset_ci":{"ci_run_seq":1,"ci_worker_job_index":11}
+    });
+    Some(json!({
+        "contract":"ait.server.patchset_ci.readiness.v2","projection":"readiness",
+        "repo_name":"fixture-ait","recent_limit_applied":10,"available":true,
+        "repository_index":7,"patchset_index":1,"task_id":"RT-1",
+        "patchset_id":if state.revision_change {"RT-1/C-01/P-01"} else {"RT-1/P-01"},
+        "change_id":state.revision_change.then_some("C-01"),
+        "change_ref":state.revision_change.then_some("RT-1/C-01"),
+        "ci_run_seq":1,"ci_completed_at_s":if completed {1} else {0},
+        "overall_status":status,"tests_status":status,"lint_status":"none",
+        "selected_suite_ids":["preflight"],"selected_suite_count":1,
+        "suite_result_count":usize::from(completed),
+        "blocking_failure_count":usize::from(completed && !passes),
+        "has_runnable_evidence":true,"latest_job":job,"recent_jobs":[job]
+    }))
+}
+
 fn current_closeout_patchset(state: &CloseoutRecoveryRemoteState) -> JsonValue {
-    json!({
+    let mut patchset = json!({
         "task_id":"RT-1","change_id":state.revision_change.then_some("C-01"),
         "change_ref":state.revision_change.then_some("RT-1/C-01"),
         "patchset_id":if state.revision_change {"RT-1/C-01/P-01"} else {"RT-1/P-01"},
         "base_snapshot_id":FIXTURE_BASE_SNAPSHOT_ID,
         "revision_snapshot_id":state.patchset_revision_snapshot_id.as_deref().unwrap_or(FIXTURE_BASE_SNAPSHOT_ID),
-        "author_mode":"ai_with_human_review","publish_state":"published","evaluation_state":"pass",
+        "author_mode":if state.ai_only_candidate {"ai_only_experimental"} else {"ai_with_human_review"},
+        "publish_state":"published","evaluation_state":"pass",
         "ci_run_seq":1,"ci_completed_at_s":1_783_814_400_u64,
         "ci":{"run_seq":1,"completed_at_s":1_783_814_400_u64,"overall_status":"pass",
             "tests_status":"pass","lint_status":"none","selected_suite_count":1,"suite_result_count":1,"blocking_failure_count":0}
-    })
+    });
+    if state.ai_only_candidate {
+        patchset["diff_stats"] = json!({"paths":{"modified":["src/lib.rs"]}});
+    }
+    if let Some(ci) = current_closeout_runner_ci(state) {
+        patchset["ci_completed_at_s"] = ci["ci_completed_at_s"].clone();
+        patchset["ci"] = ci;
+    }
+    patchset
 }
 
 fn current_closeout_task(state: &CloseoutRecoveryRemoteState) -> JsonValue {
@@ -80,6 +120,9 @@ fn current_closeout_response(
         return Some(json_response(404, &json!({"detail":"Change is absent"})));
     }
     let payload = match (method, suffix) {
+        ("GET", path) if path.starts_with("worker-jobs?") && state.runner_ci_result.is_some() => {
+            json!({"jobs":[current_closeout_runner_ci(&state).unwrap()["latest_job"]]})
+        }
         ("POST", "register") => {
             let mut authority = repository_payload("fixture-ait");
             authority["actor_key_index"] = json!(7);
@@ -116,7 +159,7 @@ fn current_closeout_response(
                     .iter()
                     .any(|review| review["action"] == "code_review_summary")
             {
-                reviews.push(json!({"reviewer":"ait-cli","reviewer_kind":"bot","patchset_id":patchset_id,
+                reviews.push(json!({"review_id":format!("{patchset_id}/R-01"),"reviewer":"ait-cli","reviewer_kind":"bot","patchset_id":patchset_id,
                     "action":"code_review_summary","blocking":false,"comment":ACTING_REVIEW_SUMMARY}));
             }
             let approvals = reviews
@@ -141,7 +184,11 @@ fn current_closeout_response(
                 "review_requests":[],"reviews":reviews})
         }
         ("POST", "changes/RT-1/reviews") | ("POST", "changes/RT-1%2FC-01/reviews") => {
+            if state.task_completed {
+                return Some(json_response(400, &json!({"detail":"Task or explicit Change is terminal"})));
+            }
             let mut review = parse_json(body);
+            review["review_id"] = json!(format!("{patchset_id}/R-{:02}", state.recorded_reviews.len() + 2));
             assert_eq!(review["patchset_id"], patchset_id);
             review["task_id"] = json!("RT-1");
             review["change_id"] = patchset["change_id"].clone();
@@ -161,7 +208,7 @@ fn current_closeout_response(
         ("GET", "patchsets/RT-1%2FP-01/attestation")
         | ("GET", "patchsets/RT-1%2FC-01%2FP-01/attestation") => {
             json!({"attestation_id":"AT-1","task_id":"RT-1",
-            "change_id":patchset["change_id"],"change_ref":patchset["change_ref"],"patchset_id":patchset_id,"author_mode":"ai_with_human_review",
+            "change_id":patchset["change_id"],"change_ref":patchset["change_ref"],"patchset_id":patchset_id,"author_mode":patchset["author_mode"],
             "verification_state":"pass","require_tests_pass":true,"require_human_review":false,
             "require_lint_pass":false,"revoked":false,"ci_backed":true})
         }
@@ -172,15 +219,22 @@ fn current_closeout_response(
             if method == "POST" {
                 state.policy_evaluated = true;
             }
-            json!({"policy_id":"PO-1","task_id":"RT-1","patchset_id":patchset_id,
+            let mut policy = json!({"policy_id":"PO-1","task_id":"RT-1","patchset_id":patchset_id,
                 "decision":if state.policy_evaluated {"pass"} else {"pending"},"content_class":"code","author_class":"hybrid",
                 "effective_requirements":{"require_tests":true,"require_code_review_summary":true},"evaluated_at":"2026-10-26T00:00:00Z",
-                "checks":[{"name":"require_tests","status":"pass","message":"ok"}],"input_fingerprint":"abc"})
+                "checks":[{"name":"require_tests","status":"pass","message":"ok"}],"input_fingerprint":"abc"});
+            if state.ai_only_candidate {
+                policy.as_object_mut().unwrap().remove("effective_requirements");
+            }
+            policy
         }
         ("GET", path)
             if (path.starts_with("read/patchsets/RT-1%2FP-01/ci-status")
                 || path.starts_with("read/patchsets/RT-1%2FC-01%2FP-01/ci-status")) =>
         {
+            if let Some(ci) = current_closeout_runner_ci(&state) {
+                return Some(json_response(200, &ci));
+            }
             json!({
             "contract":"ait.server.patchset_ci.readiness.v2","task_id":"RT-1","patchset_id":patchset_id,
             "change_id":patchset["change_id"],"change_ref":patchset["change_ref"],"tests_status":"pass","has_runnable_evidence":true,"selected_suite_ids":["preflight"],

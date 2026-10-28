@@ -2613,6 +2613,59 @@ fn line_show_parser_accepts_remote_and_ready_parser_accepts_run_ci_once() {
 }
 
 #[test]
+fn ready_runner_diagnostics_preserve_failed_ci_and_captured_output() {
+    let original = "GUARDED_CI_FAILED: current native CI job failed; no automatic rerun.";
+    // Worker delivery succeeded, but its captured suite result reports failure.
+    let outcome = json!({
+        "status": "succeeded",
+        "exit_code": 0,
+        "stdout_tail": "Job 11/run1: suite rust_core failed: assertion preserve_local_head",
+        "stderr_tail": "command cargo test failed with exit 101",
+    });
+    let error = workflow_ready_result_with_runner_diagnostics::<JsonValue>(
+        Err(original.into()),
+        Some(&outcome),
+    )
+    .expect_err("successful delivery must not make failed CI ready");
+    let rendered = crate::render::domain_error_text(&error);
+    assert!(rendered.starts_with(&format!("Error: {original}")));
+    assert!(rendered.contains("Job 11/run1"));
+    assert!(rendered.contains("assertion preserve_local_head"));
+    assert!(rendered.contains("cargo test failed with exit 101"));
+}
+
+#[test]
+fn ready_runner_diagnostics_leave_success_payload_unchanged() {
+    let payload = json!({
+        "next_action": {"code": "done"},
+        "expected_identity": {"patchset_id": "RT-1/P-02", "revision_snapshot_id": "R"},
+    });
+    let outcome = json!({"status": "succeeded", "stdout_tail": "worker result"});
+    let result =
+        workflow_ready_result_with_runner_diagnostics(Ok(payload.clone()), Some(&outcome)).unwrap();
+    assert_eq!(result, payload);
+}
+
+#[test]
+fn ready_runner_diagnostics_preserve_errors_without_captured_output() {
+    let original = "GUARDED_CI_FAILED: exact-candidate CI failed";
+    assert_eq!(
+        workflow_ready_result_with_runner_diagnostics::<JsonValue>(Err(original.into()), None),
+        Err(original.into())
+    );
+    let skipped = json!({"status": "skipped", "reason": "hint_missing_server_url"});
+    let error = workflow_ready_result_with_runner_diagnostics::<JsonValue>(
+        Err(original.into()),
+        Some(&skipped),
+    )
+    .unwrap_err();
+    assert!(error.starts_with(original));
+    assert!(error.contains("hint_missing_server_url"));
+    assert!(!error.contains("stdout_tail"));
+    assert!(!error.contains("stderr_tail"));
+}
+
+#[test]
 fn task_quick_parser_accepts_intent_only_and_optional_title() {
     let parsed = Cli::try_parse_from([
         "ait-cli",

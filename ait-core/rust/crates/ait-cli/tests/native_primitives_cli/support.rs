@@ -1,5 +1,8 @@
 #[path = "../support/native_home.rs"]
 mod native_home;
+#[cfg(unix)]
+#[path = "../support/cli_binary.rs"]
+mod cli_binary;
 use ait_cli::init_surface::{init_repo as initialize_repo, InitRequest};
 use ait_cli::primitives::{
     task_land_apply, task_land_payload, workflow_land_apply, workflow_ready_payload,
@@ -135,6 +138,8 @@ struct CloseoutRecoveryRemoteState {
     omit_task_review_kind: bool,
     policy_evaluated: bool,
     patchset_revision_snapshot_id: Option<String>,
+    runner_ci_result: Option<(PathBuf, bool)>,
+    ai_only_candidate: bool,
     land_boundary: CloseoutMutationBoundary,
     task_boundary: CloseoutMutationBoundary,
     land_response_delay: Duration,
@@ -165,6 +170,8 @@ impl Default for CloseoutRecoveryRemoteState {
             omit_task_review_kind: false,
             policy_evaluated: true,
             patchset_revision_snapshot_id: None,
+            runner_ci_result: None,
+            ai_only_candidate: false,
             land_boundary: CloseoutMutationBoundary::MutateBeforeResponse,
             task_boundary: CloseoutMutationBoundary::MutateBeforeResponse,
             land_response_delay: Duration::from_millis(150),
@@ -200,6 +207,7 @@ impl CloseoutRecoveryRemoteState {
         self.task_review_recorded = true;
         self.policy_evaluated = true;
         self.patchset_revision_snapshot_id = None;
+        self.ai_only_candidate = false;
         self.land_boundary = land_boundary;
         self.task_boundary = task_boundary;
         self.land_response_delay = land_response_delay;
@@ -261,6 +269,8 @@ struct FakeRemoteState {
     recorded_actor_reviews: Vec<JsonValue>,
     change_rows_override: Option<Vec<JsonValue>>,
     remote_head_snapshot_id: Option<String>,
+    remote_line_override: Option<JsonValue>,
+    fail_line_read: bool,
     selected_patchset_id: Option<String>,
     selected_patchset_base_snapshot_id: Option<String>,
     selected_patchset_revision_snapshot_id: Option<String>,

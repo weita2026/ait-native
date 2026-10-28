@@ -1,4 +1,8 @@
 //! Actual CLI accepted retries never prepare or publish another candidate.
+#[path = "support/cli_binary.rs"]
+mod cli_binary;
+#[path = "support/native_home.rs"]
+mod native_home;
 #[path = "support/workflow_package_fixture.rs"]
 mod package_fixture;
 use ait_core::json_support::{json, JsonValue};
@@ -163,6 +167,16 @@ fn finish(fixture: &Fixture, task: &str, pin: Option<&Path>) -> Output {
     run(&fixture.root, &args)
 }
 
+fn observe_finish(fixture: &Fixture, task: &str, pin: Option<&Path>) -> Output {
+    let mut args = vec![
+        "workflow", "finish", task, "--remote", "origin", "--json", "--full",
+    ];
+    if let Some(pin) = pin {
+        args.extend(["--expected-identity", pin.to_str().unwrap()]);
+    }
+    run(&fixture.root, &args)
+}
+
 fn accepted(output: &Output, identity: &JsonValue) -> JsonValue {
     let value = output_json(output);
     assert_eq!(value["expected_identity"], *identity, "{value}");
@@ -195,6 +209,226 @@ fn seal(fixture: &Fixture, task: &str) -> (JsonValue, std::path::PathBuf) {
 }
 
 #[test]
+fn explicit_accepted_finish_reconciles_only_the_original_mappings() {
+    let fixture = Fixture::new();
+    let (task, edit) = fixture.start("original-zero-change");
+    fs::write(edit.join("original.txt"), "original accepted source\n").unwrap();
+    fixture.finish_local(&task, &edit);
+    let (identity, pin) = seal(&fixture, &task);
+    fixture.state.lock().unwrap().incomplete_response = true;
+    accepted(&fixture.finish_output(&task, &pin), &identity);
+    let original = fixture.task(&task);
+    assert!(original["published_task_id"].is_null());
+    let (later, later_edit) = fixture.start("later-local-tail");
+    fs::write(later_edit.join("later.txt"), "later remains Local\n").unwrap();
+    let later_head = fixture.finish_local(&later, &later_edit);
+    let later_before = fixture.task(&later);
+    defaults(&fixture, false, "human_only");
+    let snapshots = fixture.snapshots();
+    let (batch, request_start) = {
+        let mut state = fixture.state.lock().unwrap();
+        state.archive_missing = true;
+        state.omit_membership = true;
+        (state.batches[0].clone(), state.requests.len())
+    };
+    let observed = run(
+        &fixture.root,
+        &[
+            "workflow",
+            "finish",
+            &task,
+            "--remote",
+            "origin",
+            "--expected-identity",
+            pin.to_str().unwrap(),
+            "--json",
+            "--full",
+        ],
+    );
+    accepted(&observed, &identity);
+    let wrong_source = finish(&fixture, &later, Some(&pin));
+    assert!(!wrong_source.status.success());
+    assert_eq!(
+        output_json(&wrong_source)["next_action"]["code"],
+        "completion_unknown"
+    );
+    assert_eq!(fixture.state.lock().unwrap().finishes.len(), 1);
+    assert!(fixture.state.lock().unwrap().requests[request_start..]
+        .iter()
+        .all(|(method, _)| method == "GET"));
+    for selected_pin in [Some(pin.as_path()), None] {
+        let result = finish(&fixture, &task, selected_pin);
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let result = output_json(&result);
+        assert_eq!(result["expected_identity"], identity);
+        assert_eq!(result["completion"], *batch.accepted.as_ref().unwrap());
+        assert_eq!(result["closeout_status"], "complete");
+        let current = fixture.task(&task);
+        assert_eq!(current["local_finish"], original["local_finish"]);
+        assert_eq!(current["published_task_id"], "RT-0001");
+        assert_eq!(fixture.task(&later), later_before);
+        assert_eq!(fixture.head(), later_head);
+        assert_eq!(fixture.snapshots(), snapshots);
+    }
+    assert_eq!(
+        fs::read(fixture.root.join("later.txt")).unwrap(),
+        b"later remains Local\n"
+    );
+    let state = fixture.state.lock().unwrap();
+    assert_eq!(state.batches.len(), 1);
+    assert_eq!(state.uploads.len(), 1);
+    assert_eq!(state.finishes.len(), 3);
+    assert!(state
+        .finishes
+        .iter()
+        .all(|request| request == &state.finishes[0]));
+    assert_eq!(state.batches[0].accepted, batch.accepted);
+    assert_eq!(state.batches[0].evidence, batch.evidence);
+    assert_eq!(state.batches[0].bytes, batch.bytes);
+    assert!(state.requests[request_start..]
+        .iter()
+        .all(|(method, path)| method == "GET"
+            || method == "POST"
+                && (path.ends_with("/task-land") || path == "/v1/native/repository-authorities")));
+}
+
+#[test]
+fn accepted_reconciliation_requires_the_exact_full_result_and_cleanup() {
+    let fixture = Fixture::new();
+    let (tasks, _) = fixture.initial_batch();
+    let selected = tasks.last().unwrap();
+    let (identity, pin) = seal(&fixture, selected);
+    fixture.state.lock().unwrap().incomplete_response = true;
+    accepted(&fixture.finish_output(selected, &pin), &identity);
+    let before = tasks
+        .iter()
+        .map(|task| fixture.task(task))
+        .collect::<Vec<_>>();
+    let snapshots = fixture.snapshots();
+    let batch = {
+        let mut state = fixture.state.lock().unwrap();
+        state.archive_missing = true;
+        state.omit_membership = true;
+        state.batches[0].clone()
+    };
+    let full = batch.accepted.clone().unwrap();
+    for failure in [
+        "incomplete",
+        "unknown",
+        "wrong_job",
+        "wrong_patchset",
+        "wrong_submission",
+        "missing_mapping",
+        "cleanup_pending",
+        "cleanup_unknown",
+        "lost_response",
+    ] {
+        let mut response = full.clone();
+        let mut status = 200;
+        match failure {
+            "incomplete" => {
+                response["outcome"] = json!("incomplete");
+                response["entries"] = json!([]);
+            }
+            "unknown" => {
+                response["outcome"] = json!("unknown");
+                response["entries"] = json!([]);
+                response["patchset_id"] = JsonValue::Null;
+                response["submission_id"] = JsonValue::Null;
+            }
+            "wrong_job" => response["expected_identity"]["worker_job_index"] = json!(1),
+            "wrong_patchset" => {
+                response["patchset_id"] = json!(format!(
+                    "{}/P-02",
+                    full["patchset_id"]
+                        .as_str()
+                        .unwrap()
+                        .split('/')
+                        .next()
+                        .unwrap()
+                ))
+            }
+            "wrong_submission" => {
+                response["submission_id"] = json!(format!(
+                    "{}/L-02",
+                    full["submission_id"]
+                        .as_str()
+                        .unwrap()
+                        .split('/')
+                        .next()
+                        .unwrap()
+                ))
+            }
+            "missing_mapping" => response["entries"] = json!([]),
+            "cleanup_pending" => {
+                status = 503;
+                response = json!({"detail":"PACKAGE_FINISH_CLEANUP_PENDING: original source reader is held"});
+            }
+            "cleanup_unknown" => {
+                status = 409;
+                response = json!({"detail":"PACKAGE_FINISH_CLEANUP_UNKNOWN: original cleanup owner is unavailable"});
+            }
+            "lost_response" => {
+                status = 408;
+                response = json!({"detail":"Original guarded response was lost"});
+            }
+            _ => unreachable!(),
+        }
+        let start = {
+            let mut state = fixture.state.lock().unwrap();
+            state.accepted_reply = Some((status, response));
+            state.finishes.len()
+        };
+        let result = finish(&fixture, selected, Some(&pin));
+        assert!(!result.status.success(), "{failure}");
+        let result = accepted(&result, &identity);
+        assert_eq!(
+            result["completion"]["patchset_id"], full["patchset_id"],
+            "{failure}"
+        );
+        assert_eq!(
+            result["completion"]["submission_id"], full["submission_id"],
+            "{failure}"
+        );
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| fixture.task(task))
+                .collect::<Vec<_>>(),
+            before,
+            "{failure}"
+        );
+        assert_eq!(fixture.snapshots(), snapshots, "{failure}");
+        let state = fixture.state.lock().unwrap();
+        assert_eq!(
+            state.finishes.len(),
+            start + 1,
+            "one guarded request only: {failure}"
+        );
+        assert_eq!(state.batches.len(), 1);
+        assert_eq!(state.batches[0].accepted, batch.accepted);
+        assert_eq!(state.batches[0].evidence, batch.evidence);
+    }
+    fixture.state.lock().unwrap().accepted_reply = None;
+    let result = finish(&fixture, selected, Some(&pin));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+    assert_eq!(output_json(&result)["completion"], full);
+    assert!(tasks
+        .iter()
+        .all(|task| fixture.task(task)["published_task_id"].is_string()));
+    assert_eq!(fixture.snapshots(), snapshots);
+}
+
+#[test]
 fn accepted_ready_and_finish_keep_the_original_batch_without_pin_after_newer_head_and_restart() {
     let fixture = Fixture::new();
     let (tasks, original_final) = fixture.initial_batch();
@@ -221,7 +455,7 @@ fn accepted_ready_and_finish_keep_the_original_batch_without_pin_after_newer_hea
     for explicit in [false, true] {
         let selected_pin = explicit.then_some(pin.as_path());
         let ready_result = accepted(&ready(&fixture, selected, selected_pin, None), &identity);
-        let finish_result = accepted(&finish(&fixture, selected, selected_pin), &identity);
+        let finish_result = accepted(&observe_finish(&fixture, selected, selected_pin), &identity);
         assert_eq!(ready_result["completion"], finish_result["completion"]);
         for field in ["patchset_id", "submission_id"] {
             assert_eq!(
@@ -239,9 +473,7 @@ fn accepted_ready_and_finish_keep_the_original_batch_without_pin_after_newer_hea
     accepted(&compact, &identity);
     let text = run(
         &fixture.root,
-        &[
-            "workflow", "finish", selected, "--apply", "--remote", "origin",
-        ],
+        &["workflow", "finish", selected, "--remote", "origin"],
     );
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(text.contains("accepted"));
@@ -299,7 +531,7 @@ fn accepted_partial_and_lost_responses_resolve_the_original_candidate_without_lo
             state.requests.len()
         };
         accepted(&ready(&fixture, selected, None, None), &identity);
-        accepted(&finish(&fixture, selected, None), &identity);
+        accepted(&observe_finish(&fixture, selected, None), &identity);
         assert_eq!(fixture.snapshots(), snapshots);
         assert_eq!(
             tasks.iter().map(|id| fixture.task(id)).collect::<Vec<_>>(),
@@ -743,7 +975,7 @@ fn cleanup_pending_and_unknown_never_erase_independently_proven_acceptance() {
         let value = accepted(&fixture.finish_output(selected, &pin), &identity);
         assert!(value.to_string().contains(code), "{value}");
         let request_start = fixture.state.lock().unwrap().requests.len();
-        accepted(&finish(&fixture, selected, None), &identity);
+        accepted(&observe_finish(&fixture, selected, None), &identity);
         let state = fixture.state.lock().unwrap();
         assert_eq!(state.finishes.len(), 1);
         assert_eq!(state.batches.len(), 1);
@@ -784,7 +1016,7 @@ fn accepted_retry_does_not_require_materializable_local_source() {
         .is_err());
     let request_start = fixture.state.lock().unwrap().requests.len();
     accepted(&ready(&fixture, selected, None, None), &identity);
-    accepted(&finish(&fixture, selected, Some(&pin)), &identity);
+    accepted(&observe_finish(&fixture, selected, Some(&pin)), &identity);
     assert!(!path.exists());
     assert_eq!(fixture.snapshots(), snapshots);
     assert_eq!(

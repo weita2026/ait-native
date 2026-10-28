@@ -42,7 +42,7 @@ pub(super) fn missing_snapshot(
 
 /// Returns the unique matching receipt's legacy flag. Without a provenance
 /// receipt, the existing exact immutable Snapshot-owner witness is still valid.
-fn published_receipt(
+pub(super) fn published_receipt(
     client: &mut PlanHttpClientManager,
     repo_name: &str,
     repository: u32,

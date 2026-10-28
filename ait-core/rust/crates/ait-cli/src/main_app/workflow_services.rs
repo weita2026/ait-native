@@ -40,10 +40,11 @@ pub(crate) fn workflow_ready_service(
             expected,
             request.author_mode.as_deref(),
             request.apply && expected.is_some(),
+            false,
         )? {
             payload
         } else {
-            run_task_scoped_workspace_command(
+            let result = run_task_scoped_workspace_command(
                 repo,
                 &request.task_id,
                 true,
@@ -69,7 +70,8 @@ pub(crate) fn workflow_ready_service(
                         request.run_ci_once.then_some(&mut ci_wait_hook),
                     )
                 },
-            )?
+            );
+            workflow_ready_result_with_runner_diagnostics(result, runner_outcome.as_ref())?
         };
         attach_runner_hint_best_effort(repo, request.remote_name.as_deref(), &mut payload);
         if let Some(path) = expected_path.as_deref() {
@@ -119,7 +121,8 @@ pub(crate) fn workflow_ready_service(
         )
     };
     let mut payload = if request.apply {
-        apply_once()?
+        let result = apply_once();
+        workflow_ready_result_with_runner_diagnostics(result, runner_outcome.as_ref())?
     } else {
         let execution_repo = resolve_task_scoped_execution_repo(
             repo,
@@ -152,6 +155,16 @@ pub(crate) fn workflow_ready_service(
     })
 }
 
+fn workflow_ready_result_with_runner_diagnostics<T>(
+    result: Result<T, String>,
+    runner_outcome: Option<&JsonValue>,
+) -> Result<T, String> {
+    result.map_err(|error| match runner_outcome {
+        Some(outcome) => format!("{error}\nCaptured one-shot runner diagnostics:\n{outcome:#}"),
+        None => error,
+    })
+}
+
 pub(crate) fn workflow_finish_service(
     repo: &RepoRuntime,
     request: &crate::binding_services::WorkflowFinishRequest,
@@ -181,6 +194,7 @@ pub(crate) fn workflow_finish_service(
             expected,
             None,
             false,
+            request.apply,
         )? {
             payload
         } else {

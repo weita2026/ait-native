@@ -9,6 +9,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { installedCoreCases } from "./release_core_installed_cases.mjs";
+import { languageRepository } from "./release_language_repositories.mjs";
 
 const MATRIX_CONTRACT = "ait.release.clean-host.matrix/v1";
 const PHASE_CONTRACT = "ait.release.clean-host.phase/v1";
@@ -455,7 +457,7 @@ function rowIdentity(authority, platform) {
   return `${authority.channel}-${authority.role}${suffix}-${platform.target}`;
 }
 
-function requiredChecks(row, phase) {
+function requiredChecks(row, phase, version) {
   const checks = [
     "runner_target",
     "package_manager",
@@ -471,6 +473,11 @@ function requiredChecks(row, phase) {
         "uninstall",
         "user_data_retained",
       );
+      const match = /^(\d+)\.(\d+)\./.exec(version);
+      if (row.channel === "github" && match &&
+          (Number(match[1]) > 1 || (Number(match[1]) === 1 && Number(match[2]) >= 2))) {
+        checks.push("language_repositories", "installed_core_cases");
+      }
     } else {
       checks.push(
         "prior_baseline",
@@ -526,10 +533,12 @@ function buildMatrix(family, platforms) {
           install: requiredChecks(
             { ...authority, channel: authority.channel },
             "install",
+            version,
           ),
           upgrade: requiredChecks(
             { ...authority, channel: authority.channel },
             "upgrade",
+            version,
           ),
         },
       });
@@ -690,6 +699,33 @@ function validatePhase(phase, expectedPhase, row, release) {
   );
   if (!Object.values(phase.checks).every((value) => value === true)) {
     fail(`${row.id} ${expectedPhase} checks are incomplete`);
+  }
+  if (expectedPhase === "install" && row.required_checks.install.includes("language_repositories")) {
+    const repositories = phase.observations?.language_repositories;
+    if (!Array.isArray(repositories) || repositories.length !== 4 ||
+        !sameJson(repositories.map((entry) => entry.language).sort(),
+          ["go", "java", "rust", "typescript_node"]) ||
+        repositories.some((entry) => {
+          const expected = languageRepository(entry.language).toolchains;
+          return !/^SNP-[0-9A-F]{12}$/.test(entry.snapshot_id ?? "") ||
+            typeof entry.root !== "string" || entry.root.length === 0 ||
+            !Array.isArray(entry.toolchains) || entry.toolchains.length !== expected.length ||
+            entry.toolchains.some((probe, index) => probe?.command !== expected[index][0] ||
+              !sameJson(probe.args, expected[index].slice(1)) ||
+              typeof probe.version_output !== "string" || !/[0-9]/.test(probe.version_output));
+        })) {
+      fail(`${row.id} install lacks four exact language repository results`);
+    }
+  }
+  if (expectedPhase === "install" && row.required_checks.install.includes("installed_core_cases")) {
+    const core = phase.observations?.installed_core_cases;
+    if (!core || core.source_commit !== release.source_commit ||
+        !/^SNP-[0-9A-F]{12}$/.test(core.core_snapshot ?? "") ||
+        [core.cli_sha256, core.server_sha256, core.runner_sha256].some(value => !/^[0-9a-f]{64}$/.test(value ?? "")) ||
+        !sameJson(core.cases, installedCoreCases.map(([target, selector, mode]) =>
+          ({ target, selector, mode: mode ?? "fixture" })))) {
+      fail(`${row.id} install lacks the original installed Core cases`);
+    }
   }
 }
 

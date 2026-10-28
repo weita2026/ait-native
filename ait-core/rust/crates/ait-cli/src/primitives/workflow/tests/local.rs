@@ -338,6 +338,7 @@ fn workflow_attach_local_land_sync_accepts_change_and_line_remote_traits() {
         required_string_field(&landed_snapshot, "snapshot_id").expect("landed snapshot id");
     let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
     set_local_line_head(&repo, "main", Some(&base_snapshot_id)).expect("reset local main");
+    fs::write(repo_root.join("src.txt"), "base").expect("restore clean base");
     let mut remote = FakeWorkflowReadRemote {
         lines: BTreeMap::from([(
             "main".to_string(),
@@ -435,6 +436,9 @@ fn workflow_land_submit_action_accepts_change_line_and_closeout_remote_traits() 
         required_string_field(&landed_snapshot, "snapshot_id").expect("landed snapshot id");
     let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
     set_local_line_head(&repo, "main", Some(&base_snapshot_id)).expect("reset local main");
+    // Exercise a valid clean fast-forward; dirty workspace refusal is
+    // covered independently by the atomic synchronization controls.
+    fs::write(repo_root.join("src.txt"), "base").expect("restore clean base");
     let mut task_remote = FakeWorkflowReadRemote {
         lines: BTreeMap::from([(
             "main".to_string(),
@@ -2132,7 +2136,7 @@ fn descendant_atomic_sync_preserves_the_newer_local_head_and_main_seed() {
 }
 
 #[test]
-fn divergent_atomic_sync_retains_the_existing_remote_land_update_path() {
+fn divergent_atomic_sync_preserves_local_head_and_disjoint_workspace_files() {
     let temp = tempdir().unwrap();
     init_repo(&InitRequest {
         root: temp.path().to_path_buf(),
@@ -2163,7 +2167,11 @@ fn divergent_atomic_sync_retains_the_existing_remote_land_update_path() {
     )
     .unwrap();
 
-    fs::write(temp.path().join("line.txt"), "newer local work\n").unwrap();
+    fs::write(
+        temp.path().join("local-feature.txt"),
+        "post-release local feature\n",
+    )
+    .unwrap();
     let local = create_local_snapshot(
         temp.path().to_string_lossy().as_ref(),
         "fixture-ait",
@@ -2173,7 +2181,8 @@ fn divergent_atomic_sync_retains_the_existing_remote_land_update_path() {
     )
     .unwrap();
     let local_snapshot_id = required_string_field(&local, "snapshot_id").unwrap();
-    fs::write(temp.path().join("line.txt"), "remote branch\n").unwrap();
+    fs::remove_file(temp.path().join("local-feature.txt")).unwrap();
+    fs::write(temp.path().join("release-fix.txt"), "release-only repair\n").unwrap();
     let remote = create_local_snapshot(
         temp.path().to_string_lossy().as_ref(),
         "fixture-ait",
@@ -2190,6 +2199,19 @@ fn divergent_atomic_sync_retains_the_existing_remote_land_update_path() {
     )
     .unwrap()
     .is_none());
+    assert!(snapshot_distance_if_ancestor(
+        &repo,
+        Some(&local_snapshot_id),
+        Some(&remote_snapshot_id)
+    )
+    .unwrap()
+    .is_none());
+    fs::remove_file(temp.path().join("release-fix.txt")).unwrap();
+    fs::write(
+        temp.path().join("local-feature.txt"),
+        "post-release local feature\n",
+    )
+    .unwrap();
 
     let result = workflow_attach_local_land_sync_from_atomic_response(
         &repo,
@@ -2200,21 +2222,442 @@ fn divergent_atomic_sync_retains_the_existing_remote_land_update_path() {
     )
     .unwrap();
 
-    assert_eq!(
-        local_line_head_snapshot_id(&repo, "main")
-            .unwrap()
-            .as_deref(),
-        Some(remote_snapshot_id.as_str())
+    let head_after = local_line_head_snapshot_id(&repo, "main").unwrap();
+    let local_after = fs::read_to_string(temp.path().join("local-feature.txt")).ok();
+    let remote_file_after = temp.path().join("release-fix.txt").exists();
+    assert!(
+        head_after.as_deref() == Some(local_snapshot_id.as_str())
+            && local_after.as_deref() == Some("post-release local feature\n")
+            && !remote_file_after,
+        "divergent sync wrote local state: head={head_after:?}, local_feature={local_after:?}, remote_file={remote_file_after}; local={local_snapshot_id}, remote={remote_snapshot_id}"
     );
-    assert_eq!(result["local_sync"]["status"], "synced");
+    assert_eq!(result["local_sync"]["status"], "failed");
+    assert_eq!(
+        result["local_sync"]["reason"],
+        "local_reconciliation_required"
+    );
     assert_eq!(
         result["local_sync"]["local_head_contains_landed_snapshot"],
         false
     );
-    assert_eq!(result["local_sync"]["auto_rebase"], true);
+    assert_eq!(result["local_sync"]["auto_rebase"], false);
     assert_eq!(
         fs::read_to_string(temp.path().join("line.txt")).unwrap(),
-        "remote branch\n"
+        "base\n"
+    );
+    let mut output = json!({"apply_status":"done","target_line":"main",
+        "landed_snapshot_id":remote_snapshot_id,"local_line_sync":result["local_sync"]});
+    task_land_attach_cli_main_seed_sync(&repo, &mut output, "main", Some(&remote_snapshot_id));
+    assert_eq!(
+        output["main_seed_sync"]["reason"],
+        "local_reconciliation_required"
+    );
+    assert_eq!(output["main_seed_sync"]["snapshot_id"], local_snapshot_id);
+    let cleanup =
+        super::super::task_land::task_land_force_bound_worktree_cleanup(&repo, &output).unwrap();
+    assert_eq!(cleanup["status"], "deferred");
+    assert_eq!(cleanup["removed"], false);
+}
+
+fn atomic_sync_fast_forward_fixture() -> (tempfile::TempDir, RepoRuntime, String, String) {
+    let temp = tempdir().unwrap();
+    init_repo(&InitRequest {
+        root: temp.path().to_path_buf(),
+        name: Some("fixture-ait".into()),
+        default_line: "main".into(),
+        policy_profile: "prototype".into(),
+        default_author_mode: "ai_with_human_review".into(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
+    fs::write(temp.path().join("line.txt"), "base\n").unwrap();
+    let base = create_local_snapshot(
+        temp.path().to_str().unwrap(),
+        "fixture-ait",
+        "main",
+        Some("base"),
+        false,
+    )
+    .unwrap();
+    let base = required_string_field(&base, "snapshot_id").unwrap();
+    fs::write(temp.path().join("line.txt"), "accepted release repair\n").unwrap();
+    let accepted = create_local_snapshot(
+        temp.path().to_str().unwrap(),
+        "fixture-ait",
+        "main",
+        Some("accepted"),
+        false,
+    )
+    .unwrap();
+    let accepted = required_string_field(&accepted, "snapshot_id").unwrap();
+    let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+    set_local_line_head(&repo, "main", Some(&base)).unwrap();
+    fs::write(temp.path().join("line.txt"), "base\n").unwrap();
+    (temp, repo, base, accepted)
+}
+
+#[test]
+fn fast_forward_atomic_sync_restores_clean_delta_and_retry_preserves_later_work() {
+    let (temp, repo, _, accepted) = atomic_sync_fast_forward_fixture();
+    let acknowledgement = json!({"status":"succeeded","receipt":{"id":"accepted-once"}});
+    let result = workflow_attach_local_land_sync_from_atomic_response(
+        &repo,
+        "RCT-1",
+        &acknowledgement,
+        "main",
+        &accepted,
+    )
+    .unwrap();
+    assert_eq!(result["local_sync"]["status"], "synced");
+    assert_eq!(result["receipt"], acknowledgement["receipt"]);
+    assert_eq!(
+        fs::read_to_string(temp.path().join("line.txt")).unwrap(),
+        "accepted release repair\n"
+    );
+    assert_eq!(
+        local_line_head_snapshot_id(&repo, "main")
+            .unwrap()
+            .as_deref(),
+        Some(accepted.as_str())
+    );
+    fs::write(temp.path().join("later.txt"), "later local work\n").unwrap();
+    let later = create_local_snapshot(
+        temp.path().to_str().unwrap(),
+        "fixture-ait",
+        "main",
+        Some("later"),
+        false,
+    )
+    .unwrap();
+    let later = required_string_field(&later, "snapshot_id").unwrap();
+    let retry = workflow_attach_local_land_sync_from_atomic_response(
+        &repo,
+        "RCT-1",
+        &acknowledgement,
+        "main",
+        &accepted,
+    )
+    .unwrap();
+    assert_eq!(retry["receipt"], acknowledgement["receipt"]);
+    assert_eq!(retry["local_sync"]["status"], "local_descendant_preserved");
+    assert_eq!(
+        local_line_head_snapshot_id(&repo, "main")
+            .unwrap()
+            .as_deref(),
+        Some(later.as_str())
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("later.txt")).unwrap(),
+        "later local work\n"
+    );
+}
+
+#[test]
+fn atomic_sync_holds_unavailable_snapshot_without_authority_or_workspace_writes() {
+    for case in 0..3 {
+        let (temp, repo, base, accepted) = atomic_sync_fast_forward_fixture();
+        let mut foreign = (case == 1).then(atomic_sync_fast_forward_fixture);
+        if let Some((foreign_root, _, _, foreign_snapshot)) = foreign.as_mut() {
+            fs::write(
+                foreign_root.path().join("foreign-only.txt"),
+                "another Repository's content",
+            )
+            .unwrap();
+            let snapshot = create_local_snapshot(
+                foreign_root.path().to_str().unwrap(),
+                "fixture-ait",
+                "main",
+                Some("foreign authority"),
+                false,
+            )
+            .unwrap();
+            *foreign_snapshot = required_string_field(&snapshot, "snapshot_id").unwrap();
+        }
+        if case == 2 {
+            set_local_line_head(&repo, "main", None).unwrap();
+        }
+        let before = local_line_head_snapshot_id(&repo, "main").unwrap();
+        let target = if case == 2 {
+            accepted.as_str()
+        } else if let Some((_, _, _, foreign_snapshot)) = foreign.as_ref() {
+            foreign_snapshot.as_str()
+        } else {
+            "SNP-FFFFFFFFFFFF"
+        };
+        let result = workflow_attach_local_land_sync_from_atomic_response(
+            &repo,
+            "RCT-1",
+            &json!({"status":"succeeded"}),
+            "main",
+            target,
+        )
+        .unwrap();
+        assert_eq!(result["status"], "succeeded");
+        assert_eq!(
+            result["local_sync"]["reason"],
+            "local_reconciliation_required"
+        );
+        assert_eq!(local_line_head_snapshot_id(&repo, "main").unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("line.txt")).unwrap(),
+            "base\n"
+        );
+        assert_ne!(base, accepted);
+    }
+}
+
+#[test]
+fn same_head_atomic_sync_preserves_unsaved_files_and_defers_incomplete_restore_recovery() {
+    let (temp, repo, _, accepted) = atomic_sync_fast_forward_fixture();
+    set_local_line_head(&repo, "main", Some(&accepted)).unwrap();
+    // A prior head commit does not prove workspace restoration completed.
+    let result = workflow_attach_local_land_sync_from_atomic_response(
+        &repo,
+        "RCT-1",
+        &json!({"status":"succeeded"}),
+        "main",
+        &accepted,
+    )
+    .unwrap();
+    assert_eq!(
+        result["local_sync"]["reason"],
+        "local_reconciliation_required"
+    );
+    assert_eq!(
+        local_line_head_snapshot_id(&repo, "main")
+            .unwrap()
+            .as_deref(),
+        Some(accepted.as_str())
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("line.txt")).unwrap(),
+        "base\n"
+    );
+    assert_eq!(result["bound_worktree_cleanup"]["status"], "deferred");
+}
+
+#[test]
+fn atomic_sync_holds_dirty_and_differently_pinned_workspaces_before_head_update() {
+    for pinned in [false, true] {
+        let (temp, repo, base, accepted) = atomic_sync_fast_forward_fixture();
+        if pinned {
+            let mut config = read_json_object_value(&repo.ait_dir.join("config.json"));
+            config.insert("worktree_name".into(), json!("different-task"));
+            fs::write(repo.ait_dir.join("config.json"), json!(config).to_string()).unwrap();
+            fs::create_dir_all(repo.ait_dir.join("worktrees")).unwrap();
+            fs::write(
+                repo.ait_dir.join("worktrees/different-task.json"),
+                json!({"name":"different-task","bound_task_id":"LCT-2"}).to_string(),
+            )
+            .unwrap();
+        } else {
+            fs::write(temp.path().join("line.txt"), "unsaved local edit\n").unwrap();
+        }
+        let expected = fs::read(temp.path().join("line.txt")).unwrap();
+        let result = workflow_attach_local_land_sync_from_atomic_response(
+            &repo,
+            "RCT-1",
+            &json!({"status":"succeeded"}),
+            "main",
+            &accepted,
+        )
+        .unwrap();
+        assert_eq!(
+            result["local_sync"]["reason"], "local_reconciliation_required",
+            "{result}"
+        );
+        assert_eq!(
+            local_line_head_snapshot_id(&repo, "main")
+                .unwrap()
+                .as_deref(),
+            Some(base.as_str())
+        );
+        assert_eq!(fs::read(temp.path().join("line.txt")).unwrap(), expected);
+    }
+}
+
+#[test]
+fn atomic_sync_holds_wrong_bound_invocation_and_other_root_pin() {
+    for wrong_task in [false, true] {
+        let (temp, repo, base, accepted) = atomic_sync_fast_forward_fixture();
+        let worktree = temp.path().join("accepted-task");
+        fs::create_dir(&worktree).unwrap();
+        fs::create_dir_all(repo.ait_dir.join("worktrees")).unwrap();
+        for (name, task) in [("accepted-task", "RCT-1"), ("other-task", "RCT-2")] {
+            fs::create_dir_all(temp.path().join(name)).unwrap();
+            fs::write(
+                repo.ait_dir.join(format!("worktrees/{name}.json")),
+                json!({"name":name,"bound_task_id":task,"path":temp.path().join(name),
+                    "repo_root":temp.path(),"line_name":"main"})
+                .to_string(),
+            )
+            .unwrap();
+        }
+        update_root_config(&repo, |config| {
+            config.insert(
+                "worktree_name".into(),
+                json!(if wrong_task {
+                    "accepted-task"
+                } else {
+                    "other-task"
+                }),
+            );
+        })
+        .unwrap();
+        let mut invoking = repo.clone();
+        invoking
+            .config
+            .insert("repo_root".into(), json!(temp.path()));
+        invoking
+            .config
+            .insert("workspace_root".into(), json!(worktree));
+        invoking
+            .config
+            .insert("worktree_name".into(), json!("accepted-task"));
+        invoking.worktree_config_path = Some(worktree.join(".ait-worktree.json"));
+        let receipt = json!({"status":"succeeded","receipt":{"id":"accepted-once"}});
+        let result = workflow_attach_local_land_sync_from_atomic_response(
+            &invoking,
+            if wrong_task { "RCT-2" } else { "RCT-1" },
+            &receipt,
+            "main",
+            &accepted,
+        )
+        .unwrap();
+        assert_eq!(
+            result["local_sync"]["reason"], "local_reconciliation_required",
+            "{result}"
+        );
+        assert_eq!(result["receipt"], receipt["receipt"]);
+        assert_eq!(
+            local_line_head_snapshot_id(&repo, "main").unwrap(),
+            Some(base)
+        );
+        assert_eq!(fs::read(temp.path().join("line.txt")).unwrap(), b"base\n");
+    }
+}
+
+#[test]
+fn atomic_sync_process_probe() {
+    use std::io::Write;
+    let path = std::env::current_dir()
+        .unwrap()
+        .join(".atomic-sync-probe.json");
+    let Ok(bytes) = fs::read(path) else {
+        return;
+    };
+    let request: JsonValue = serde_json::from_slice(&bytes).unwrap();
+    let mut stream = std::net::TcpStream::connect(request["address"].as_str().unwrap()).unwrap();
+    stream.write_all(b"ready\n").unwrap();
+    let repo =
+        RepoRuntime::discover_from_path(std::path::Path::new(request["root"].as_str().unwrap()))
+            .unwrap();
+    let result = workflow_attach_local_land_sync_from_atomic_response(
+        &repo,
+        "RCT-1",
+        &json!({"status":"succeeded","receipt":"accepted-once"}),
+        "main",
+        request["accepted"].as_str().unwrap(),
+    )
+    .unwrap();
+    serde_json::to_writer(&mut stream, &result).unwrap();
+}
+
+#[test]
+fn atomic_sync_waits_for_local_finish_and_rechecks_the_committed_local_head() {
+    use std::io::{BufRead, BufReader, Read};
+    let (temp, repo, _, accepted) = atomic_sync_fast_forward_fixture();
+    let edit = tempdir().unwrap();
+    let edit_path = edit.path().canonicalize().unwrap().join("author");
+    let task = crate::primitives::task_quick::task_quick_with_edit_root_and_progress(
+        &repo,
+        Some("Pending Local feature"),
+        "Preserve concurrent pending Local work",
+        true,
+        None,
+        Some(&edit_path),
+        None,
+    )
+    .unwrap();
+    let task_id = required_string_field(&task, "task_id").unwrap();
+    let author = RepoRuntime::discover_from_path(&edit_path).unwrap();
+    fs::write(edit_path.join("feature.txt"), "future Local feature\n").unwrap();
+    let local = snapshot_create_for_reference(&author, &task_id, Some("pending feature")).unwrap();
+    let local = required_string_field(&local, "snapshot_id").unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    fs::write(temp.path().join(".atomic-sync-probe.json"), json!({
+        "address":listener.local_addr().unwrap().to_string(), "root":temp.path(), "accepted":accepted,
+    }).to_string()).unwrap();
+    let root_lock = crate::workspace_lock::WorkspaceCommandLock::acquire(
+        &repo,
+        "controlled Local finish overlap",
+    )
+    .unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "primitives::workflow::tests::local::atomic_sync_process_probe",
+        ])
+        .current_dir(temp.path())
+        .env_remove(ait_core::environment_contract::names::AIT_WORKSPACE_LOCK_OWNER_TOKEN)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let (stream, _) = listener.accept().unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(20)))
+        .unwrap();
+    let mut stream = BufReader::new(stream);
+    let mut ready = String::new();
+    stream.read_line(&mut ready).unwrap();
+    assert_eq!(ready, "ready\n");
+    let finished = super::super::task_land::task_land_apply_local(
+        &author,
+        &task_id,
+        None,
+        None,
+        None,
+        None::<fn(&JsonValue) -> Result<(), String>>,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(finished["apply_status"], "done");
+    let receipt = repo
+        .task_store()
+        .unwrap()
+        .local_task_receipt(&task_id)
+        .unwrap();
+    drop(root_lock);
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(child.wait().unwrap().success());
+    let response: JsonValue = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["receipt"], "accepted-once");
+    assert_eq!(
+        response["local_sync"]["reason"],
+        "local_reconciliation_required"
+    );
+    assert_eq!(
+        local_line_head_snapshot_id(&repo, "main")
+            .unwrap()
+            .as_deref(),
+        Some(local.as_str())
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("feature.txt")).unwrap(),
+        "future Local feature\n"
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("line.txt")).unwrap(),
+        "base\n"
+    );
+    assert_eq!(
+        repo.task_store()
+            .unwrap()
+            .local_task_receipt(&task_id)
+            .unwrap(),
+        receipt
     );
 }
 

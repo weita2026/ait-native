@@ -172,6 +172,7 @@ struct FakeQueueRemote {
 struct FakeChangeRemote {
     tasks: BTreeMap<String, JsonValue>,
     task_read_sequence: VecDeque<JsonValue>,
+    line_read_sequence: VecDeque<JsonValue>,
     detail: Option<JsonValue>,
     changes: Vec<JsonValue>,
     lines: Vec<JsonValue>,
@@ -241,6 +242,7 @@ struct FakeRemoteTaskCreatorOnly;
 struct FakeWorkspaceCloseoutRemote {
     patchsets: BTreeMap<String, JsonValue>,
     patchset_reads: Vec<String>,
+    patchset_read_sequence: VecDeque<JsonValue>,
     attestations: BTreeMap<String, JsonValue>,
     attestation_writes: usize,
     ci_runs: Vec<JsonValue>,
@@ -972,6 +974,9 @@ impl TaskWorkflowLineReader for FakeChangeRemote {
         _repo_name: &str,
         line_name: &str,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
+        if let Some(row) = self.line_read_sequence.pop_front() {
+            return Ok(row);
+        }
         self.lines
             .iter()
             .find(|row| string_field(row, "line_name").as_deref() == Some(line_name))
@@ -2315,6 +2320,9 @@ impl TaskWorkflowPatchsetReader for FakeWorkspaceCloseoutRemote {
         _change_ref: Option<&str>,
     ) -> TaskWorkflowHttpClientResult<JsonValue> {
         self.patchset_reads.push(patchset_id.to_string());
+        if let Some(row) = self.patchset_read_sequence.pop_front() {
+            return Ok(row);
+        }
         self.patchsets.get(patchset_id).cloned().ok_or_else(|| {
             TaskWorkflowHttpClientError::Remote(format!(
                 "GET patchset {patchset_id} failed: 404 Unknown patchset"

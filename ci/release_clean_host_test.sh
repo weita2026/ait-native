@@ -37,6 +37,210 @@ expect_failure() {
 
 node --check "${tool}"
 node --check "${phase_runner}"
+node --check "${repo_root}/ci/release_core_installed_cases.mjs"
+node --check "${repo_root}/ci/release_language_repositories.mjs"
+libtest_root=${temporary_root}/libtest-selector
+mkdir -p "${libtest_root}/tests"
+cat >"${libtest_root}/Cargo.toml" <<'TOML'
+[package]
+name = "ait_clean_host_selector_fixture"
+version = "0.1.0"
+edition = "2021"
+TOML
+cat >"${libtest_root}/tests/selected.rs" <<'RUST'
+#[test]
+fn native_lifecycle_preserves_content_history_and_cleanup_without_git() {
+    assert_eq!(2 + 2, 4);
+}
+RUST
+CARGO_TARGET_DIR="${temporary_root}/libtest-target" cargo test --offline \
+  --manifest-path "${libtest_root}/Cargo.toml" --test selected \
+  native_lifecycle_preserves_content_history_and_cleanup_without_git -- \
+  --exact --test-threads=1 --nocapture >"${temporary_root}/libtest-selector.stdout"
+node --input-type=module - "${repo_root}/ci/release_core_installed_cases.mjs" \
+  "${temporary_root}/libtest-selector.stdout" <<'NODE'
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const { requireExecutedCoreCase } = await import(pathToFileURL(process.argv[2]));
+requireExecutedCoreCase(readFileSync(process.argv[3], "utf8"),
+  "native_lifecycle_preserves_content_history_and_cleanup_without_git");
+NODE
+node --input-type=module - "${repo_root}/ci/release_core_installed_cases.mjs" \
+  "${temporary_root}/core-cases.json" <<'NODE'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const { installedCoreCases } = await import(pathToFileURL(process.argv[2]));
+writeFileSync(process.argv[3], JSON.stringify(installedCoreCases.map(([target, selector, mode]) =>
+  ({ target, selector, mode: mode ?? "fixture" }))));
+NODE
+node --input-type=module - "${repo_root}/ci/release_language_repositories.mjs" \
+  "${temporary_root}/language-toolchains.json" <<'NODE'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const { languageRepository, languageRepositoryNames } = await import(pathToFileURL(process.argv[2]));
+writeFileSync(process.argv[3], JSON.stringify(Object.fromEntries(languageRepositoryNames.map(name =>
+  [name, languageRepository(name).toolchains.map(([command, ...args]) =>
+    ({ command, args, version_output: `${command} 1.2.3` }))]))));
+NODE
+node --input-type=module - "${repo_root}/ci/release_core_installed_cases.mjs" \
+  "${temporary_root}" <<'NODE'
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+const { installedCoreCases, requireExecutedCoreCase, runInstalledCoreCases } = await import(pathToFileURL(process.argv[2]));
+const root = process.argv[3], sourceRoot = path.join(root, "candidate-source"),
+  coreRoot = path.join(sourceRoot, "ait-core"), runtimeRoot = path.join(root, "candidate-runtime");
+mkdirSync(coreRoot, { recursive: true }); mkdirSync(runtimeRoot);
+const family = JSON.stringify({ schema: "ait.release.family/v3", family: { version: "1.2.0", tag: "v1.2.0" },
+  components: [{ source_repository: "ait-core", source_snapshot: "SNP-123456789ABC" }] });
+writeFileSync(path.join(sourceRoot, "ait-release-family.json"), family);
+writeFileSync(path.join(sourceRoot, "ait-monorepo-source.json"), JSON.stringify({
+  schema: "ait.release.monorepo-source/v1", family_version: "1.2.0", family_tag: "v1.2.0",
+  family_manifest_sha256: createHash("sha256").update(family).digest("hex"),
+  subtrees: [{ source_repository: "ait-core", path: "ait-core", source_snapshot: "SNP-123456789ABC" }],
+}));
+writeFileSync(path.join(coreRoot, "ait-release.json"), JSON.stringify({ package: { name: "ait-core", version: "1.2.0" } }));
+const [aitBin, serverBin, runnerBin] = ["ait", "ait-server", "ait-runner"].map(name => path.join(root, name));
+for (const binary of [aitBin, serverBin, runnerBin]) writeFileSync(binary, nameBytes(binary), { mode: 0o755 });
+function nameBytes(file) { return `binary:${path.basename(file)}\n`; }
+const commit = "1".repeat(40), calls = [];
+const input = { sourceRoot, aitBin, serverBin, runnerBin, runtimeRoot, version: "1.2.0", sourceCommit: commit };
+const recorder = { run(command, args, options) {
+  calls.push({ command, args, options });
+  if (command === "git") return { stdout: `${commit}\n` };
+  assert.equal(command, "cargo");
+  const selector = args[args.indexOf("--test") + 2];
+  return { stdout: `running 1 test\ntest ${selector} ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.01s\n` };
+} };
+const result = runInstalledCoreCases({ ...input, recorder });
+assert.equal(result.source_commit, commit);
+assert.equal(result.core_snapshot, "SNP-123456789ABC");
+assert.equal(calls.filter(call => call.command === "cargo").length, installedCoreCases.length);
+for (const [index, [target, selector, mode]] of installedCoreCases.entries()) {
+  const call = calls[index + 1];
+  assert.deepEqual(call.args.slice(0, 2), ["test", "--locked"]);
+  assert(call.args.includes(target) && call.args.includes(selector) && call.args.includes("--exact"));
+  assert.equal(call.args.includes("--ignored"), mode === "paired");
+  assert.equal(realpathSync(call.options.cwd), realpathSync(coreRoot));
+  assert.equal(realpathSync(call.options.env.AIT_TEST_CLI_BIN), realpathSync(aitBin));
+  assert.equal(call.options.env.TEST_REVIEWED_SERVER_BIN && realpathSync(call.options.env.TEST_REVIEWED_SERVER_BIN),
+    mode === "paired" ? realpathSync(serverBin) : undefined);
+  assert.equal(call.options.env.TEST_NATIVE_RUNNER_BIN && realpathSync(call.options.env.TEST_NATIVE_RUNNER_BIN),
+    mode === "paired" ? realpathSync(runnerBin) : undefined);
+}
+assert.throws(() => runInstalledCoreCases({ ...input, sourceCommit: "2".repeat(40), recorder }),
+  /public source commit differs/);
+for (const output of [
+  "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n",
+  "running 1 test\ntest selected ... ignored\ntest result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out;\n",
+]) assert.throws(() => requireExecutedCoreCase(output, "selected"), /did not execute and pass/);
+assert.throws(() => runInstalledCoreCases({ ...input, recorder: { run(command) {
+  if (command === "git") return { stdout: `${commit}\n` };
+  throw new Error("required Core case failed");
+} } }), /required Core case failed/);
+NODE
+node --input-type=module - "${phase_runner}" "${repo_root}/ci/release_language_repositories.mjs" "${temporary_root}" <<'NODE'
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import vm from "node:vm";
+import { pathToFileURL } from "node:url";
+
+const { languageRepository, languageRepositoryNames, seedLanguageRepository,
+  verifyLanguageRepository, runLanguageRepository } = await import(pathToFileURL(process.argv[3]));
+assert.deepEqual(languageRepositoryNames, ["rust", "typescript_node", "go", "java"]);
+for (const name of languageRepositoryNames) {
+  const fixture = languageRepository(name), root = path.join(process.argv[4], `language-${name}`);
+  seedLanguageRepository(root, fixture);
+  const snapshot = { files: fixture.files.map(file => ({ path: file.name,
+    sha256: createHash("sha256").update(file.bytes).digest("hex") })) };
+  verifyLanguageRepository(root, fixture, snapshot);
+  const calls = [];
+  const toolchains = runLanguageRepository({ run(command, args, options) {
+    calls.push({ command, args, cwd: options.cwd });
+    if (fixture.toolchains.some(probe => probe[0] === command)) {
+      return command === "java" ? { stdout: "", stderr: 'openjdk version "21.0.1"' } :
+        { stdout: `${command} 1.2.3\n`, stderr: "" };
+    }
+    return { stdout: "", stderr: "" };
+  } }, root, fixture);
+  assert.equal(calls.length, fixture.toolchains.length + 2);
+  assert.equal(calls[0].cwd, root);
+  assert.deepEqual(toolchains.map(row => row.command), fixture.toolchains.map(row => row[0]));
+  assert(toolchains.every(row => /[0-9]/.test(row.version_output)));
+  assert.throws(() => runLanguageRepository({ run() { throw new Error("required tool unavailable"); } }, root, fixture),
+    /required tool unavailable/);
+  assert.throws(() => runLanguageRepository({ run() { return { stdout: "", stderr: "" }; } }, root, fixture),
+    /toolchain version is unavailable/);
+  assert.throws(() => verifyLanguageRepository(root, fixture, { files: [...snapshot.files,
+    { path: "build/generated", sha256: "0".repeat(64) }] }), /generated output/);
+  const changed = fixture.files.find(file => file.name === "data/bytes.bin");
+  writeFileSync(path.join(root, "data/bytes.bin"), Buffer.from([0]));
+  assert.throws(() => verifyLanguageRepository(root, fixture), /bytes changed/);
+  writeFileSync(path.join(root, "data/bytes.bin"), changed.bytes);
+}
+
+const source = readFileSync(process.argv[2], "utf8");
+const implementation = source.slice(source.indexOf("async function executeInstall("),
+  source.indexOf("\nasync function executeUpgrade(", source.indexOf("async function executeInstall(")));
+async function exercise(channel, version, failedLanguage = null) {
+  const events = [], observations = {};
+  const context = vm.createContext({ path, process: { env: {} }, languageRepositoryNames,
+    verifyCandidateTag() {}, probePackageManager() {}, candidateRoot() { return true; },
+    async installChannel() { return { ait: { command: "/installed/ait" }, server: { command: "/installed/ait-server" },
+      runner: { command: "/installed/ait-runner" }, uninstall() { events.push("uninstall"); } }; },
+    assertInstalledOrigin() {}, exactContextVersion() {}, exerciseBinding() {},
+    markBindingChecks() {}, async exerciseLifecycle() {},
+    mark(checks, key) { if (!Object.hasOwn(checks, key)) throw new Error(`undeclared ${key}`); checks[key] = true; },
+    requiresLanguageCli(value) { return value.startsWith("1.2."); },
+    languageRepository: name => languageRepository(name),
+    verifyLanguageRepository(root, fixture) { events.push(`verify:${fixture.name}`); },
+    runInstalledCoreCases(input) {
+      assert.equal(input.aitBin, "/installed/ait");
+      assert.equal(input.serverBin, "/installed/ait-server");
+      assert.equal(input.runnerBin, "/installed/ait-runner");
+      events.push("installed-core");
+      return { core_snapshot: "SNP-123456789ABC" };
+    },
+    firstLand(recorder, ait, root, text, prior, fixture) {
+      assert.equal(ait.command, "/installed/ait");
+      if (fixture?.name === failedLanguage) throw new Error("required tool unavailable");
+      events.push(fixture?.name ?? "first-land");
+      return { root, snapshot_id: "SNP-123456789ABC",
+        toolchains: fixture?.toolchains.map(([command, ...args]) =>
+          ({ command, args, version_output: `${command} 1.2.3` })) };
+    },
+    requireRegularFile() {}, fail(message) { throw new Error(message); },
+  });
+  vm.runInContext(implementation + "\nthis.executeInstall = executeInstall;", context);
+  const required = ["runner_target", "package_manager", "candidate_install", "installed_origin",
+    "command_version", "first_land", "generated_workflow_current", "uninstall", "user_data_retained"];
+  if (channel === "github" && version.startsWith("1.2.")) required.push("language_repositories", "installed_core_cases");
+  const checks = Object.fromEntries(required.map(key => [key, false]));
+  const invocation = context.executeInstall({ config: { release: { version } }, status: {},
+    row: { channel, lifecycle: "product", service: null, id: `${channel}-fixture` },
+    checks, recorder: { observations }, root: "/clean-host" });
+  if (failedLanguage) {
+    await assert.rejects(invocation, /required tool unavailable/);
+    assert(!events.includes("uninstall"));
+  } else {
+    await invocation;
+    assert(Object.values(checks).every(Boolean));
+  }
+  return { events, observations };
+}
+const current = await exercise("github", "1.2.0");
+assert.deepEqual(current.events, ["first-land", ...languageRepositoryNames, "installed-core", "uninstall",
+  ...languageRepositoryNames.map(name => `verify:${name}`)]);
+assert.deepEqual(Array.from(current.observations.language_repositories, row => row.language), languageRepositoryNames);
+assert.equal(current.observations.installed_core_cases.core_snapshot, "SNP-123456789ABC");
+assert.deepEqual((await exercise("github", "1.1.4")).events, ["first-land", "uninstall"]);
+assert.deepEqual((await exercise("npm", "1.2.0")).events, ["first-land", "uninstall"]);
+await exercise("github", "1.2.0", "go");
+NODE
 test "$(grep -c 'CHECKSUM_ASSET_NAME.test(match\[2\])' "${phase_runner}")" = 2
 node --input-type=module - "${phase_runner}" "${temporary_root}" <<'NODE'
 import assert from "node:assert/strict";
@@ -353,6 +557,9 @@ grep -F 'explicit setup-python output' <<<"${python_command_source}" >/dev/null
 grep -F 'package_manager_commands = { python: pythonCommand() }' \
   "${phase_runner}" >/dev/null
 grep -F 'ait-pre-tag-candidate-${{ inputs.release_id }}' "${workflow}" >/dev/null
+grep -F 'source_commit: ${{ steps.request.outputs.source_commit }}' "${workflow}" >/dev/null
+grep -F 'ref: ${{ needs.stage.outputs.source_commit }}' "${workflow}" >/dev/null
+grep -F 'AIT_CLEAN_HOST_SOURCE_ROOT: ${{ github.workspace }}/source' "${workflow}" >/dev/null
 grep -F 'ait-pre-tag-clean-host-${{ inputs.release_id }}' "${workflow}" >/dev/null
 grep -F 'release commit has a release tag before candidate qualification' \
   "${repo_root}/.github/workflows/ait-release-component-receipts.yml" >/dev/null
@@ -418,6 +625,17 @@ jq -e --arg matrix_revision "${active_matrix_revision}" '
     "ubuntu-22.04-arm", "windows-11-arm", "windows-2025"
   ] | sort)
 ' "${matrix}" >/dev/null
+
+if [[ "${family_version}" == 1.2.* ]]; then
+  jq -e '
+    ([.rows[] | select(.channel == "github" and .lifecycle == "product" and
+      ((.required_checks.install | index("language_repositories")) != null and
+       (.required_checks.install | index("installed_core_cases")) != null))] | length) == 6 and
+    ([.rows[] | select(.channel != "github" or .lifecycle != "product") |
+      select((.required_checks.install | index("language_repositories") != null) or
+             (.required_checks.install | index("installed_core_cases") != null))] | length) == 0
+  ' "${matrix}" >/dev/null
+fi
 
 jq -e '
   all(.rows[] | select(.channel == "pypi");
@@ -594,7 +812,9 @@ while IFS= read -r row; do
   upgrade=${temporary_root}/${row_id}.upgrade.json
   jq -n \
     --slurpfile release "${release_binding}" \
-    --slurpfile row "${row_file}" '
+    --slurpfile row "${row_file}" \
+    --slurpfile language "${temporary_root}/language-toolchains.json" \
+    --slurpfile core "${temporary_root}/core-cases.json" '
     ($row[0]) as $r |
     {
       contract: "ait.release.clean-host.phase/v1",
@@ -611,7 +831,15 @@ while IFS= read -r row; do
         job: ("install-" + $r.id)
       },
       checks: (reduce $r.required_checks.install[] as $check
-        ({}; .[$check] = true))
+        ({}; .[$check] = true)),
+      observations: (if ($r.required_checks.install | index("language_repositories")) != null then
+        { language_repositories: (["rust", "typescript_node", "go", "java"] |
+          map({language: ., root: ("/fixture/" + .), snapshot_id: "SNP-123456789ABC",
+            toolchains: $language[0][.] })),
+          installed_core_cases: { source_commit: $release[0].source_commit,
+            core_snapshot: "SNP-123456789ABC", cli_sha256: ("a" * 64),
+            server_sha256: ("b" * 64), runner_sha256: ("c" * 64), cases: $core[0] } }
+        else {} end)
     }
   ' >"${install}"
   jq -n \
@@ -644,6 +872,19 @@ while IFS= read -r row; do
     --upgrade "${upgrade}" \
     --output "${evidence_root}/${row_id}.json" >/dev/null
 done < <(jq -c '.rows[]' "${matrix}")
+
+if [[ "${family_version}" == 1.2.* ]]; then
+  github_row_id=$(jq -er '.rows[] | select(.channel == "github" and .lifecycle == "product") | .id' "${matrix}" | head -1)
+  jq '.observations.language_repositories |= .[:3]' \
+    "${temporary_root}/${github_row_id}.install.json" >"${temporary_root}/missing-language.install.json"
+  expect_failure missing-language-observation node "${tool}" combine \
+    --matrix "${matrix}" --config "${config}" --status "${status}" \
+    --install "${temporary_root}/missing-language.install.json" \
+    --upgrade "${temporary_root}/${github_row_id}.upgrade.json" \
+    --output "${temporary_root}/missing-language.row.json"
+  grep -F 'install lacks four exact language repository results' \
+    "${temporary_root}/missing-language-observation.stderr" >/dev/null
+fi
 
 aggregate=${temporary_root}/aggregate
 node "${tool}" aggregate \

@@ -72,15 +72,15 @@ fn create_with_fork(
         .or(local_revision_line)
         .or(bound_base_line)
         .unwrap_or_else(|| repo.default_line_name());
-    guard_current_worktree_retarget(
-        repo,
-        &resolved_base_line,
-        None,
-        None,
-        "creating a new change",
-    )?;
-    guard_no_planning_only_artifact_drift(repo, "ait change create")?;
     if use_local {
+        guard_current_worktree_retarget(
+            repo,
+            &resolved_base_line,
+            None,
+            None,
+            "creating a new change",
+        )?;
+        guard_no_planning_only_artifact_drift(repo, "ait change create")?;
         let task_store = repo.task_store()?;
         let change_store = repo.change_store()?;
         let local_task = task_local_read_with_task_store(&task_store, task_id)?;
@@ -121,8 +121,19 @@ fn create_with_fork(
             fork.as_deref(),
         );
     }
+    guard_no_planning_only_artifact_drift(repo, "ait change create")?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
+    guard_capture_publication_target(repo, &remote_row)?;
     let mut task_remote = http_task_remote(repo, &remote_row)?;
+    let target_head =
+        change_base_line_head_with_task_remote(&mut task_remote, &repo_name, &resolved_base_line)?;
+    guard_current_worktree_retarget(
+        repo,
+        &resolved_base_line,
+        Some(&target_head),
+        None,
+        "creating a new change",
+    )?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     change_create_remote_revision_with_remotes(
         &mut task_remote,
@@ -132,6 +143,7 @@ fn create_with_fork(
         title,
         &resolved_base_line,
         fork_snapshot,
+        Some(&target_head),
     )
 }
 
@@ -155,6 +167,7 @@ fn remote_revision_current_candidate(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::primitives) fn change_create_remote_revision_with_remotes<T, C>(
     task_remote: &mut T,
     closeout_remote: &mut C,
@@ -163,6 +176,7 @@ pub(in crate::primitives) fn change_create_remote_revision_with_remotes<T, C>(
     title: &str,
     base_line: &str,
     explicit_fork: Option<&str>,
+    expected_target_head: Option<&str>,
 ) -> Result<JsonValue, String>
 where
     T: TaskWorkflowRemoteTaskReader
@@ -204,8 +218,16 @@ where
     } else {
         None
     };
-    let (_line, mut lineage) =
+    let (line, mut lineage) =
         change_create_remote_lineage_with_task_remote(task_remote, repo_name, base_line)?;
+    let target_head = change_base_line_head_from_row(&line, repo_name, base_line)?;
+    if expected_target_head.is_some_and(|head| head != target_head)
+        || expected
+            .as_ref()
+            .is_some_and(|identity| identity.base_snapshot_id != target_head)
+    {
+        return Err("Remote target Line advanced before revision creation".into());
+    }
     let fork = expected
         .as_ref()
         .map(|identity| identity.revision_snapshot_id.clone())
@@ -224,9 +246,20 @@ where
             identity.validate_patchset(0, row).map_err(|error| {
                 format!("Current Task candidate changed before revision creation: {error}")
             })?;
+            let current = closeout_remote
+                .get_patchset(&identity.patchset_id, Some(repo_name), None)
+                .map_err(|error| error.to_string())?;
+            ait_core::workflow_expected_identity::validate_patchset_owner_fields(
+                &current, task_id,
+            )?;
+            identity.validate_patchset(0, &current)?;
         }
         (None, None) => {}
         _ => return Err("Current Task candidate changed before revision creation".into()),
+    }
+    let refreshed_head = change_base_line_head_with_task_remote(task_remote, repo_name, base_line)?;
+    if refreshed_head != target_head {
+        return Err("Remote target Line advanced before revision creation".into());
     }
     let created = change_create_with_task_remote(
         task_remote,
@@ -456,7 +489,28 @@ where
     R: TaskWorkflowLineReader + ?Sized,
 {
     let base_line_row = change_base_line_read_with_task_remote(task_remote, repo_name, base_line)?;
-    required_string_field(&base_line_row, "head_snapshot_id")
+    change_base_line_head_from_row(&base_line_row, repo_name, base_line)
+}
+
+fn change_base_line_head_from_row(
+    base_line_row: &JsonValue,
+    repo_name: &str,
+    base_line: &str,
+) -> Result<String, String> {
+    if base_line_row["line_name"].as_str() != Some(base_line)
+        || base_line_row
+            .get("repo_name")
+            .is_some_and(|name| name.as_str() != Some(repo_name))
+    {
+        return Err(
+            "Remote target Line authority differs from the selected Repository/Line".into(),
+        );
+    }
+    let head = required_string_field(base_line_row, "head_snapshot_id")?;
+    if base_line_row["head_snapshot_id"].as_str() != Some(head.as_str()) {
+        return Err("Malformed Remote target Line head".into());
+    }
+    Ok(head)
 }
 
 pub(in crate::primitives) fn change_base_line_read_with_task_remote<R>(

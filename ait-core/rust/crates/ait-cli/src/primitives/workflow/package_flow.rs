@@ -7,11 +7,9 @@ use super::*;
 use crate::primitives::remote_sync::{
     build_zstd_bulk_local_plan, ordered_object_pack_metadata, ordered_tree_pack_metadata,
 };
-#[cfg(test)]
 use ait_core::local_snapshot::LocalSnapshotTreeReadStore;
 use ait_core::plan_http_client::PlanHttpClientManager;
 use ait_core::repository_pack_json::ZstdBulkCommitRequest;
-#[cfg(test)]
 use ait_core::snapshot_rebase::SnapshotFileMap;
 use ait_core::workflow_binary_db::SnapshotWorkflowBinding;
 use ait_core::workflow_expected_identity::PackageWorkflowExpectedIdentity;
@@ -27,6 +25,7 @@ use ancestry::PackageAncestry;
 mod authority;
 use authority::verify_published_source_authority;
 mod apply;
+mod replay;
 mod retry;
 pub use apply::{
     workflow_package_abandon, workflow_package_finish, workflow_package_ready,
@@ -124,7 +123,6 @@ fn preflight_source_entries(repo: &RepoRuntime, entries: &[JsonValue]) -> Result
     Ok(())
 }
 
-#[cfg(test)]
 fn source_files(repo: &RepoRuntime, id: &str) -> Result<SnapshotFileMap, String> {
     let store = repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(
         &repo.workspace_root(),
@@ -158,11 +156,11 @@ fn prepare_source_history(
     let receipt = &entry["state"]["local_finish"];
     let target_line = required_string_field(receipt, "target_line")?;
     let original_revision = required_string_field(receipt, "landed_snapshot_id")?;
-    if local_line_head_snapshot_id(repo, &target_line)?.as_deref()
-        != Some(original_revision.as_str())
-    {
+    let local_head = local_line_head_snapshot_id(repo, &target_line)?
+        .ok_or("Fresh package target has no Local head")?;
+    if snapshot_distance_if_ancestor(repo, Some(&original_revision), Some(&local_head))?.is_none() {
         return Err(
-            "Fresh package ready requires the completed Task owning the current Local target head"
+            "Fresh package ready requires the completed Task in the current Local target history"
                 .into(),
         );
     }
@@ -256,11 +254,6 @@ fn prepare_source_history_at_base_with_ancestry(
         None => latest_common_snapshot(repo, &original_revision, Some(base))?
             .ok_or("Local history has no common Snapshot with its target Line")?,
     };
-    if common != base {
-        return Err(format!(
-            "BASE_STALE: Remote target `{target_line}` at {base} is not an ancestor of selected Local history {original_revision}. Reconcile Local history explicitly before a fresh ready; workflow ready does not rebase or replace a sealed candidate."
-        ));
-    }
     let (entries, _) = local_completion::workflow_local_history_entries(
         repo,
         &reference,
@@ -269,7 +262,6 @@ fn prepare_source_history_at_base_with_ancestry(
         &original_revision,
     )?;
     preflight_source_entries(repo, &entries)?;
-    let candidate = json!({"history_entries":entries});
     let tasks = repo.task_store()?;
     let snapshot_store = repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(
         &repo.workspace_root(),
@@ -310,7 +302,7 @@ fn prepare_source_history_at_base_with_ancestry(
         }
     }
     let mut original_sources = BTreeMap::new();
-    // Select existing owners only; preparation must not append replay Snapshots.
+    // Freeze the original successful-receipt cutoff before deriving any replay.
     for entry in &entries {
         let task_id = required_string_field(entry, "local_task_id")?;
         let original = tasks
@@ -335,9 +327,23 @@ fn prepare_source_history_at_base_with_ancestry(
         original_sources.insert(task_id, original);
     }
     verify_published_source_authority(repo, remote, &entries, &original_sources)?;
+    let (entries, final_revision) = if common != base {
+        replay::prepare_fresh_suffix(
+            repo,
+            remote,
+            &target_line,
+            base,
+            &common,
+            entries,
+            &mut original_sources,
+            ancestry,
+        )?
+    } else {
+        (entries, original_revision)
+    };
+    let candidate = json!({"history_entries":entries});
     workflow_sync_history_plan_artifacts(repo, &remote.name, &candidate)?;
     let legacy = workflow_history_prepare_entries(repo, &candidate)?;
-    let final_revision = original_revision;
     let mut wire = Vec::new();
     let mut mappings = Vec::new();
     let mut content_ids = BTreeSet::from([base.to_string(), common.clone()]);
@@ -383,6 +389,7 @@ fn prepare_source_history_at_base_with_ancestry(
                 "Source Task {task_id} has no exactly owned Snapshot boundary"
             ));
         }
+        anchors.sort_by(|left, right| left.snapshot_id.cmp(&right.snapshot_id));
         for change in changes {
             let id = required_string_field(&change, "change_id")?;
             let reference = format!("{task_id}/{id}");

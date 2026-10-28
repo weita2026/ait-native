@@ -1,3 +1,104 @@
+#[cfg(unix)]
+#[test]
+fn native_ready_runner_diagnostics_preserve_failure_success_and_absent_output() {
+    use std::os::unix::fs::PermissionsExt;
+    for (passes, has_output) in [(false, true), (true, true), (false, false)] {
+        let (url, log, state, handle) = spawn_closeout_recovery_remote();
+        let temp = init_repo(&url);
+        let root = temp.path();
+        let tools = TempDir::new().unwrap();
+        let cli = tools.path().join("ait-cli");
+        fs::hard_link(cli_binary::selected(env!("CARGO_BIN_EXE_ait-cli")), &cli).unwrap();
+        let marker = tools.path().join("runner-completed");
+        let runner = tools.path().join("ait-runner");
+        let output = if has_output {
+            "printf '%s\\n' 'suite rust_core failed: assertion preserve_local_head'\nprintf '%s\\n' 'cargo test exited 101' >&2\n"
+        } else {
+            ""
+        };
+        write_file(
+            &runner,
+            &format!("#!/bin/sh\n{output}: > \"$AIT_TEST_RUNNER_MARKER\"\n"),
+        );
+        fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).unwrap();
+        state.lock().unwrap().runner_ci_result = Some((marker.clone(), passes));
+        let expected = tools.path().join("expected.json");
+        write_file(
+            &expected,
+            &encode_json(&json!({
+                "repository_index":7,"patchset_id":"RT-1/P-01",
+                "base_snapshot_id":FIXTURE_BASE_SNAPSHOT_ID,
+                "revision_snapshot_id":FIXTURE_BASE_SNAPSHOT_ID
+            })),
+        );
+        let run = |phase: &str, once: bool| {
+            let mut command = Command::new(&cli);
+            command
+                .current_dir(root)
+                .env("CODEX_HOME", native_home::path())
+                .env_remove("CODEX_THREAD_ID")
+                .env_remove("CODEX_SESSION_ID")
+                .env("AIT_TEST_RUNNER_MARKER", &marker)
+                .args([
+                    "workflow",
+                    phase,
+                    "RT-1",
+                    "--apply",
+                    "--remote",
+                    "origin",
+                    "--expected-identity",
+                    expected.to_str().unwrap(),
+                    "--json",
+                    "--full",
+                ]);
+            if once {
+                command.arg("--run-ci-once");
+            }
+            command.output().unwrap()
+        };
+        let ready = run("ready", true);
+        let stderr = String::from_utf8_lossy(&ready.stderr);
+        assert!(
+            marker.is_file(),
+            "one-shot runner was not invoked: {stderr}"
+        );
+        if passes {
+            assert!(ready.status.success(), "{stderr}");
+            let payload = parse_json_bytes(&ready.stdout);
+            assert_eq!(payload["ci_runner_once"]["status"], "succeeded");
+            assert_eq!(payload["patchset"]["patchset_id"], "RT-1/P-01");
+            assert_eq!(payload["next_action"]["code"], "done");
+        } else {
+            assert_eq!(ready.status.code(), Some(1), "{stderr}");
+            assert!(ready.stdout.is_empty());
+            assert!(stderr.starts_with("Error: GUARDED_CI_FAILED:"), "{stderr}");
+            assert!(
+                stderr.contains("Captured one-shot runner diagnostics:"),
+                "{stderr}"
+            );
+            assert_eq!(
+                stderr.contains("assertion preserve_local_head"),
+                has_output,
+                "{stderr}"
+            );
+            assert_eq!(
+                stderr.contains("cargo test exited 101"),
+                has_output,
+                "{stderr}"
+            );
+            assert!(!run("finish", false).status.success());
+        }
+        let state = state.lock().unwrap();
+        assert!(!state.task_completed);
+        assert_eq!(state.land_submit_mutations, 0);
+        assert_eq!(state.task_close_mutations, 0);
+        drop(state);
+        assert!(!log.lock().unwrap().iter().any(|row| row.method == "POST"
+            && (row.url.contains("rerun-ci") || row.url.ends_with("task-land"))));
+        handle.join().unwrap();
+    }
+}
+
 fn set_active_root_worktree(root: &Path, worktree_name: &str) {
     let config_path = root.join(".ait/config.json");
     let mut config = parse_json_file(&config_path);

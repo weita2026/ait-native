@@ -2989,6 +2989,11 @@ pub(super) fn restore_workspace_all(
     force: bool,
     dry_run: bool,
 ) -> Result<JsonValue, String> {
+    let workspace_root = repo.workspace_root();
+    // Keep this operation's admitted generation pinned through the final write.
+    // Each Blob read still performs the selected store's object integrity checks.
+    let snapshot_store =
+        repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)?;
     let snapshot_rules_text = snapshot_rules_state_from_snapshot_id(repo, target_snapshot_id)?.text;
     let target_rows =
         filtered_snapshot_rows_json(repo, target_snapshot_id, snapshot_rules_text.as_deref())?;
@@ -3047,7 +3052,6 @@ pub(super) fn restore_workspace_all(
         return Ok(result);
     }
 
-    let workspace_root = repo.workspace_root();
     for rel in &remove_paths {
         let abs_path = workspace_root.join(rel);
         if path_exists_or_directory_link(&abs_path) {
@@ -3063,7 +3067,7 @@ pub(super) fn restore_workspace_all(
         if let Some(parent) = abs_path.parent() {
             fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
-        let data = read_selected_snapshot_blob_bytes(repo, &blob_id)?;
+        let data = snapshot_store.read_blob_bytes(&blob_id)?;
         let mode = parse_mode_bits(file_map_row_mode(&target).as_deref())?;
         write_snapshot_file(&abs_path, &data, mode)?;
     }
@@ -3796,6 +3800,189 @@ mod selected_binary_line_tests {
             "nested target\n"
         );
         assert!(!root.join("extra.txt").exists());
+    }
+
+    #[test]
+    fn snapshot_restore_admission_is_bounded_for_multiple_blobs_and_reopens_each_operation() {
+        use crate::runtime::admission_test_support::measure;
+        let mut admission_counts = Vec::new();
+        for files in [16, 64] {
+            let (_temp, repo) = binary_snapshot_repo();
+            let root = repo.workspace_root();
+            for index in 0..files {
+                let path = root.join(format!("data/{index:03}.txt"));
+                write_file(&path, &format!("selected bytes {index}\n"));
+                #[cfg(unix)]
+                set_portable_mode(&path, if index % 2 == 0 { 0o600 } else { 0o755 }).unwrap();
+            }
+            let snapshot = repo
+                .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&root)
+                .unwrap()
+                .create_snapshot("fixture-ait", "main", Some("multi-blob restore"), false)
+                .unwrap();
+            let id = required_string_field(&snapshot, "snapshot_id").unwrap();
+            fs::remove_dir_all(root.join("data")).unwrap();
+            let (restored, counts) =
+                measure(|| restore_workspace_all(&repo, Some(&id), None, false, false));
+            let restored = restored.unwrap();
+            assert_eq!(restored["plan"]["write_count"], files);
+            assert_eq!(
+                counts.rejected, 0,
+                "the test must use actual admitted authority"
+            );
+            assert!(counts.attempts > 0 && counts.attempts < 16, "{counts:?}");
+            admission_counts.push(counts);
+            for index in 0..files {
+                let path = root.join(format!("data/{index:03}.txt"));
+                assert_eq!(
+                    fs::read(&path).unwrap(),
+                    format!("selected bytes {index}\n").as_bytes()
+                );
+                #[cfg(unix)]
+                assert_eq!(
+                    portable_mode(&fs::metadata(path).unwrap(), 0),
+                    if index % 2 == 0 { 0o600 } else { 0o755 }
+                );
+            }
+            // A second operation must acquire its own admission, even when no
+            // file needs rewriting. No process-wide trusted reader survives.
+            let (again, reopened) =
+                measure(|| restore_workspace_all(&repo, Some(&id), Some(&id), false, false));
+            assert_eq!(again.unwrap()["plan"]["write_count"], 0);
+            assert_eq!(reopened.rejected, 0);
+            assert!(reopened.attempts > 0);
+        }
+        assert_eq!(
+            admission_counts[0], admission_counts[1],
+            "blob count must not multiply full admission"
+        );
+    }
+
+    #[test]
+    fn admitted_restore_reader_preserves_blob_integrity_and_generation_exclusion() {
+        use ait_core::binary_db::{BinaryDbCommandLockSet, BinaryDbCommandScope};
+        use ait_core::binary_db_generation::binary_db_activation_lock_root;
+        let (_temp, repo) = binary_snapshot_repo();
+        let root = repo.workspace_root();
+        write_file(&root.join("target.txt"), "verified selected bytes");
+        let snapshot = repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&root)
+            .unwrap()
+            .create_snapshot("fixture-ait", "main", Some("integrity"), false)
+            .unwrap();
+        let id = required_string_field(&snapshot, "snapshot_id").unwrap();
+        let store = repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&root)
+            .unwrap();
+        let rows = store.snapshot_tree_file_rows(Some(&id)).unwrap();
+        let lock_root = binary_db_activation_lock_root(&root);
+        assert!(
+            BinaryDbCommandLockSet::try_acquire(&lock_root, BinaryDbCommandScope::General)
+                .unwrap()
+                .is_none()
+        );
+        // Admission does not replace per-object verification of an archived
+        // body. Damage the private fixture only, after the reader is admitted.
+        let packs = root.join(".ait/objects/packs");
+        for entry in fs::read_dir(packs).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                fs::write(entry.path(), b"damaged pack").unwrap();
+            }
+        }
+        assert!(store.read_blob_bytes(&rows[0].blob_id).is_err());
+        drop(store);
+        assert!(
+            BinaryDbCommandLockSet::try_acquire(&lock_root, BinaryDbCommandScope::General)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn restore_rejects_foreign_snapshot_and_revalidates_corruption_between_operations() {
+        use crate::runtime::admission_test_support::measure;
+        let (_temp, repo) = binary_snapshot_repo();
+        let root = repo.workspace_root();
+        write_file(&root.join("target.txt"), "selected");
+        let snapshot = repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&root)
+            .unwrap()
+            .create_snapshot("fixture-ait", "main", Some("original"), false)
+            .unwrap();
+        let id = required_string_field(&snapshot, "snapshot_id").unwrap();
+        restore_workspace_all(&repo, Some(&id), Some(&id), false, false).unwrap();
+
+        let (_foreign_temp, foreign) = binary_snapshot_repo();
+        write_file(&foreign.workspace_root().join("keep.txt"), "foreign bytes");
+        assert!(restore_workspace_all(&foreign, Some(&id), None, true, false).is_err());
+        assert_eq!(
+            fs::read(foreign.workspace_root().join("keep.txt")).unwrap(),
+            b"foreign bytes"
+        );
+        assert!(!foreign.workspace_root().join("target.txt").exists());
+
+        let path = root.join(".ait/binary-db/snapshot.bin");
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        fs::write(path, bytes).unwrap();
+        let (result, counts) =
+            measure(|| restore_workspace_all(&repo, Some(&id), Some(&id), false, false));
+        assert!(result.is_err());
+        assert!(counts.attempts > 0 && counts.rejected > 0);
+        assert_eq!(fs::read(root.join("target.txt")).unwrap(), b"selected");
+    }
+
+    #[test]
+    #[ignore = "read-only phase comparison on one explicitly selected existing native Snapshot"]
+    fn selected_native_restore_blob_phase_comparison() {
+        use crate::runtime::admission_test_support::measure;
+        use sha2::{Digest, Sha256};
+        type BlobReader<'a> = Box<dyn FnMut(&str) -> Result<Vec<u8>, String> + 'a>;
+        let id = std::env::var("AIT_TEST_RESTORE_SNAPSHOT_ID")
+            .expect("select the same existing Snapshot for both phases");
+        let repo = RepoRuntime::discover_from_path(&std::env::current_dir().unwrap()).unwrap();
+        let root = repo.workspace_root();
+        let rows = repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&root)
+            .unwrap()
+            .snapshot_tree_file_rows(Some(&id))
+            .unwrap();
+        let read = |mut blob: BlobReader<'_>| {
+            let mut bytes_read = 0u64;
+            for (index, row) in rows.iter().enumerate() {
+                let bytes = blob(&row.blob_id).unwrap();
+                assert_eq!(bytes.len() as i64, row.size_bytes);
+                assert_eq!(format!("{:x}", Sha256::digest(&bytes)), row.sha256);
+                bytes_read += bytes.len() as u64;
+                if (index + 1) % 256 == 0 {
+                    eprintln!("restore Blob phase: {} / {} files", index + 1, rows.len());
+                }
+            }
+            bytes_read
+        };
+        eprintln!("restore Blob phase comparison: snapshot={id}, files={}, existing shared packs, warm caches; read-only, no source/DB copies", rows.len());
+        let started = Instant::now();
+        let (baseline_bytes, baseline) = measure(|| {
+            read(Box::new(|blob| {
+                read_selected_snapshot_blob_bytes(&repo, blob)
+            }))
+        });
+        let baseline_time = started.elapsed();
+        assert_eq!(baseline.rejected, 0);
+        assert_eq!(baseline.attempts, rows.len());
+        let started = Instant::now();
+        let (reused_bytes, reused) = measure(|| {
+            let store = repo
+                .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&root)
+                .unwrap();
+            read(Box::new(move |blob| store.read_blob_bytes(blob)))
+        });
+        let reused_time = started.elapsed();
+        assert_eq!(reused.rejected, 0);
+        assert_eq!(reused.attempts, 1);
+        assert_eq!(baseline_bytes, reused_bytes);
+        eprintln!("restore Blob phase: files={} bytes={reused_bytes}, per-Blob admission={:.6}s/{} admissions, operation store={:.6}s/{} admissions; excludes workspace scan/writes", rows.len(), baseline_time.as_secs_f64(), baseline.attempts, reused_time.as_secs_f64(), reused.attempts);
     }
 
     #[test]

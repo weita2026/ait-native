@@ -1072,7 +1072,7 @@ async function validateProtectedWorkflows() {
   }
 }
 
-async function validatePublicReadme() {
+async function validatePublicReadme(family) {
   const readmePath = path.join(ROOT, "README.md");
   await regularFile(readmePath, "public agent-first README");
   const readme = await readFile(readmePath, "utf8");
@@ -1085,7 +1085,7 @@ async function validatePublicReadme() {
     "https://github.com/weita2026/ait-native/discussions",
     "https://github.com/weita2026/ait-native/issues/new/choose",
     "python -m pip install ait-native==",
-    "## Install the Python or JavaScript CLI",
+    "## Install the Python or JavaScript package",
     "npm install --global @wa120/ait-native@",
     "ait init",
     "ait --version",
@@ -1099,10 +1099,11 @@ async function validatePublicReadme() {
     OFFICIAL_WEBSITE,
     "## Upgrading from 0.x",
     "There is no `ait install` command in 1.x.",
-    "# AIT 1.2.0",
+    "Current stable: 1.1.4. AIT 1.2.0 is in development and has not been released.",
     "Agent Teams, sprint binding and Local/Remote scope are independent.",
     "ait team contacts --json",
-    "## Moving to 1.2.0",
+    "## Planned migration to 1.2.0 (unreleased)",
+    "Package contents in the published AIT 1.1.4:",
     "## What each install route gives you",
     "AGENTS.md",
     "ait task start",
@@ -1132,6 +1133,9 @@ async function validatePublicReadme() {
     if (!readme.includes(required)) {
       fail(`public README is missing the agent-first contract: ${JSON.stringify(required)}`);
     }
+  }
+  if (!readme.startsWith("# AIT\n")) {
+    fail("public README title must not present the unreleased version as available");
   }
   for (const forbidden of [
     "mkdir -p docs/sprints",
@@ -1172,6 +1176,30 @@ async function validatePublicReadme() {
       "python -m pip install ait-native==", "npm install --global @wa120/ait-native@", "./build-release.sh",
     ]) {
       if (!text.includes(required)) fail(`${name} is missing ${JSON.stringify(required)}`);
+    }
+    const guidance = {
+      "README.md": [
+        "AIT 1.2.0 is in development and has not been released.",
+        `Release source: **${family.family.tag}**.`,
+      ],
+      "README_CN.md": [
+        "AIT 1.2.0 仍在开发中，尚未发布。",
+        `发行源码：**${family.family.tag}**。`,
+      ],
+      "README_ZH.md": [
+        "AIT 1.2.0 仍在開發中，尚未發布。",
+        `發行原始碼：**${family.family.tag}**。`,
+      ],
+    }[name];
+    for (const required of [
+      ...guidance, "releases/tag/v1.1.4", "ait-native==1.1.4", "@wa120/ait-native@1.1.4",
+    ]) {
+      if (!text.includes(required)) fail(`${name} is missing prepublication availability guidance`);
+    }
+    for (const unavailable of [
+      "releases/tag/v1.2.0", "ait-native==1.2.0", "@wa120/ait-native@1.2.0",
+    ]) {
+      if (text.includes(unavailable)) fail(`${name} recommends an unreleased 1.2.0 package`);
     }
     if (/@AIT_[A-Z0-9_]+@/u.test(text)) fail(`${name} contains an unresolved release token`);
   }
@@ -1773,6 +1801,8 @@ async function validateBuildInputs(expectedGitCommit) {
     "ci/native_bootstrap_matrix.json",
     "ci/release_clean_host.mjs",
     "ci/release_clean_host_phase.mjs",
+    "ci/release_core_installed_cases.mjs",
+    "ci/release_language_repositories.mjs",
     "ci/release_clean_host_probe.mjs",
     "ci/release_clean_host_test.sh",
     "ci/release_winget_bootstrap.ps1",
@@ -1821,7 +1851,7 @@ async function validateBuildInputs(expectedGitCommit) {
     await regularFile(path.join(ROOT, required), `required build input ${required}`);
   }
   await validateLicenseTopology(family);
-  await validatePublicReadme();
+  await validatePublicReadme(family);
   await validatePublicPolicies();
   await validateGitBytePolicy();
   await validateOperationalIgnorePolicy();

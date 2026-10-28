@@ -13,6 +13,8 @@ use ait_server_core::foundation::workflow_package_contract::PackageFinishRequest
 #[path = "workflow_package_rebased_change.rs"]
 mod rebased_change;
 
+#[path = "workflow_package_accepted_zero.rs"]
+mod accepted_zero;
 #[path = "workflow_package_cleanup.rs"]
 mod cleanup;
 
@@ -21,6 +23,9 @@ mod restart;
 
 #[path = "workflow_package_mode_read.rs"]
 mod mode_read;
+
+#[path = "workflow_package_native_suffix.rs"]
+mod native_suffix;
 
 #[cfg(windows)]
 #[path = "workflow_package_windows_fixture.rs"]

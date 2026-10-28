@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "change_target.rs"]
+mod change_target;
+
 const TASK: &str = "RCPT-0001";
 const BASE: &str = "SNP-0000000000A1";
 const FIRST: &str = "SNP-0000000000B1";

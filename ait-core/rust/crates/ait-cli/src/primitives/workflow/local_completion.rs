@@ -42,6 +42,7 @@ pub(super) fn workflow_completed_local_entry_if_present(
         Err(_) if !is_task_id(reference) => return Ok(None),
         Err(error) => return Err(error),
     };
+    workflow_validate_task_lifecycle(&task_id, &task)?;
     if string_field(&task, "status").as_deref() != Some("completed") {
         return Ok(None);
     }

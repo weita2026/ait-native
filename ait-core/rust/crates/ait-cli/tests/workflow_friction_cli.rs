@@ -2,6 +2,8 @@
 //! `ait task quick`, Plan-backed Markdown materialization after a local
 //! finish, and exact repair commands for deleted Plan-backed Markdown.
 
+#[path = "support/cli_binary.rs"]
+mod cli_binary;
 #[path = "support/native_home.rs"]
 mod native_home;
 #[path = "support/workflow_process.rs"]
@@ -13,7 +15,7 @@ use std::process::{Command, Output};
 use tempfile::TempDir;
 
 fn run(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ait-cli"))
+    Command::new(cli_binary::selected(env!("CARGO_BIN_EXE_ait-cli")))
         .env("CODEX_HOME", native_home::path())
         .current_dir(root)
         .args(args)

@@ -359,10 +359,7 @@ async fn package_http_keeps_preparation_temporary_and_failed_tests_never_authori
     assert_eq!(result["entries"].as_array().unwrap().len(), 1);
     let (status, replayed) = call(&app, "POST", &format!("{ROUTE}/task-land"), Some(finish)).await;
     assert_eq!(status, StatusCode::OK, "{replayed}");
-    assert_eq!(replayed["outcome"], "incomplete");
-    assert_eq!(replayed["patchset_id"], result["patchset_id"]);
-    assert_eq!(replayed["submission_id"], result["submission_id"]);
-    assert_eq!(replayed["entries"], json!([]));
+    assert_eq!(replayed, result);
     let abandoned = json!({"contract":"workflow-package-abandon/v1","actor_key_index":0,"expected_identity":identity,"idempotency_key":format!("workflow-package-abandon:{hash}:{new}")});
     assert_eq!(
         call(&app, "POST", &path, Some(abandoned)).await.0,

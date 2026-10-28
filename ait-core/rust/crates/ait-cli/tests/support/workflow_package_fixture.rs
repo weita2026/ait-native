@@ -1,7 +1,6 @@
 //! Isolated native/HTTP package fixture shared by the CLI acceptance targets.
 #![allow(dead_code)]
-#[path = "native_home.rs"]
-mod native_home;
+use crate::{cli_binary, native_home};
 
 use ait_cli::init_surface::{init_repo, InitRequest};
 use ait_cli::runtime::RepoRuntime;
@@ -33,7 +32,7 @@ pub fn fixture_phase(phase: &str) {
 }
 
 pub fn command(root: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ait-cli"));
+    let mut command = Command::new(cli_binary::selected(env!("CARGO_BIN_EXE_ait-cli")));
     command
         .current_dir(root)
         .env("CODEX_HOME", native_home::path())
@@ -89,6 +88,7 @@ pub struct RemoteState {
     pub omit_membership: bool,
     pub corrupt_key: bool,
     pub incomplete_response: bool,
+    pub accepted_reply: Option<(u16, JsonValue)>,
     pub lose_response: bool,
     pub cleanup_error: Option<&'static str>,
     pub policy_requires_human: bool,
@@ -275,7 +275,10 @@ fn response(
         assert_eq!(body["actor_key_index"], 0);
         assert_eq!(body["target_line"], "main");
         if let Some(accepted) = &batch.accepted {
-            return (200, accepted.clone());
+            return state
+                .accepted_reply
+                .clone()
+                .unwrap_or((200, accepted.clone()));
         }
         if state.head != batch.identity["base_snapshot_id"] {
             return (
@@ -481,6 +484,9 @@ impl Fixture {
     }
 
     fn with_origin(repo_name: &str, origin: Option<&str>) -> Self {
+        // Validate a supplied binary before this fixture's in-process init and
+        // baseline Snapshot authoring, not only before its first CLI command.
+        let _ = cli_binary::selected(env!("CARGO_BIN_EXE_ait-cli"));
         let temp = tempfile::tempdir().unwrap();
         let scratch = temp.path().canonicalize().unwrap();
         let root = scratch.join("repo");
@@ -559,6 +565,7 @@ impl Fixture {
             omit_membership: false,
             corrupt_key: false,
             incomplete_response: false,
+            accepted_reply: None,
             lose_response: false,
             cleanup_error: None,
             policy_requires_human: false,

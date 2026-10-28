@@ -88,6 +88,7 @@ macro_rules! define_environment_contract {
 define_environment_contract!(
     AIT_AGENT_CONFIG_PATH => (Bootstrap, Agent, false, "Path to the typed Agent worker manifest."),
     AIT_AGENT_RUST_WORKER_BINARY => (Bootstrap, Agent, false, "Explicit native ait-agent-worker executable selected by the public manager."),
+    AIT_CARGO_BUILD_MAX_BYTES => (Configuration, Cli, false, "Minimum free space for RAM-backed Cargo builds, floored at 4 GiB before SSD fallback; not a build-size cap."),
     AIT_CHANGED_PATHS_FILE => (Automation, Cli, false, "Path to a file listing the applied Snapshot's changed paths, one per line, exported to finish hooks."),
     AIT_CHANGED_PATH_COUNT => (Automation, Cli, false, "Number of changed paths in the applied Snapshot, exported to finish hooks."),
     AIT_CHANGE_REF => (Automation, Cli, false, "Public Change reference of the finishing Task, exported to finish hooks."),
@@ -220,7 +221,7 @@ mod tests {
 
     #[test]
     fn registry_is_sorted_unique_and_excludes_removed_names() {
-        assert_eq!(ENVIRONMENT_VARIABLES.len(), 30);
+        assert_eq!(ENVIRONMENT_VARIABLES.len(), 31);
         let names = ENVIRONMENT_VARIABLES
             .iter()
             .map(|entry| entry.name)

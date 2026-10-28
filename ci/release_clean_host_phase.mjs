@@ -19,6 +19,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { runInstalledCoreCases } from "./release_core_installed_cases.mjs";
+import { languageRepository, languageRepositoryNames, runLanguageRepository, seedLanguageRepository, verifyLanguageRepository } from "./release_language_repositories.mjs";
 
 const PHASE_CONTRACT = "ait.release.clean-host.phase/v1";
 const MATRIX_CONTRACT = "ait.release.clean-host.matrix/v1";
@@ -700,10 +702,11 @@ function initializePriorState(recorder, aitSpec, root, priorVersion) {
   };
 }
 
-function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
+function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fixture = null) {
   if (!existsSync(root)) {
     mkdirSync(root, { recursive: false, mode: 0o755 });
   }
+  if (fixture) seedLanguageRepository(root, fixture);
   const existingProjectText = "export const existingProject = true;\n";
   const existingProjectPath = path.join(root, "existing-project.mjs");
   if (existsSync(existingProjectPath)) {
@@ -764,6 +767,7 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (readFileSync(path.join(worktree, "existing-project.mjs"), "utf8") !== existingProjectText) {
     fail("candidate task start did not materialize the existing project file");
   }
+  if (fixture) verifyLanguageRepository(worktree, fixture);
   const baselineId = started.head_snapshot_id;
   if (!/^SNP-[0-9A-F]{12}$/.test(baselineId ?? "")) {
     fail("candidate task start returned no initial project baseline");
@@ -785,6 +789,11 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
     )
   ) {
     fail("candidate Task-start baseline did not capture the exact existing project file");
+  }
+  let toolchains = null;
+  if (fixture) {
+    verifyLanguageRepository(root, fixture, baseline);
+    toolchains = runLanguageRepository(recorder, worktree, fixture);
   }
   const landedFile = path.join(worktree, "first-land.txt");
   writeFileSync(landedFile, expectedText, { encoding: "utf8", mode: 0o644 });
@@ -936,6 +945,7 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   if (readFileSync(existingProjectPath, "utf8") !== existingProjectText) {
     fail("candidate first land changed the existing project file");
   }
+  if (fixture) verifyLanguageRepository(root, fixture, snapshot);
   if (!readFileSync(sprintPath, "utf8").includes("- [x] Materialize the exact clean-host file.")) {
     fail("candidate first land did not close the exact sprint checklist item");
   }
@@ -966,15 +976,17 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null) {
   } else {
     generatedWorkflowCurrent(agents);
   }
-  recorder.observations.task_start_project_baseline = {
-    baseline_snapshot_id: baselineId,
-    project_path: "existing-project.mjs",
-    project_sha256: existingProjectDigest,
-    init_preserved: true,
-    task_start_materialized: true,
-    first_task_descended: true,
-  };
-  return { root, task_id: taskId, snapshot_id: snapshot.snapshot_id };
+  if (!fixture) {
+    recorder.observations.task_start_project_baseline = {
+      baseline_snapshot_id: baselineId,
+      project_path: "existing-project.mjs",
+      project_sha256: existingProjectDigest,
+      init_preserved: true,
+      task_start_materialized: true,
+      first_task_descended: true,
+    };
+  }
+  return { root, task_id: taskId, snapshot_id: snapshot.snapshot_id, ...(fixture ? { toolchains } : {}) };
 }
 
 async function reservePort() {
@@ -2601,6 +2613,7 @@ async function executeInstall({ config, status, row, checks, recorder, root }) {
     mark(checks, "explicit_component_lifecycle");
   }
   let repository = null;
+  const languageRoots = [];
   if (row.lifecycle === "product") {
     if (!context.ait) {
       fail("product row did not expose the installed ait command");
@@ -2613,6 +2626,34 @@ async function executeInstall({ config, status, row, checks, recorder, root }) {
     );
     mark(checks, "first_land");
     mark(checks, "generated_workflow_current");
+    if (row.channel === "github" && requiresLanguageCli(config.release.version)) {
+      for (const name of languageRepositoryNames) {
+        const fixture = languageRepository(name);
+        const result = firstLand(
+          recorder,
+          context.ait,
+          path.join(root, `candidate-language-${name}`),
+          `clean-host ${row.id} ${name} ${config.release.version}\n`,
+          null,
+          fixture,
+        );
+        languageRoots.push({ language: name, root: result.root, snapshot_id: result.snapshot_id,
+          toolchains: result.toolchains });
+      }
+      recorder.observations.language_repositories = languageRoots;
+      mark(checks, "language_repositories");
+      recorder.observations.installed_core_cases = runInstalledCoreCases({
+        recorder,
+        sourceRoot: process.env.AIT_CLEAN_HOST_SOURCE_ROOT,
+        aitBin: context.ait.command,
+        serverBin: context.server?.command,
+        runnerBin: context.runner?.command,
+        runtimeRoot: root,
+        version: config.release.version,
+        sourceCommit: config.release.source_commit,
+      });
+      mark(checks, "installed_core_cases");
+    }
   }
   if (typeof context.uninstall !== "function") {
     fail("install phase exposes no channel-native uninstall");
@@ -2625,6 +2666,11 @@ async function executeInstall({ config, status, row, checks, recorder, root }) {
       "retained repository authority",
     );
     requireRegularFile(path.join(repository.root, "first-land.txt"), "retained landed file");
+    for (const entry of languageRoots) {
+      verifyLanguageRepository(entry.root, languageRepository(entry.language));
+      requireRegularFile(path.join(entry.root, ".ait", "config.json"), "retained language repository authority");
+      requireRegularFile(path.join(entry.root, "first-land.txt"), "retained language repository landing");
+    }
     mark(checks, "user_data_retained");
   }
   recorder.observations.lifecycle_data = lifecycleData;

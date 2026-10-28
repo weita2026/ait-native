@@ -277,6 +277,8 @@ mod remote_clients;
 mod repository_context;
 mod runtime_construction;
 mod selected_storage_adapters;
+#[cfg(test)]
+pub(crate) use selected_storage_adapters::admission_test_support;
 mod workflow_stores;
 
 use self::content_snapshot_operations::*;

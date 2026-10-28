@@ -1183,8 +1183,12 @@ fn response_for(
             })
         }
         ("GET", "/v1/native/repository-authorities/7/lines/main") => {
-            let remote_head_snapshot_id = state.lock().unwrap().remote_head_snapshot_id.clone();
-            json!({"repo_name":"fixture-ait","line_name":"main","head_snapshot_id": remote_head_snapshot_id})
+            let guard = state.lock().unwrap();
+            if guard.fail_line_read {
+                return json_response(503, &json!({"error":"target authority unavailable"}));
+            }
+            guard.remote_line_override.clone().unwrap_or_else(|| json!({"repo_name":"fixture-ait",
+                "line_name":"main","head_snapshot_id":guard.remote_head_snapshot_id}))
         }
         ("GET", "/v1/native/repository-authorities/7/lines") => {
             let guard = state.lock().unwrap();

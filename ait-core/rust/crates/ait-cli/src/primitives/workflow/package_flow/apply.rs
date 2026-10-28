@@ -19,6 +19,7 @@ pub struct PackageReadyOptions<'a> {
 struct FinishReadScope<'a> {
     target: &'a str,
     repo_name: &'a str,
+    accepted: Option<&'a PackageCompletion>,
 }
 
 pub(super) fn state(
@@ -403,7 +404,7 @@ pub(super) fn accepted_mapping_pending(
         reference,
         Some(&result.expected_identity),
         "restore_publication_mappings",
-        "The exact Remote package finish is accepted, but complete original mapping evidence is unavailable. Local publication mappings remain pending. Retain this identity for exact readback without resubmitting Remote finish or restarting CI.",
+        "The exact Remote package finish is accepted, but complete original mapping evidence is unavailable. Local publication mappings remain pending. Retain this identity; explicit guarded finish may reconcile the original mappings and cleanup without new publication or CI.",
     );
     output["apply_status"] = json!("partial");
     output["closeout_status"] = json!("partial");
@@ -411,6 +412,76 @@ pub(super) fn accepted_mapping_pending(
     output["patchset_id"] = json!(result.patchset_id);
     output["submission_id"] = json!(result.submission_id);
     Some(output)
+}
+
+fn same_acceptance(left: &PackageCompletion, right: &PackageCompletion) -> bool {
+    left.is_accepted()
+        && right.is_accepted()
+        && left.expected_identity == right.expected_identity
+        && left.patchset_id == right.patchset_id
+        && left.submission_id == right.submission_id
+}
+
+fn accepted_reconciliation_pending(
+    reference: &str,
+    accepted: &PackageCompletion,
+    detail: &str,
+) -> JsonValue {
+    let mut output = accepted_mapping_pending(reference, accepted)
+        .expect("formal acceptance has no complete mapping response");
+    let summary = format!(
+        "{} {detail}",
+        output["next_action"]["summary"].as_str().unwrap()
+    );
+    output["next_action"]["summary"] = json!(summary);
+    output["apply_stopped_reason"] = json!(summary);
+    output
+}
+
+/// Explicit reconciliation uses only the original receipt/owner cutoff and
+/// the same guarded finish. It never enters fresh preparation or governance.
+pub(super) fn reconcile_accepted_finish(
+    repo: &RepoRuntime,
+    reference: &str,
+    remote: &RemoteRow,
+    repo_name: &str,
+    accepted: &PackageCompletion,
+) -> Result<JsonValue, String> {
+    let identity = &accepted.expected_identity;
+    let (target, source) = match recover_source_history(repo, reference, &remote.name, identity) {
+        Ok(source) => source,
+        Err(error) => return Ok(accepted_reconciliation_pending(reference, accepted, &error)),
+    };
+    let mut client = package_client(repo, remote, repo_name)?;
+    if let Some(wait) = admitted(&mut client, reference, identity) {
+        return Ok(accepted_reconciliation_pending(
+            reference,
+            accepted,
+            wait["next_action"]["summary"]
+                .as_str()
+                .unwrap_or("Server admission is unavailable."),
+        ));
+    }
+    let (current, committed) =
+        client.observe_workflow_package_completion(identity, &target, &source, repo_name);
+    if !committed || !same_acceptance(&current, accepted) {
+        return Ok(accepted_reconciliation_pending(
+            reference, accepted, "The original accepted Job and formal receipt could not be revalidated; no guarded finish was sent.",
+        ));
+    }
+    Ok(finish_committed_package(
+        repo,
+        &mut client,
+        reference,
+        identity,
+        FinishReadScope {
+            target: &target,
+            repo_name,
+            accepted: Some(&current),
+        },
+        &source,
+        true,
+    ))
 }
 
 fn finish_response(
@@ -424,6 +495,14 @@ fn finish_response(
 ) -> Option<JsonValue> {
     if let Ok(response) = response {
         if let Ok(completion) = PackageCompletion::from_value(response, identity, source) {
+            if let Some(accepted) = scope
+                .accepted
+                .filter(|accepted| !same_acceptance(&completion, accepted))
+            {
+                return Some(accepted_reconciliation_pending(
+                    reference, accepted, "Guarded readback differs from the original accepted Patchset or submission; no Local mappings were written.",
+                ));
+            }
             if completion.has_complete_mappings() {
                 return Some(confirmed(repo, reference, completion, source));
             }
@@ -442,6 +521,16 @@ fn finish_response(
     };
     let completion =
         client.lookup_workflow_package_completion(identity, scope.target, source, scope.repo_name);
+    if let Some(accepted) = scope
+        .accepted
+        .filter(|accepted| !same_acceptance(&completion, accepted))
+    {
+        return Some(accepted_reconciliation_pending(
+            reference,
+            accepted,
+            &format!("Original guarded cleanup remains unconfirmed: {detail}."),
+        ));
+    }
     if let Some(mut result) = accepted_mapping_pending(reference, &completion) {
         let summary = format!(
             "{} Server cleanup observation: {detail}.",
@@ -484,6 +573,9 @@ fn finish_committed_package(
         Ok(_) => "Finish response lacks the exact full original source mappings".into(),
         Err(error) => error.to_string(),
     };
+    if let Some(accepted) = scope.accepted {
+        return accepted_reconciliation_pending(reference, accepted, &detail);
+    }
     let mut result = state(reference, Some(identity), "completion_unknown", &format!(
         "{detail}. The exact full result and required cleanup are not confirmed. Finish was not resent; retain this identity, resolve any reported blocker, and retry the same finish. Do not run ready or CI."
     ));
@@ -593,10 +685,7 @@ pub fn workflow_package_finish(
     }
     let (completion, committed) =
         client.observe_workflow_package_completion(identity, &target, &source, &repo_name);
-    if let Some(result) = accepted_mapping_pending(reference, &completion) {
-        return Ok(result);
-    }
-    if committed {
+    if committed && (apply || !completion.is_accepted()) {
         return Ok(finish_committed_package(
             repo,
             &mut client,
@@ -605,10 +694,14 @@ pub fn workflow_package_finish(
             FinishReadScope {
                 target: &target,
                 repo_name: &repo_name,
+                accepted: completion.is_accepted().then_some(&completion),
             },
             &source,
             apply,
         ));
+    }
+    if let Some(result) = accepted_mapping_pending(reference, &completion) {
+        return Ok(result);
     }
     if completion.outcome != PackageCompletionOutcome::Incomplete {
         return Ok(state(
@@ -676,6 +769,7 @@ pub fn workflow_package_finish(
         FinishReadScope {
             target: &target,
             repo_name: &repo_name,
+            accepted: None,
         },
         &source,
         &response,

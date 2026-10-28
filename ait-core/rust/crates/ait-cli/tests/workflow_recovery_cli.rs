@@ -1,4 +1,6 @@
 //! Native CLI regressions for candidate diagnostics and integrated Task recovery.
+#[path = "support/cli_binary.rs"]
+mod cli_binary;
 #[path = "support/native_home.rs"]
 mod native_home;
 #[path = "support/workflow_process.rs"]
@@ -11,7 +13,7 @@ use std::process::{Command, Output};
 use tempfile::TempDir;
 
 fn run(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ait-cli"))
+    Command::new(cli_binary::selected(env!("CARGO_BIN_EXE_ait-cli")))
         .env("CODEX_HOME", native_home::path())
         .current_dir(root)
         .args(args)
@@ -436,6 +438,15 @@ fn native_lifecycle_preserves_content_history_and_cleanup_without_git() {
     assert_eq!(checkpoint["task_id"], task);
     assert!(checkpoint["change_id"].is_null());
     fs::write(edit.join("native.txt"), "first checkpoint\nfinal change\n").unwrap();
+    let diff = workflow_process::cli(&edit, &["diff"], Some(path));
+    assert!(diff.status.success(), "{}", text(&diff));
+    let diff = String::from_utf8_lossy(&diff.stdout);
+    assert!(
+        diff.contains("native.txt") && diff.contains("+final change"),
+        "{diff}"
+    );
+    assert_no_git(root);
+    assert_no_git(&edit);
     let finished = fixture.json(
         &edit,
         &[

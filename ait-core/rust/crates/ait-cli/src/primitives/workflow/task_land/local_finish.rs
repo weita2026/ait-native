@@ -54,6 +54,42 @@ pub(super) fn apply(
     target: Option<&str>,
     remote: Option<&str>,
 ) -> Result<Option<JsonValue>, String> {
+    if remote.is_some() {
+        return Ok(None);
+    }
+    // Task-scoped callers already hold their Task workspace lock. All finish
+    // writers acquire the canonical root second, through head commit/restore.
+    let root = workflow_root_repo(repo)?;
+    let mut result =
+        run_locked_workspace_command(&root, "ait Local finish target synchronization", || {
+            apply_locked(repo, reference, message, target, remote)
+        })?;
+    if let Some(output) = result
+        .as_mut()
+        .filter(|value| value["apply_status"] == "done")
+    {
+        let target = required_string_field(output, "target_line")?;
+        let candidate = required_string_field(output, "landed_snapshot_id")?;
+        if output["bound_worktree_cleanup"]["status"].as_str() != Some("failed")
+            && output["repo_root_restore"]["status"].as_str() != Some("failed")
+        {
+            task_land_attach_cli_main_seed_sync(&root, output, &target, Some(&candidate));
+        } else {
+            output["main_seed_sync"] = json!({"status":"pending","reason":"task_closeout_recovery_pending","line_name":target});
+        }
+        task_land_attach_plan_markdown_materialization(&root, output);
+        task_land_attach_plan_checklist_closeout(&root, output, true, None);
+    }
+    Ok(result)
+}
+
+fn apply_locked(
+    repo: &RepoRuntime,
+    reference: &str,
+    message: Option<&str>,
+    target: Option<&str>,
+    remote: Option<&str>,
+) -> Result<Option<JsonValue>, String> {
     let Some(initial) = payload(repo, reference, remote)? else {
         return Ok(None);
     };
@@ -213,14 +249,5 @@ pub(super) fn apply(
         "local_finish":receipt,"auto_snapshot":automatic,"current_line":root.current_line_name()?,
         "workspace_action":restore["status"],"repo_root_restore":restore,"bound_worktree_cleanup":cleanup,"open_peer_change_count":0});
     task_land_attach_bound_line_closeout(&root, &mut output, true, None, captured);
-    if output["bound_worktree_cleanup"]["status"].as_str() != Some("failed")
-        && output["repo_root_restore"]["status"].as_str() != Some("failed")
-    {
-        task_land_attach_cli_main_seed_sync(&root, &mut output, &target, Some(&candidate));
-    } else {
-        output["main_seed_sync"] = json!({"status":"pending","reason":"task_closeout_recovery_pending","line_name":target});
-    }
-    task_land_attach_plan_markdown_materialization(&root, &mut output);
-    task_land_attach_plan_checklist_closeout(&root, &mut output, true, None);
     Ok(Some(output))
 }

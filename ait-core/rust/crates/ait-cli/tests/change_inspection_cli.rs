@@ -215,10 +215,23 @@ fn terminal_published_task_inspection_preserves_exact_remote_mapping_and_workflo
                 "workflow", "ready", "LCT-0001", "--apply", "--remote", "origin", "--json",
             ],
         );
-        assert!(!ready.status.success());
-        assert!(String::from_utf8_lossy(&ready.stderr).contains("not active or completed"));
-        assert_eq!(remote.observed(), reads);
-        assert_eq!(authority_hash(temp.path()), before);
+        let observed_after = remote.observed();
+        let authority_after = authority_hash(temp.path());
+        let diagnostic = format!(
+            "Task status={task_status}; exit={:?}; remote_unchanged={}; authority_unchanged={}\nstdout:\n{}\nstderr:\n{}",
+            ready.status.code(),
+            observed_after == reads,
+            authority_after == before,
+            String::from_utf8_lossy(&ready.stdout),
+            String::from_utf8_lossy(&ready.stderr),
+        );
+        assert_eq!(observed_after, reads, "{diagnostic}");
+        assert_eq!(authority_after, before, "{diagnostic}");
+        assert!(!ready.status.success(), "{diagnostic}");
+        assert!(
+            String::from_utf8_lossy(&ready.stderr).contains("not active or completed"),
+            "{diagnostic}",
+        );
     }
 }
 

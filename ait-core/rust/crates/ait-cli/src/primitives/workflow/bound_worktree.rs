@@ -145,6 +145,37 @@ pub(in crate::primitives) fn workflow_repo_root_restore_after_land(
     previous_head_snapshot_id: Option<&str>,
     target_snapshot_id: Option<&str>,
 ) -> Result<JsonValue, String> {
+    workflow_repo_root_restore_after_finish(
+        repo,
+        target_line,
+        previous_head_snapshot_id,
+        target_snapshot_id,
+        true,
+    )
+}
+
+pub(super) fn workflow_repo_root_restore_after_remote_sync(
+    repo: &RepoRuntime,
+    target_line: &str,
+    previous_head_snapshot_id: Option<&str>,
+    target_snapshot_id: Option<&str>,
+) -> Result<JsonValue, String> {
+    workflow_repo_root_restore_after_finish(
+        repo,
+        target_line,
+        previous_head_snapshot_id,
+        target_snapshot_id,
+        false,
+    )
+}
+
+fn workflow_repo_root_restore_after_finish(
+    repo: &RepoRuntime,
+    target_line: &str,
+    previous_head_snapshot_id: Option<&str>,
+    target_snapshot_id: Option<&str>,
+    force: bool,
+) -> Result<JsonValue, String> {
     let root_repo = workflow_root_repo(repo)?;
     let default_line = root_repo.default_line_name();
     let mut payload = json!({
@@ -194,7 +225,7 @@ pub(in crate::primitives) fn workflow_repo_root_restore_after_land(
         target_snapshot_id,
         &landed_diff_paths,
         previous_head_snapshot_id,
-        true,
+        force,
         false,
     )?;
     if let Some(restored_obj) = restored.as_object() {

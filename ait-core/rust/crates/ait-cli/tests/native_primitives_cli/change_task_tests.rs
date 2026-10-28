@@ -2029,7 +2029,7 @@ fn native_task_start_from_existing_worktree_performs_zero_remote_mutations() {
 fn native_change_create_recovers_existing_remote_task_with_contextual_id() {
     let (base_url, log, state, handle) = spawn_fake_remote();
     let (temp, worktree) = init_worktree_repo(&base_url);
-    let _root = temp.path();
+    let root = temp.path();
     {
         let mut state = state.lock().unwrap();
         state.selected_patchset_id = Some("RT-1/P-01".into());
@@ -2047,6 +2047,14 @@ fn native_change_create_recovers_existing_remote_task_with_contextual_id() {
             "--json",
         ],
     );
+    write_file(&worktree.join("src/lib.rs"), "pub fn reviewed_correction() {}\n");
+    let reviewed = seed_snapshot(&worktree, "reviewed remote correction");
+    state.lock().unwrap().selected_patchset_revision_snapshot_id = Some(reviewed.clone());
+    write_file(&root.join("src/lib.rs"), "pub fn unrelated_local_main() {}\n");
+    let local_head = seed_snapshot(root, "unrelated local main advance");
+    assert_ne!(local_head, FIXTURE_BASE_SNAPSHOT_ID);
+    let metadata_path = root.join(".ait/worktrees/rt-1.json");
+    let metadata_before = fs::read(&metadata_path).unwrap();
     state.lock().unwrap().remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.to_string());
 
     let created = json_output(
@@ -2062,7 +2070,7 @@ fn native_change_create_recovers_existing_remote_task_with_contextual_id() {
             "--base-line",
             "main",
             "--fork-snapshot",
-            FIXTURE_BASE_SNAPSHOT_ID,
+            &reviewed,
             "--json",
         ],
     );
@@ -2070,6 +2078,12 @@ fn native_change_create_recovers_existing_remote_task_with_contextual_id() {
     assert_eq!(created["change_ref"], json!("RT-1/C-01"));
     assert_eq!(created["task_id"], json!("RT-1"));
     assert_eq!(created["base_line"], json!("main"));
+    assert_eq!(created["fork_snapshot_id"], json!(reviewed));
+    assert_eq!(local_line_head(root, "main"), Some(local_head));
+    assert_eq!(local_line_head(root, "feature/rt-1"), Some(reviewed));
+    assert_eq!(fs::read(metadata_path).unwrap(), metadata_before);
+    assert_eq!(state.lock().unwrap().remote_head_snapshot_id.as_deref(), Some(FIXTURE_BASE_SNAPSHOT_ID));
+    assert!(state.lock().unwrap().committed_snapshots.is_empty());
 
     handle.join().unwrap();
     let logged = log.lock().unwrap().clone();
@@ -2082,6 +2096,99 @@ fn native_change_create_recovers_existing_remote_task_with_contextual_id() {
     assert!(!logged.iter().any(|row| {
         row.method == "POST" && row.url == "/v1/native/repository-authorities/7/tasks"
     }));
+}
+
+#[test]
+fn native_change_create_rejects_remote_target_and_identity_errors_before_mutation() {
+    let (base_url, log, state, handle) = spawn_fake_remote();
+    let (temp, worktree) = init_worktree_repo(&base_url);
+    let root = temp.path();
+    json_output(&worktree, &["worktree", "restore", "--snapshot", FIXTURE_BASE_SNAPSHOT_ID, "--force", "--json"]);
+    {
+        let mut remote = state.lock().unwrap();
+        remote.selected_patchset_id = Some("RT-1/P-01".into());
+        remote.selected_patchset_revision_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.into());
+        remote.remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.into());
+        remote.change_rows_override = Some(Vec::new());
+    }
+    let config_path = root.join(".ait/config.json");
+    let config = fs::read(&config_path).unwrap();
+    let metadata_path = root.join(".ait/worktrees/rt-1.json");
+    let metadata = fs::read(&metadata_path).unwrap();
+    let local_head = local_line_head(root, "main");
+    let worktree_head = local_line_head(root, "feature/rt-1");
+    for case in 0..12 {
+        let mut args = vec!["change", "create", "RT-1", "--remote", "origin", "--title", "Must not create", "--fork-snapshot", FIXTURE_BASE_SNAPSHOT_ID, "--json"];
+        {
+            let mut remote = state.lock().unwrap();
+            remote.remote_head_snapshot_id = Some(FIXTURE_BASE_SNAPSHOT_ID.into());
+            remote.remote_line_override = None;
+            remote.fail_line_read = false;
+            match case {
+                0 => remote.remote_head_snapshot_id = Some("SNP-REMOTE-ADVANCED".into()),
+                1 => remote.remote_head_snapshot_id = None,
+                2 => remote.remote_line_override = Some(json!({"line_name":"main","head_snapshot_id":42})),
+                3 => remote.remote_line_override = Some(json!({"repo_name":"foreign","line_name":"main","head_snapshot_id":FIXTURE_BASE_SNAPSHOT_ID})),
+                4 => remote.remote_line_override = Some(json!({"repo_name":"fixture-ait","line_name":"foreign","head_snapshot_id":FIXTURE_BASE_SNAPSHOT_ID})),
+                5 => remote.fail_line_read = true,
+                6 => args[4] = "missing-remote",
+                7 => args[2] = "RT-OTHER",
+                8 => args[8] = "SNP-FOREIGN-FORK",
+                9 => {
+                    let mut changed = parse_json_file(&config_path);
+                    changed["remotes"]["origin"]["url"] = json!("http://127.0.0.1:1");
+                    write_file(&config_path, &encode_json_pretty(&changed));
+                }
+                10 => {
+                    let mut changed = parse_json_file(&config_path);
+                    changed["repository_index"] = json!(8);
+                    write_file(&config_path, &encode_json_pretty(&changed));
+                }
+                _ => remote.remote_line_override = Some(json!({"line_name":"main","head_snapshot_id":format!(" {FIXTURE_BASE_SNAPSHOT_ID} ")})),
+            }
+        }
+        let output = command_output_with_env(&worktree, &args, &[]);
+        assert!(!output.status.success(), "case {case}: {}", String::from_utf8_lossy(&output.stdout));
+        let expected = match case {
+            0 => "still based",
+            1 | 2 => "head_snapshot_id",
+            3 | 4 => "Remote target Line authority",
+            5 => "503",
+            6 => "missing-remote",
+            7 => "bound to Task",
+            8 => "Explicit fork Snapshot differs",
+            9 | 10 => "pinned capture authority",
+            _ => "Malformed Remote target Line head",
+        };
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "case {case}: {stderr}");
+        assert!(!log.lock().unwrap().iter().any(|request| request.method == "POST" && request.url.ends_with("/changes")), "case {case}");
+        assert_eq!(fs::read(&metadata_path).unwrap(), metadata, "case {case}");
+        fs::write(&config_path, &config).unwrap();
+        assert_eq!(local_line_head(root, "main"), local_head, "case {case}");
+        assert_eq!(local_line_head(root, "feature/rt-1"), worktree_head, "case {case}");
+    }
+    handle.join().unwrap();
+}
+
+#[test]
+fn native_local_change_create_keeps_local_retarget_guard_without_remote_reads() {
+    let (base_url, log, _state, handle) = spawn_fake_remote();
+    let (temp, worktree, _started) = init_cli_local_draft_worktree_repo(&base_url);
+    let root = temp.path();
+    write_file(&worktree.join("src/lib.rs"), "pub fn reviewed_local_revision() {}\n");
+    let reviewed = json_output(&worktree, &["snapshot", "create", "LT-0001", "--message", "reviewed local revision", "--json"]);
+    write_file(&root.join("src/lib.rs"), "pub fn advanced_local_main() {}\n");
+    let local_head = seed_snapshot(root, "local target advance");
+    let output = command_output_with_env(&worktree, &["change", "create", "LT-0001", "--local", "--title", "Stale local revision", "--fork-snapshot", reviewed["snapshot_id"].as_str().unwrap(), "--json"], &[]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("still based"), "{stderr}");
+    assert_eq!(local_line_head(root, "main"), Some(local_head));
+    let changes = json_output(root, &["change", "list", "--local", "--json"]);
+    assert!(changes.as_array().unwrap().is_empty());
+    assert!(log.lock().unwrap().is_empty());
+    handle.join().unwrap();
 }
 
 #[test]

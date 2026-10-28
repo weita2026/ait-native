@@ -482,6 +482,15 @@ pub(in crate::primitives) fn task_land_attach_cli_main_seed_sync(
     fallback_target_line: &str,
     fallback_snapshot_id: Option<&str>,
 ) {
+    if task_land_local_sync_failed(output) {
+        output["main_seed_sync"] = json!({
+            "status":"skipped",
+            "reason":"local_reconciliation_required",
+            "line_name":fallback_target_line,
+            "snapshot_id":output["local_line_sync"]["line_head_snapshot_id"],
+        });
+        return;
+    }
     if output["repo_root_restore"]["reason"].as_str()
         == Some("target_advanced_after_successful_apply")
     {
@@ -547,13 +556,20 @@ pub(in crate::primitives) fn task_land_attach_cli_main_seed_sync(
             "detail": "Remote land completed, but CLI main-seed synchronization could not resolve the landed Snapshot.",
         })
     } else {
-        sync_main_seed_after_task_land(
-            repo,
-            task_id.as_deref(),
-            task_status.as_deref(),
-            &target_line,
-            &target_snapshot_id,
-        )
+        (|| {
+            let root = workflow_root_repo(repo)?;
+            run_locked_workspace_command(&root, "ait finish CLI main-seed synchronization", || {
+                let current = local_line_head_snapshot_id(&root, &target_line)?;
+                if current.as_deref() != Some(target_snapshot_id.as_str()) {
+                    return Ok(json!({"status":"skipped","reason":"target_advanced_after_successful_apply",
+                        "line_name":target_line,"snapshot_id":current}));
+                }
+                Ok(sync_main_seed_after_task_land(
+                    repo, task_id.as_deref(), task_status.as_deref(),
+                    &target_line, &target_snapshot_id,
+                ))
+            })
+        })().unwrap_or_else(|error: String| json!({"status":"failed","reason":"local_reconciliation_required","error":error}))
     };
     let promoted_cleanup = seed_sync
         .get("worktree_cleanup")
@@ -609,6 +625,12 @@ pub(in crate::primitives) fn task_land_force_bound_worktree_cleanup(
     repo: &RepoRuntime,
     output: &JsonValue,
 ) -> Result<JsonValue, String> {
+    if task_land_local_sync_failed(output) {
+        return Ok(
+            json!({"status":"deferred","reason":"local_reconciliation_required",
+            "task_id":task_land_task_id(output),"removed":false}),
+        );
+    }
     let Some(task_id) = task_land_task_id(output) else {
         return Ok(json!({
             "status": "skipped",

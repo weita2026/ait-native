@@ -8,7 +8,7 @@ import { resolveNativeManifest } from "../scripts/native-build.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = "1.1.4";
-const CORE_SNAPSHOT = "SNP-E05379CAEDF7";
+const CORE_SNAPSHOT = "SNP-393E8BA4ADFB";
 const PACKAGE_NAME = "@wa120/ait-native";
 const PRODUCT_DESCRIPTION =
   "Agent-first, language-neutral workflow for verified repository changes";
@@ -209,7 +209,7 @@ test("published runtime loads an addon directly and has no process relay", async
 test("native build validates the locked external and public monorepo layouts", async () => {
   const build = await readFile(path.join(ROOT, "scripts", "native-build.mjs"), "utf8");
 
-  assert.match(build, /SNP-E05379CAEDF7/);
+  assert.match(build, /SNP-393E8BA4ADFB/);
   assert.match(build, /\.ait-external-marker\.json/);
   assert.match(build, /ait-monorepo-source\.json/);
   assert.match(build, /ait-release-family\.json/);

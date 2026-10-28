@@ -1,7 +1,6 @@
 //! Disposable native fixtures and process barriers for workflow acceptance.
 #![allow(dead_code)]
-
-use crate::native_home;
+use crate::{cli_binary, native_home};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::fs;
@@ -68,7 +67,7 @@ impl Fixture {
 }
 
 pub fn cli(root: &Path, args: &[&str], search_path: Option<&Path>) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ait-cli"));
+    let mut command = Command::new(cli_binary::selected(env!("CARGO_BIN_EXE_ait-cli")));
     command
         .env("CODEX_HOME", native_home::path())
         .current_dir(root)

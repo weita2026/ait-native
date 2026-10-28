@@ -1,4 +1,8 @@
 //! Frozen package identity across actual ready/finish CLI processes.
+#[path = "support/cli_binary.rs"]
+mod cli_binary;
+#[path = "support/native_home.rs"]
+mod native_home;
 #[path = "support/workflow_package_fixture.rs"]
 mod package_fixture;
 use package_fixture::*;

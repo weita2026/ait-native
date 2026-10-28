@@ -549,7 +549,11 @@ pub(super) struct CargoBuildLocation {
 }
 
 pub(super) fn cargo_build_location(workspace_root: &Path) -> CargoBuildLocation {
-    let floor = cargo_ram_headroom(std::env::var("AIT_CARGO_BUILD_MAX_BYTES").ok().as_deref());
+    let floor = cargo_ram_headroom(
+        std::env::var(ait_core::environment_contract::names::AIT_CARGO_BUILD_MAX_BYTES)
+            .ok()
+            .as_deref(),
+    );
     cargo_build_location_with_space(workspace_root, floor, |path| {
         if let Some(root) = cargo_memory_root(workspace_root) {
             if !cargo_memory_mount_available(workspace_root, &root) {
