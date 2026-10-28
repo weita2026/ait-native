@@ -20,7 +20,7 @@ def test_direct_pyo3_binding_info_and_version() -> None:
     assert payload["runtime_authority"] == "rust"
     assert payload["python_binding"] == "pyo3"
     assert payload["process_transport_allowed"] is False
-    assert runtime.version() == payload["version"] == __version__ == "1.1.4"
+    assert runtime.version() == payload["version"] == __version__ == "1.2.0"
 
 
 def test_generic_call_uses_installed_ait_py_export() -> None:
