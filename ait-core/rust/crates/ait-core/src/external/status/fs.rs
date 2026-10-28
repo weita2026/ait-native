@@ -113,7 +113,9 @@ fn inspect_external_status_report_with_diagnostics(
 ) -> ExternalResult<ExternalStatusReport> {
     let nodes = status_nodes_for_inspection(&manifest, lockfile.as_ref())?;
     let materializations =
-        inspect_external_materializations(repo_root, &nodes, &local_links, !include_diagnostics)?;
+        // Equal file metadata is not content authority. Use the existing fullgraph
+        // validation for projection too, including delegated child-root boundaries.
+        inspect_external_materializations(repo_root, &nodes, &local_links, false)?;
     let binding_checks = if include_diagnostics {
         inspect_external_binding_paths(repo_root, &nodes)?
     } else {
@@ -135,6 +137,41 @@ fn inspect_external_status_report_with_diagnostics(
         binding_checks,
         current_source_core,
     })
+}
+
+#[cfg(test)]
+#[test]
+fn projection_revalidates_equal_metadata_different_content() {
+    crate::external::tests::assert_projection_revalidates_emulated_metadata_collision(
+        |root, node, original_sha| {
+            let destination = root.join(&node.materialize_to);
+            let file = destination.join("AIT_EXTERNAL_SNAPSHOT");
+            let marker = fs::read(destination.join(EXTERNAL_MATERIALIZER_MARKER)).unwrap();
+            let fingerprint = workspace_file_fingerprint(&file).unwrap();
+            write_external_materialization_hash_cache(
+                root,
+                BTreeMap::from_iter([(
+                    node.materialize_to.clone(),
+                    ExternalMaterializationHashCacheRoot {
+                        marker_sha256: sha256_hex(&marker),
+                        files: BTreeMap::from_iter([(
+                            "AIT_EXTERNAL_SNAPSHOT".into(),
+                            ExternalMaterializationHashCacheFile {
+                                sha256: original_sha.into(),
+                                fingerprint: fingerprint.clone(),
+                            },
+                        )]),
+                    },
+                )]),
+            )
+            .unwrap();
+            let cache = load_external_materialization_hash_cache(root).unwrap();
+            assert_eq!(
+                cache.roots[&node.materialize_to].files["AIT_EXTERNAL_SNAPSHOT"].fingerprint,
+                fingerprint
+            );
+        },
+    );
 }
 
 fn inspect_external_materializations(

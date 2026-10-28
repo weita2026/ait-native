@@ -1046,7 +1046,7 @@ fn cli_bootstrap_fails_closed_when_core_source_changes() {
 }
 
 #[test]
-fn cli_bootstrap_fails_closed_when_executable_timestamp_changes() {
+fn cli_bootstrap_fails_closed_when_executable_content_changes() {
     let root = temp_dir("cli-bootstrap-binary-stale");
     let (request, _, executable_path) = cli_bootstrap_fixture(&root);
     write(&executable_path, "mutated ait-cli bytes\n");
@@ -1055,12 +1055,15 @@ fn cli_bootstrap_fails_closed_when_executable_timestamp_changes() {
     let error = validate_current_source_cli_bootstrap(&request).unwrap_err();
 
     assert!(error.contains("Current-source ait-cli is stale"));
-    assert!(error.contains("executable mtime"));
+    assert!(error.contains("executable"));
     fs::remove_dir_all(root).unwrap();
 }
 
-#[test]
-fn cli_bootstrap_store_fast_path_reads_metadata_and_stats_without_content_hashing() {
+fn cli_bootstrap_store_fixture() -> (
+    FakeCurrentSourceNativeCacheSourceStore,
+    FakeCurrentSourceNativeCacheArtifactStore,
+    CurrentSourceCliBootstrapRequest,
+) {
     let root = PathBuf::from("/repo");
     let metadata_path = PathBuf::from("/metadata.json");
     let executable_path = PathBuf::from("/ait-cli");
@@ -1086,11 +1089,25 @@ fn cli_bootstrap_store_fast_path_reads_metadata_and_stats_without_content_hashin
             (path_text(&cli_toml), 20),
             (path_text(&cli_main), 30),
         ]),
+        files: BTreeMap::from_iter([
+            (path_text(&cargo_toml), b"[workspace]\n".to_vec()),
+            (path_text(&cli_toml), b"[package]\n".to_vec()),
+            (path_text(&cli_main), b"fn main() {}\n".to_vec()),
+        ]),
         ..Default::default()
     };
+    let fingerprint = expected_source_fingerprint(
+        &root,
+        source_store
+            .files
+            .iter()
+            .map(|(path, bytes)| (PathBuf::from(path), bytes.clone()))
+            .collect(),
+    );
     let artifact_store = FakeCurrentSourceNativeCacheArtifactStore {
         executable: BTreeMap::from_iter([(path_text(&executable_path), true)]),
         mtime_ns: BTreeMap::from_iter([(path_text(&executable_path), 40)]),
+        sha256: BTreeMap::from_iter([(path_text(&executable_path), "recorded-cli-sha".into())]),
         metadata: BTreeMap::from_iter([(
             path_text(&metadata_path),
             JsonMap::from_iter([
@@ -1100,10 +1117,7 @@ fn cli_bootstrap_store_fast_path_reads_metadata_and_stats_without_content_hashin
                     json!(CURRENT_SOURCE_CACHE_BINARY_PROFILE),
                 ),
                 ("ait_cli_sha256".to_string(), json!("recorded-cli-sha")),
-                (
-                    "core_source_fingerprint".to_string(),
-                    json!("recorded-source-fingerprint"),
-                ),
+                ("core_source_fingerprint".to_string(), json!(fingerprint)),
                 ("core_source_mtime_ns".to_string(), json!(30)),
             ]),
         )]),
@@ -1114,30 +1128,84 @@ fn cli_bootstrap_store_fast_path_reads_metadata_and_stats_without_content_hashin
         metadata_path: metadata_path.clone(),
         executable_path: executable_path.clone(),
     };
+    (source_store, artifact_store, request)
+}
+
+#[test]
+fn cli_bootstrap_validates_content_once_per_source_input_and_executable() {
+    let (source_store, artifact_store, request) = cli_bootstrap_store_fixture();
 
     let validated =
         validate_current_source_cli_bootstrap_with_stores(&source_store, &artifact_store, &request)
             .unwrap();
 
     assert_eq!(validated.source_mtime_ns, 30);
-    assert_eq!(validated.source_fingerprint, "recorded-source-fingerprint");
+    assert_eq!(
+        validated.source_fingerprint,
+        artifact_store.metadata[&path_text(&request.metadata_path)]["core_source_fingerprint"]
+            .as_str()
+            .unwrap()
+    );
     assert_eq!(validated.executable_sha256, "recorded-cli-sha");
-    assert!(
+    assert_eq!(
         source_store
             .calls
             .borrow()
             .iter()
-            .all(|call| !call.starts_with("read:")),
-        "bootstrap fast path must not read source content"
+            .filter(|call| call.starts_with("read:"))
+            .count(),
+        source_store.files.len(),
+        "one identity scan must read each relevant source input only once"
     );
     assert_eq!(
         artifact_store.calls.borrow().as_slice(),
         [
-            format!("load:{}", path_text(&metadata_path)),
-            format!("executable:{}", path_text(&executable_path)),
-            format!("mtime:{}", path_text(&executable_path)),
+            format!("load:{}", path_text(&request.metadata_path)),
+            format!("executable:{}", path_text(&request.executable_path)),
+            format!("mtime:{}", path_text(&request.executable_path)),
+            format!("sha:{}", path_text(&request.executable_path)),
         ]
     );
+}
+
+#[test]
+fn cli_bootstrap_rejects_changed_content_under_nonadvancing_maximum() {
+    for (relative, mtime) in [
+        ("rust/Cargo.toml", 10),
+        ("rust/Cargo.toml", 25),
+        ("rust/crates/ait-cli/src/main.rs", 30),
+        ("rust/crates/ait-cli/src/main.rs", 31),
+    ] {
+        let (mut source, artifact, request) = cli_bootstrap_store_fixture();
+        let path = path_text(&request.core_repo_root.join(relative));
+        source
+            .files
+            .insert(path.clone(), b"different source bytes and size".to_vec());
+        source.mtime_ns.insert(path, mtime);
+        let error = validate_current_source_cli_bootstrap_with_stores(&source, &artifact, &request)
+            .unwrap_err();
+        assert!(error.contains("Current-source ait-cli is stale"));
+        assert!(
+            error.contains(if mtime > 30 {
+                "core source mtime changed"
+            } else {
+                "core source content changed"
+            }),
+            "{relative} mtime={mtime}: {error}"
+        );
+    }
+}
+
+#[test]
+fn cli_bootstrap_rejects_changed_executable_with_equal_mtime() {
+    let (source, mut artifact, request) = cli_bootstrap_store_fixture();
+    artifact.sha256.insert(
+        path_text(&request.executable_path),
+        "different-cli-sha".into(),
+    );
+    let error = validate_current_source_cli_bootstrap_with_stores(&source, &artifact, &request)
+        .unwrap_err();
+    assert!(error.contains("bootstrap executable content changed"));
 }
 
 #[test]
