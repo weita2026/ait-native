@@ -288,6 +288,8 @@ const baselineId = "SNP-111111111111", landedId = "SNP-222222222222";
 const finishResult = (closeout = {}) => ({
   command: "task.finish", contract: "ait-agent-action/v1", task_id: "LT-0001",
   target_line: "main", landed_snapshot_id: landedId,
+  local_finish: { task_id: "LT-0001", land_ordinal: 0, status: "succeeded", change_ref: null,
+    landed_snapshot_id: landedId, target_line: "main", pre_land_target_snapshot_id: baselineId },
   closeout: { change_status: null, task_status: "completed", plan_status: "synced",
     plan_markdown_status: "in_sync", line_status: "archived", worktree_status: "removed",
     status: "complete", ...closeout },
@@ -299,15 +301,17 @@ const cwdPartial = () => finishResult({ status: "partial", line_status: "failed"
     bound_line_closeout: { reason: "feature_line_closeout_failed" } } });
 let finishVectorIndex = 0;
 function exerciseFirstLand({ platform = "linux", initial = finishResult(), resumed = finishResult(),
-  version = "1.2.0", mutate = () => {} } = {}) {
+  version = "1.2.0", mutate = () => {}, inventory = rows => rows,
+  retainRegistration = false, retainWorktree = false, archiveOnRecovery = true } = {}) {
   const parent = path.join(process.argv[3], `first-land-vector-${finishVectorIndex++}`);
   mkdirSync(parent);
   const root = path.join(parent, "repository"), worktree = path.join(parent, "lt-0001");
   const expectedText = "exact installed project change\n", calls = [], recorder = { observations: {} };
-  let applyCount = 0, resumedCount = 0, archived = false;
+  let applyCount = 0, resumedCount = 0, inventoryCount = 0, manualRemovals = 0;
+  let archived = false, registered = true;
   const hash = value => createHash("sha256").update(value).digest("hex");
   const sandbox = vm.createContext({ path, process: { platform }, existsSync, mkdirSync, readFileSync,
-    writeFileSync, rmSync, sha256Bytes: hash,
+    writeFileSync, rmSync(...args) { manualRemovals++; return rmSync(...args); }, sha256Bytes: hash,
     sha256File: file => hash(readFileSync(file)),
     requireRegularFile(file) { assert(statSync(file).isFile()); },
     generatedWorkflowCurrent() {}, fail(message) { throw new Error(message); },
@@ -345,21 +349,43 @@ function exerciseFirstLand({ platform = "linux", initial = finishResult(), resum
       if (args[0] === "task" && args[1] === "finish") {
         const recovery = options.label.includes("resume");
         if (recovery) {
-          resumedCount++; assert(!args.includes("--message")); assert.equal(options.cwd, root); archived = true;
+          resumedCount++; assert(!args.includes("--message")); assert.equal(options.cwd, root);
         } else {
           applyCount++; writeFileSync(path.join(root, "first-land.txt"), expectedText);
           const sprint = path.join(root, "docs/sprints/clean_host.md");
           writeFileSync(sprint, readFileSync(sprint, "utf8").replace("- [ ]", "- [x]"));
-          if (initial.closeout.status === "complete") rmSync(worktree, { recursive: true });
+          if (initial.closeout.status === "complete") {
+            rmSync(worktree, { recursive: true }); registered = false;
+          } else if (initial.closeout.change_status === "landed") {
+            registered = false; // Historical Change closeout released the row first.
+          }
         }
         const result = structuredClone(recovery ? resumed : initial);
         const status = result.closeout.status === "complete" ? 0 : 2;
+        if (recovery && status === 0) {
+          archived = archiveOnRecovery;
+          registered = retainRegistration;
+          if (!retainWorktree) rmSync(worktree, { recursive: true });
+        }
         if (!(options.allowed ?? [0]).includes(status)) throw new Error(`${options.label} failed with ${status}`);
         return result;
       }
-      if (args[0] === "task" && args[1] === "show") return { task_id: "LT-0001", status: "completed" };
+      if (args[0] === "task" && args[1] === "show") {
+        const result = { task_id: "LT-0001", status: "completed", local_finish: structuredClone(initial.local_finish) };
+        mutate(result, args); return result;
+      }
       if (args[0] === "change") return { task_id: "LT-0001", status: "landed", landed_snapshot_id: landedId };
-      if (args[0] === "worktree") return [];
+      if (args[0] === "worktree") {
+        inventoryCount++;
+        // Relevant fields from the original E Windows retained/detached row;
+        // only its temporary fixture path and identity are rebound here.
+        const row = { name: "lt-0001", path: worktree, alias_path: null, bound_task_id: "LT-0001",
+          line_name: "feature/lt-0001", current_line: "feature/lt-0001",
+          registered_line_name: "feature/lt-0001", workspace_status: "detached",
+          head_snapshot_id: null, bound_task_status: null, exists: true,
+          auto_created_for_task: true, root_source: "repo_internal_fallback" };
+        return inventory(registered ? [row] : [], { recovered: resumedCount > 0, root, worktree });
+      }
       if (args[0] === "line") {
         if (args[1] === "archive") archived = true;
         const result = { line_name: args[2], status: args[2] === "main" ? "active" : archived ? "archived" : "active",
@@ -372,15 +398,48 @@ function exerciseFirstLand({ platform = "linux", initial = finishResult(), resum
   vm.runInContext(versionSource + "\n" + aliases + "\n" + finishHelperSource + "\n" + firstLandSource + "\nthis.firstLand = firstLand;", sandbox);
   let error;
   try { sandbox.firstLand(recorder, {}, root, expectedText, null, null, version); } catch (failure) { error = failure; }
-  return { error, calls, applyCount, resumedCount, recorder, worktree };
+  return { error, calls, applyCount, resumedCount, inventoryCount, manualRemovals, recorder, worktree };
 }
 const linuxFinish = exerciseFirstLand();
 assert.equal(linuxFinish.error, undefined); assert.equal(linuxFinish.applyCount, 1);
 const windowsFinish = exerciseFirstLand({ platform: "win32", initial: cwdPartial() });
 assert.equal(windowsFinish.error, undefined); assert.equal(windowsFinish.applyCount, 1);
 assert.equal(windowsFinish.resumedCount, 1); assert(!existsSync(windowsFinish.worktree));
+assert.equal(windowsFinish.inventoryCount, 2); assert.equal(windowsFinish.manualRemovals, 0);
+assert(windowsFinish.calls.findIndex(call => call.label === "candidate recovered Windows worktree inventory") >
+  windowsFinish.calls.findIndex(call => call.label === "candidate task finish closeout resume"));
 assert(!windowsFinish.calls.some(call => call.args[0] === "change" || call.args[1] === "archive"));
 assert.equal(windowsFinish.recorder.observations.windows_partial_task_land_closeout.change_landed, false);
+assert.equal(windowsFinish.recorder.observations.windows_partial_task_land_closeout.worktree_registration_absent, true);
+for (const change of [
+  row => { row.name = "lt-0002"; },
+  row => { row.bound_task_id = "LT-0002"; },
+  row => { row.path += "-foreign"; },
+  row => { row.alias_path = row.path; },
+  row => { row.line_name = "feature/lt-0002"; },
+  row => { row.workspace_status = "dirty"; },
+]) {
+  const result = exerciseFirstLand({ platform: "win32", initial: cwdPartial(),
+    inventory(rows, { recovered }) { if (!recovered) change(rows[0]); return rows; } });
+  assert.match(result.error.message, /readback is inconsistent/);
+  assert.equal(result.resumedCount, 0); assert.equal(result.manualRemovals, 0);
+}
+for (const inventory of [() => [], rows => [...rows, ...rows]]) {
+  const result = exerciseFirstLand({ platform: "win32", initial: cwdPartial(), inventory });
+  assert.match(result.error.message, /readback is inconsistent/); assert.equal(result.resumedCount, 0);
+}
+for (const options of [{ retainRegistration: true }, { retainWorktree: true }]) {
+  const result = exerciseFirstLand({ platform: "win32", initial: cwdPartial(), ...options });
+  assert.match(result.error.message, /left its worktree or registration behind/);
+  assert.equal(result.manualRemovals, 0);
+  assert.equal(result.recorder.observations.windows_partial_task_land_closeout, undefined);
+}
+const unarchived = exerciseFirstLand({ platform: "win32", initial: cwdPartial(), archiveOnRecovery: false });
+assert.match(unarchived.error.message, /feature Line did not archive exactly/);
+assert.equal(unarchived.recorder.observations.windows_partial_task_land_closeout, undefined);
+const nextReceipt = finishResult(); nextReceipt.local_finish.land_ordinal = 1;
+assert.match(exerciseFirstLand({ platform: "win32", initial: cwdPartial(), resumed: nextReceipt }).error.message,
+  /changed its apply receipt/);
 const legacyFinish = exerciseFirstLand({ platform: "win32", version: "1.1.4",
   initial: finishResult({ change_status: "landed", status: "partial", line_status: "failed", worktree_status: "failed" }) });
 assert.equal(legacyFinish.error, undefined); assert.equal(legacyFinish.resumedCount, 0);
@@ -391,6 +450,13 @@ assert.match(exerciseFirstLand({ platform: "darwin", initial: unknownPartial, re
   /closeout resume failed with 2: .*retained native seed diagnostic/);
 assert.match(exerciseFirstLand({ platform: "win32", initial: cwdPartial(), resumed: unknownPartial }).error.message,
   /closeout resume failed with 2/);
+for (const field of ["local_line_sync", "repo_root_restore"]) {
+  const partial = finishResult({ status: "partial" });
+  partial[field] = { status: "failed", error: `retained ${field} diagnostic` };
+  const result = exerciseFirstLand({ platform: "win32", initial: cwdPartial(), resumed: partial });
+  assert.match(result.error.message, new RegExp(`closeout resume failed with 2: .*retained ${field} diagnostic`));
+  assert.equal(result.manualRemovals, 0); assert(existsSync(result.worktree));
+}
 assert.match(exerciseFirstLand({ initial: finishResult({ change_status: "landed" }) }).error.message, /reported a Change/);
 assert.match(exerciseFirstLand({ initial: { ...finishResult(), task_id: "LT-0002" } }).error.message,
   /changed Task authority/);

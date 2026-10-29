@@ -592,6 +592,8 @@ jobs:
       aggregate_artifact_id: ${{ steps.upload.outputs.artifact-id }}
       aggregate_artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
       aggregate_status_sha256: ${{ steps.aggregate.outputs.aggregate_status_sha256 }}
+      mac_seed_row: ${{ steps.seed_observation.outputs.row }}
+      mac_seed_runner: ${{ steps.seed_observation.outputs.runner }}
     steps:
       - name: Check out the exact release-control source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -622,6 +624,49 @@ jobs:
           path: candidate
           repository: ${{ github.repository }}
           run-id: ${{ needs.stage.outputs.candidate_run_id }}
+
+      # Selection is read-only and optional. Its output never enters the
+      # qualification inventory, status, or caller's published outputs.
+      - name: Select an original Mac seed failure for observation
+        id: seed_observation
+        continue-on-error: true
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import assert from 'node:assert/strict';
+          const read = file => JSON.parse(readFileSync(file, 'utf8'));
+          const matrix = read('candidate/ait-release.clean-host-matrix.json');
+          const authority = read('candidate/ait-release.endpoints.authority.json');
+          const selected = matrix.rows.filter(row => row.channel === 'github' &&
+            row.lifecycle === 'product' && row.target === 'aarch64-apple-darwin');
+          assert.equal(selected.length, 1);
+          const [row] = selected;
+          assert.equal(row.os, 'macos');
+          assert.equal(row.architecture, 'arm64');
+          const original = read(`rows/${row.id}.json`);
+          assert.equal(original.contract, 'ait.release.clean-host.row/v1');
+          assert.deepEqual(original.row, row);
+          assert.equal(original.release.id, authority.release.id);
+          assert.equal(original.release.source_commit, authority.release.source_commit);
+          const phase = original.phases.install;
+          assert.deepEqual(phase.row, row);
+          assert.deepEqual(phase.release, original.release);
+          const failedSeed = phase.status === 'fail' && phase.commands.some(command => {
+            if (command.label !== 'candidate task finish' || command.exit_status !== 2) return false;
+            try {
+              const seed = JSON.parse(command.stdout_tail).main_seed_sync;
+              return seed?.status === 'failed' &&
+                /Failed to install staged main seed/.test(seed.error ?? '') &&
+                /Permission denied \(os error 13\)/.test(seed.error ?? '');
+            } catch { return false; }
+          });
+          if (failedSeed) {
+            assert.match(row.id, /^[a-z0-9-]+$/);
+            assert.match(row.runner, /^[a-z0-9-]+$/);
+            appendFileSync(process.env.GITHUB_OUTPUT, `row=${row.id}\nrunner=${row.runner}\n`);
+          }
+          NODE
 
       - name: Aggregate the complete pre-tag row inventory
         id: aggregate
@@ -695,3 +740,238 @@ jobs:
         run: |
           test '${{ steps.aggregate.outcome }}' = success
           test '${{ steps.upload.outcome }}' = success
+
+  # This single optional job observes only the failed ARM64 first-Task case.
+  # Every qualifying install/upgrade remains uninstrumented. Nothing below
+  # is consumed by aggregate or exported as qualification evidence.
+  mac_seed_observation:
+    needs: [stage, aggregate]
+    if: ${{ always() && !cancelled() && needs.stage.result == 'success' && needs.aggregate.outputs.mac_seed_row != '' }}
+    continue-on-error: true
+    runs-on: ${{ needs.aggregate.outputs.mac_seed_runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact diagnostic control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+
+      - name: Select the same lifecycle Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.5.0"
+          check-latest: false
+
+      - name: Download the same immutable pre-tag candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.stage.outputs.candidate_artifact_id }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          path: candidate
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.stage.outputs.candidate_run_id }}
+
+      - name: Compile the read-only seed rename observer
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostic="${RUNNER_TEMP}/mac-seed-observation"
+          mkdir "${diagnostic}"
+          {
+            id; uname -a; sw_vers; /sbin/mount
+            printf 'ImageOS=%s ImageVersion=%s RUNNER_NAME=%s RUNNER_ARCH=%s\n' \
+              "${ImageOS:-}" "${ImageVersion:-}" "${RUNNER_NAME:-}" "${RUNNER_ARCH:-}"
+          } >"${diagnostic}/host-before.log" 2>&1
+          cat >"${diagnostic}/rename-observer.c" <<'C'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <stdint.h>
+          #include <string.h>
+          #include <unistd.h>
+          #include <errno.h>
+          #include <fcntl.h>
+          #include <sys/stat.h>
+          #include <sys/mount.h>
+          #include <sys/acl.h>
+          #include <sys/syscall.h>
+          #include <mach-o/dyld.h>
+          #include <limits.h>
+
+          __attribute__((constructor)) static void loaded(void) {
+            int saved = errno;
+            const char *p = getenv("CORE_SEED_RENAME_LOG");
+            if (p) {
+              FILE *f = fopen(p, "a");
+              if (f) {
+                char exe[PATH_MAX]; uint32_t size = sizeof(exe);
+                if (_NSGetExecutablePath(exe, &size)) snprintf(exe, sizeof(exe), "unavailable");
+                fprintf(f, "LOADED pid=%d euid=%d egid=%d executable=%s\n",
+                  getpid(), geteuid(), getegid(), exe);
+                fclose(f);
+              }
+            }
+            errno = saved;
+          }
+          static void describe(FILE *f, const char *label, const char *p) {
+            struct stat s;
+            if (lstat(p, &s)) {
+              fprintf(f, "%s path=%s lstat_errno=%d\n", label, p, errno); return;
+            }
+            int writable = access(p, W_OK), access_errno = writable ? errno : 0;
+            fprintf(f, "%s path=%s uid=%u gid=%u mode=%o flags=%u write_access=%d access_errno=%d\n",
+              label, p, s.st_uid, s.st_gid, s.st_mode, s.st_flags, writable, access_errno);
+            struct statfs v;
+            if (!statfs(p, &v)) fprintf(f, "%s fs=%s mount=%s mount_flags=%llu\n",
+              label, v.f_fstypename, v.f_mntonname, (unsigned long long)v.f_flags);
+            else fprintf(f, "%s statfs_errno=%d\n", label, errno);
+            acl_t a = acl_get_file(p, ACL_TYPE_EXTENDED);
+            if (a) {
+              ssize_t len = 0; char *t = acl_to_text(a, &len);
+              if (t) { fprintf(f, "%s ACL=%.*s\n", label, (int)len, t); acl_free(t); }
+              else fprintf(f, "%s acl_text_errno=%d\n", label, errno);
+              acl_free(a);
+            } else fprintf(f, "%s acl_errno=%d\n", label, errno);
+          }
+          static void describe_at(FILE *f, const char *label, int fd, const char *p) {
+            char full[PATH_MAX], base[PATH_MAX];
+            if (p[0] == '/') {
+              if (snprintf(full, sizeof(full), "%s", p) >= (int)sizeof(full)) {
+                fprintf(f, "%s metadata_path_too_long\n", label); return;
+              }
+            }
+            else if (fd == AT_FDCWD ? getcwd(base, sizeof(base)) != NULL : fcntl(fd, F_GETPATH, base) != -1) {
+              if (snprintf(full, sizeof(full), "%s/%s", base, p) >= (int)sizeof(full)) {
+                fprintf(f, "%s metadata_path_too_long\n", label); return;
+              }
+            } else { fprintf(f, "%s metadata_path_errno=%d\n", label, errno); return; }
+            describe(f, label, full);
+            char *last = strrchr(full, '/');
+            if (last) {
+              if (last == full) last[1] = '\0'; else *last = '\0';
+              char parent_label[64]; snprintf(parent_label, sizeof(parent_label), "%s_parent", label);
+              describe(f, parent_label, full);
+            }
+          }
+          static FILE *before(int sfd, const char *src, int dfd, const char *dst) {
+            const char *log = getenv("CORE_SEED_RENAME_LOG");
+            if (!log || !src || !dst || (!strstr(src, "main-seed") && !strstr(dst, "main-seed"))) return NULL;
+            FILE *f = fopen(log, "a"); if (!f) return NULL;
+            fprintf(f, "RENAME pid=%d euid=%d egid=%d sfd=%d src=%s dfd=%d dst=%s\n",
+              getpid(), geteuid(), getegid(), sfd, src, dfd, dst);
+            describe_at(f, "source", sfd, src); describe_at(f, "destination", dfd, dst);
+            fflush(f); return f;
+          }
+          static int observed_rename(const char *src, const char *dst) {
+            int saved = errno; FILE *f = before(AT_FDCWD, src, AT_FDCWD, dst); errno = saved;
+            int r = (int)syscall(SYS_rename, src, dst), e = errno;
+            if (f) { fprintf(f, "RESULT pid=%d result=%d errno=%d\n", getpid(), r, e); fclose(f); }
+            errno = e; return r;
+          }
+          static int observed_renameat(int sfd, const char *src, int dfd, const char *dst) {
+            int saved = errno; FILE *f = before(sfd, src, dfd, dst); errno = saved;
+            int r = (int)syscall(SYS_renameat, sfd, src, dfd, dst), e = errno;
+            if (f) { fprintf(f, "RESULT pid=%d renameat result=%d errno=%d\n", getpid(), r, e); fclose(f); }
+            errno = e; return r;
+          }
+          #define INTERPOSE(replacement, replacee) \
+          __attribute__((used)) static struct { const void *replacement; const void *replacee; } interpose_##replacee \
+          __attribute__((section("__DATA,__interpose"))) = {(const void *)(uintptr_t)&replacement, (const void *)(uintptr_t)&replacee};
+          INTERPOSE(observed_rename, rename)
+          INTERPOSE(observed_renameat, renameat)
+          C
+          clang -dynamiclib -Wall -Wextra -o "${diagnostic}/rename-observer.dylib" \
+            "${diagnostic}/rename-observer.c" >"${diagnostic}/compile.log" 2>&1
+
+      - name: Observe only the existing first-Task case
+        shell: bash
+        env:
+          AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: ${{ needs.stage.outputs.candidate_artifact_digest }}
+          AIT_CLEAN_HOST_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+          AIT_CLEAN_HOST_RUNNER_LABEL: ${{ needs.aggregate.outputs.mac_seed_runner }}
+          AIT_SEED_OBSERVATION_ROW: ${{ needs.aggregate.outputs.mac_seed_row }}
+          AIT_SEED_OBSERVATION_PRIOR: ${{ inputs.prior_version }}
+          AIT_SEED_OBSERVATION_PRIOR_PYTHON: ${{ inputs.prior_python_version }}
+        run: |
+          set -euo pipefail
+          node control/ci/release_prepublish_verify.mjs stage \
+            --root "${PWD}/candidate" \
+            --config-sha256 '${{ inputs.candidate_authority_sha256 }}' \
+            --status-sha256 '${{ needs.stage.outputs.candidate_status_sha256 }}' >/dev/null
+          node --input-type=module >"${RUNNER_TEMP}/mac-seed-observation/commands.log" 2>&1 <<'NODE'
+          import { readFileSync, realpathSync, mkdtempSync, existsSync } from 'node:fs';
+          import { pathToFileURL } from 'node:url';
+          import path from 'node:path';
+          try {
+          const diagnostic = path.join(process.env.RUNNER_TEMP, 'mac-seed-observation');
+          const phaseFile = path.resolve('control/ci/release_clean_host_phase.mjs');
+          // Expose private helpers only in this ephemeral diagnostic module.
+          // Their implementations and the installed family bytes are unchanged.
+          let source = readFileSync(phaseFile, 'utf8').replaceAll(
+            /from "\.\/([^"\n]+)"/g,
+            (_, relative) => `from ${JSON.stringify(pathToFileURL(path.join(path.dirname(phaseFile), relative)).href)}`);
+          const guard = 'if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {';
+          if (!source.includes(guard)) throw new Error('diagnostic module entry guard changed');
+          source = source.replace(guard, 'if (false) {') +
+            '\nexport { Recorder, validateInputs, nativePlatform, githubRunner, candidateRoot, githubContext, exactContextVersion, exerciseLifecycle, firstLand };\n';
+          const api = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+          const read = file => JSON.parse(readFileSync(path.join('candidate', file), 'utf8'));
+          const config = read('ait-release.endpoints.authority.json');
+          const status = read('ait-release.prepublish-candidate.json');
+          const row = api.validateInputs({ 'row-id': process.env.AIT_SEED_OBSERVATION_ROW,
+            'prior-version': process.env.AIT_SEED_OBSERVATION_PRIOR,
+            'prior-python-version': process.env.AIT_SEED_OBSERVATION_PRIOR_PYTHON },
+            read('ait-release.clean-host-matrix.json'), config, status);
+          api.nativePlatform(row); api.githubRunner(row);
+          const recorder = new api.Recorder();
+          const root = mkdtempSync(path.join(realpathSync(process.env.RUNNER_TEMP), 'ait-clean-host-install-'));
+          let caseError;
+          try {
+            const context = await api.githubContext(config, row, config.release.version, root, recorder, api.candidateRoot(status));
+            api.exactContextVersion(context, row, config.release.version, recorder);
+            await api.exerciseLifecycle(context, row, root, recorder);
+            context.ait.environment = { ...context.ait.environment,
+              DYLD_INSERT_LIBRARIES: path.join(diagnostic, 'rename-observer.dylib'),
+              CORE_SEED_RENAME_LOG: path.join(diagnostic, 'rename.log') };
+            api.firstLand(recorder, context.ait, path.join(root, 'candidate-repository'),
+              `clean-host ${row.id} ${config.release.version}\n`, null, null, config.release.version);
+            console.log('Diagnostic first-Task case passed; ordinary qualification retains its original result.');
+          } catch (error) {
+            caseError = error;
+          } finally {
+            for (const command of recorder.commands) {
+              console.log(`\n${command.label} | ${command.command} | exit ${command.exit_status}\n${command.stdout_tail}\n${command.stderr_tail}`);
+            }
+          }
+          if (caseError) console.log(`Diagnostic first-Task case failed: ${caseError.message}`);
+          const log = path.join(diagnostic, 'rename.log');
+          if (!existsSync(log)) throw new Error('Observer unavailable: no loader/rename log was produced.');
+          const observation = readFileSync(log, 'utf8');
+          const loaded = [...observation.matchAll(/^LOADED pid=(\d+) .* executable=.*\/github-bin\/ait$/gm)].map(match => match[1]);
+          if (!loaded.some(pid => observation.includes(`RENAME pid=${pid} `) && observation.includes(`RESULT pid=${pid} `))) {
+            throw new Error('Observer unavailable: matching installed CLI LOADED/RENAME/RESULT records are required.');
+          }
+          console.log('Observer captured the diagnostic case before native cleanup; this is not qualification evidence.');
+          if (caseError) throw caseError;
+          } catch (error) { console.error(error.message); process.exitCode = 1; }
+          NODE
+
+      - name: Save final diagnostic host mounts
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/mac-seed-observation"
+          /sbin/mount >"${RUNNER_TEMP}/mac-seed-observation/host-after.log" 2>&1
+
+      # Use the existing bootstrap-diagnostic retention default. The four
+      # qualification artifacts retain their separate retention contract.
+      - name: Retain isolated Mac observation logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-macos-seed-observation-${{ inputs.release_id }}
+          path: ${{ runner.temp }}/mac-seed-observation/*.log
+          if-no-files-found: warn
+          compression-level: 0

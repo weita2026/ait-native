@@ -952,6 +952,22 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fix
         cwd: root,
         label: "candidate completed Windows worktree inventory",
       });
+      // A cwd-held delete fails before Core removes the exact registration.
+      // Only native recovery from the Repository root may remove that row.
+      const retained = Array.isArray(worktrees) && worktrees.length === 1 ? worktrees[0] : null;
+      const retainedRegistrationMatches = retained?.name === started.worktree_name &&
+        retained.path === worktree && retained.alias_path == null &&
+        retained.bound_task_id === taskId && retained.line_name === featureLineName &&
+        retained.workspace_status === "detached";
+      const firstReceipt = landed.local_finish;
+      const receiptFields = ["task_id", "land_ordinal", "landed_snapshot_id", "target_line",
+        "pre_land_target_snapshot_id", "change_ref"];
+      const sameReceipt = value => value?.status === "succeeded" && firstReceipt?.status === "succeeded" &&
+        Number.isInteger(firstReceipt.land_ordinal) && firstReceipt.land_ordinal >= 0 &&
+        firstReceipt.task_id === taskId && firstReceipt.landed_snapshot_id === acceptedSnapshot &&
+        firstReceipt.target_line === acceptedTarget && firstReceipt.pre_land_target_snapshot_id === baselineId &&
+        firstReceipt.change_ref === null &&
+        receiptFields.every(field => value[field] === firstReceipt[field]);
       if (
         task.task_id !== taskId ||
         task.status !== "completed" ||
@@ -966,12 +982,31 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fix
         featureLine.status !== "active" ||
         featureLine.head_snapshot_id !== landed.landed_snapshot_id ||
         !Array.isArray(worktrees) ||
-        worktrees.some((row) => row.name === started.worktree_name)
+        (currentTaskContract
+          ? !retainedRegistrationMatches || !sameReceipt(task.local_finish)
+          : worktrees.some((row) => row.name === started.worktree_name))
       ) {
         fail("Windows partial Task finish authoritative readback is inconsistent");
       }
+      let registrationAbsent = true;
       if (currentTaskContract) {
         landed = resumeCloseout();
+        if (!sameReceipt(landed.local_finish)) {
+          fail("Windows initial Task closeout recovery changed its apply receipt");
+        }
+        if (landed.closeout?.task_status !== "completed" ||
+            landed.closeout?.status !== "complete" || landed.closeout?.plan_status !== "synced") {
+          fail("candidate first land did not complete exact Task and Plan closeout");
+        }
+        const recoveredWorktrees = jsonSpec(recorder, aitSpec, ["worktree", "list", "--json"], {
+          cwd: root,
+          label: "candidate recovered Windows worktree inventory",
+        });
+        registrationAbsent = Array.isArray(recoveredWorktrees) && !recoveredWorktrees.some(row =>
+          row.name === started.worktree_name || row.bound_task_id === taskId || row.path === worktree);
+        if (!registrationAbsent || existsSync(worktree)) {
+          fail("Windows initial Task closeout recovery left its worktree or registration behind");
+        }
       }
       const archived = jsonSpec(
         recorder,
@@ -998,7 +1033,7 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fix
         task_completed: true,
         change_landed: !currentTaskContract,
         plan_synced: true,
-        worktree_registration_absent: true,
+        worktree_registration_absent: registrationAbsent,
         feature_line_archived: true,
         second_land_applied: false,
       };
@@ -1026,7 +1061,8 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fix
   if (!readFileSync(sprintPath, "utf8").includes("- [x] Materialize the exact clean-host file.")) {
     fail("candidate first land did not close the exact sprint checklist item");
   }
-  if (partialCloseoutHandled && existsSync(worktree)) {
+  if (partialCloseoutHandled && existsSync(worktree) &&
+      !(currentTaskContract && process.platform === "win32")) {
     // The first attempt could not remove the bound worktree while it was
     // the process working directory; the resumed closeout already released
     // the binding, so the leftover directory is orphaned rehearsal debris.
