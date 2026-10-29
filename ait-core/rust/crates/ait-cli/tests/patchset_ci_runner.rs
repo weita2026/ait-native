@@ -907,6 +907,33 @@ fn repo_native_ci_entrypoints_cover_workspace_and_guard_lineage_schema() {
         fs::read_to_string(root.join("rust/crates/ait-core/tests/binary_db_schema_authority.rs"))
             .unwrap();
     let expected = expected_native_ci_test_invocations();
+    let mut expected_unix = expected.clone();
+    let ensure_invocations = [
+        "concurrent_creation_then_retry_does_not_create_duplicate",
+        "concurrent_missing_recovery_then_retry_does_not_create_duplicate",
+    ]
+    .map(|selector| {
+        [
+            "test",
+            "--manifest-path",
+            "rust/Cargo.toml",
+            "--profile",
+            "ait-ci",
+            "--locked",
+            "--all-features",
+            "-p",
+            "ait-cli",
+            "--test",
+            "team_session_cli",
+            selector,
+            "--",
+            "--exact",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+    });
+    expected_unix.splice(3..3, ensure_invocations);
 
     assert!(
         !schema_authority_test.contains("include_bytes!"),
@@ -925,7 +952,7 @@ fn repo_native_ci_entrypoints_cover_workspace_and_guard_lineage_schema() {
 
     assert_eq!(
         shell_cargo_test_invocations(&unix),
-        expected,
+        expected_unix,
         "Unix CI must cover every Snapshot-runnable harness, the complete repository, and the conditional local schema authority harness"
     );
     assert_eq!(

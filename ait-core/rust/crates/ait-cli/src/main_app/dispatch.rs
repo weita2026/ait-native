@@ -73,7 +73,27 @@ fn run(mut argv: Vec<OsString>) -> Result<ExitCode, String> {
     };
     let repo = {
         let _range = perfetto_range!("ait.cli.repo_discover");
-        RepoRuntime::discover()?
+        if let Commands::Team {
+            command: TeamCommand::Session {
+                command: TeamSessionCommand::Ensure { agent, json, .. },
+            },
+        } = &command {
+            match RepoRuntime::discover_for_session_ensure() {
+                Ok(repo) => repo,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    let result = crate::binding_team::pending_team_session(*agent, error.to_string());
+                    if *json {
+                        print_json(&result.payload)?;
+                    } else {
+                        println!("{}", crate::binding_team::format_team_session_ensure(&result.payload, *agent));
+                    }
+                    return Ok(ExitCode::from(result.exit_code));
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        } else {
+            RepoRuntime::discover()?
+        }
     };
     match command {
         Commands::Init(_) => unreachable!("init is handled before repo discovery"),

@@ -59,6 +59,14 @@ impl RootConfigLease {
     }
 
     pub fn read(path: &Path) -> io::Result<Self> {
+        Self::read_with_policy(path, false)
+    }
+
+    pub fn try_read(path: &Path) -> io::Result<Self> {
+        Self::read_with_policy(path, true)
+    }
+
+    fn read_with_policy(path: &Path, immediate: bool) -> io::Result<Self> {
         let file = File::open(path)?;
         let identity = config_file_identity(&file, path)?;
         if let Some(owner) = Self::current_owner(&identity) {
@@ -66,7 +74,19 @@ impl RootConfigLease {
             // read via a second handle under Windows byte-range locking.
             return Ok(Self(owner));
         }
-        fs2::FileExt::lock_shared(&file)?;
+        if immediate {
+            fs2::FileExt::try_lock_shared(&file).map_err(|error| {
+                if error.kind() == io::ErrorKind::WouldBlock
+                    || error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+                {
+                    io::Error::new(io::ErrorKind::WouldBlock, CONFIG_BUSY)
+                } else {
+                    error
+                }
+            })?;
+        } else {
+            fs2::FileExt::lock_shared(&file)?;
+        }
         Self::register(file, path)
     }
 
@@ -122,6 +142,9 @@ impl Drop for RootConfigLease {
         if Rc::strong_count(&self.0) != 1 {
             return;
         }
+        // Close alone leaves the lock alive in a forked child's descriptor
+        // until exec. Only the final logical owner may end OS ownership.
+        let _ = fs2::FileExt::unlock(&*self.0.file.borrow());
         let _ = CONFIG_LEASES.try_with(|leases| {
             let mut leases = leases.borrow_mut();
             if let Some(owners) = leases.get_mut(&self.0.identity) {
@@ -176,7 +199,15 @@ fn config_file_identity(file: &File, _path: &Path) -> io::Result<ConfigFileIdent
 
 #[doc(hidden)]
 pub fn read_root_config_bytes(path: &Path) -> io::Result<Vec<u8>> {
-    let lease = RootConfigLease::read(path)?;
+    read_config_bytes(RootConfigLease::read(path)?)
+}
+
+#[doc(hidden)]
+pub fn try_read_root_config_bytes(path: &Path) -> io::Result<Vec<u8>> {
+    read_config_bytes(RootConfigLease::try_read(path)?)
+}
+
+fn read_config_bytes(lease: RootConfigLease) -> io::Result<Vec<u8>> {
     lease.with_file(|file| {
         file.rewind()?;
         let mut bytes = Vec::new();
@@ -189,6 +220,63 @@ pub fn read_root_config_bytes(path: &Path) -> io::Result<Vec<u8>> {
 mod config_lease_tests {
     use super::*;
 
+    #[cfg(unix)]
+    struct InheritedConfigDescriptor {
+        gate: std::os::unix::net::UnixStream,
+        worker: Option<std::thread::JoinHandle<io::Result<std::process::ExitStatus>>>,
+    }
+
+    #[cfg(unix)]
+    impl InheritedConfigDescriptor {
+        fn new() -> Self {
+            use std::os::{fd::AsRawFd, unix::process::CommandExt};
+            let (gate, child) = std::os::unix::net::UnixStream::pair().unwrap();
+            gate.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let parent_fd = gate.as_raw_fd();
+            let worker = std::thread::spawn(move || {
+                let child_fd = child.as_raw_fd();
+                let mut command = std::process::Command::new("/usr/bin/true");
+                // After fork, use only async-signal-safe descriptor operations.
+                // Closing the inherited parent endpoint also permits cleanup
+                // on a failed assertion instead of leaving this child blocked.
+                unsafe {
+                    command.pre_exec(move || {
+                        libc::close(parent_fd);
+                        let mut byte = 1u8;
+                        if libc::write(child_fd, (&byte as *const u8).cast(), 1) != 1 {
+                            return Err(io::Error::last_os_error());
+                        }
+                        if libc::read(child_fd, (&mut byte as *mut u8).cast(), 1) != 1 {
+                            return Err(io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+                let result = command.status();
+                drop(child);
+                result
+            });
+            let mut descriptor = Self {
+                gate,
+                worker: Some(worker),
+            };
+            descriptor.gate.read_exact(&mut [0]).unwrap();
+            descriptor
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for InheritedConfigDescriptor {
+        fn drop(&mut self) {
+            use std::io::Write;
+            let _ = self.gate.write_all(&[1]);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
     #[test]
     fn nested_reads_preserve_outer_ownership_and_other_thread_exclusion() {
         let temp = tempfile::tempdir().unwrap();
@@ -198,6 +286,10 @@ mod config_lease_tests {
             let outer = RootConfigLease::try_acquire(&path, exclusive, false).unwrap();
             assert_eq!(
                 read_root_config_bytes(&path).unwrap(),
+                br#"{"repo_name":"owner"}"#
+            );
+            assert_eq!(
+                try_read_root_config_bytes(&path).unwrap(),
                 br#"{"repo_name":"owner"}"#
             );
             #[cfg(unix)]
@@ -223,12 +315,28 @@ mod config_lease_tests {
                         assert!(RootConfigLease::try_acquire(&path, true, true).is_err());
                         if exclusive {
                             assert!(RootConfigLease::try_acquire(&path, false, false).is_err());
+                            let error = try_read_root_config_bytes(&path).unwrap_err();
+                            assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+                            assert_eq!(error.to_string(), CONFIG_BUSY);
+                        } else {
+                            assert_eq!(
+                                try_read_root_config_bytes(&path).unwrap(),
+                                br#"{"repo_name":"owner"}"#
+                            );
                         }
                     })
                     .join()
                     .unwrap();
             });
+            #[cfg(unix)]
+            let inherited = InheritedConfigDescriptor::new();
             let contender = File::open(&path).unwrap();
+            assert!(fs2::FileExt::try_lock_exclusive(&contender).is_err());
+            if exclusive {
+                assert!(fs2::FileExt::try_lock_shared(&contender).is_err());
+            }
+            let inner = RootConfigLease::read(&path).unwrap();
+            drop(inner);
             assert!(fs2::FileExt::try_lock_exclusive(&contender).is_err());
             if exclusive {
                 assert!(fs2::FileExt::try_lock_shared(&contender).is_err());
@@ -237,7 +345,11 @@ mod config_lease_tests {
             drop(outer);
             assert!(fs2::FileExt::try_lock_exclusive(&contender).is_err());
             drop(inner);
-            fs2::FileExt::try_lock_exclusive(&contender).unwrap();
+            let final_release = fs2::FileExt::try_lock_exclusive(&contender);
+            #[cfg(unix)]
+            drop(inherited);
+            final_release
+                .expect("final logical owner releases the lock before inherited child exec");
         }
     }
 }

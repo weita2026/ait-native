@@ -114,6 +114,26 @@ run_patchset_tests() {
     --test workflow_package_frozen_candidate_cli \
     --test workflow_package_accepted_retry_cli
 
+  cargo test \
+    --manifest-path rust/Cargo.toml \
+    --profile ait-ci \
+    --locked \
+    --all-features \
+    -p ait-cli \
+    --test team_session_cli \
+    concurrent_creation_then_retry_does_not_create_duplicate \
+    -- --exact
+
+  cargo test \
+    --manifest-path rust/Cargo.toml \
+    --profile ait-ci \
+    --locked \
+    --all-features \
+    -p ait-cli \
+    --test team_session_cli \
+    concurrent_missing_recovery_then_retry_does_not_create_duplicate \
+    -- --exact
+
   # Markdown is Plan lineage and is intentionally absent from remote Snapshot
   # materialization. Canonical source still carries the sole protected authority.
   if [ -f "$repo_root/docs/binary_db_v0.md" ]; then

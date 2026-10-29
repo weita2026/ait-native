@@ -1,6 +1,6 @@
 //! Team operations and exact native presentation, without a CLI dispatcher.
 use crate::{agent_teams, binding_services::WorkflowOperationResult, runtime::RepoRuntime};
-use ait_core::json_support::JsonValue;
+use ait_core::json_support::{json, JsonValue};
 
 fn result(payload: JsonValue, expected_status: &str) -> WorkflowOperationResult {
     let exit_code = if payload["status"].as_str() == Some(expected_status) {
@@ -22,6 +22,13 @@ pub fn ensure_team_session(
     role: Option<u32>,
 ) -> WorkflowOperationResult {
     result(agent_teams::ensure(repo, agent, role), "ready")
+}
+
+pub(crate) fn pending_team_session(agent: u32, detail: String) -> WorkflowOperationResult {
+    result(
+        json!({"status":"pending","agent_index":agent,"detail":detail,"work_started":false}),
+        "ready",
+    )
 }
 pub fn format_team_contacts(payload: &JsonValue) -> String {
     agent_teams::render_contacts(payload)
