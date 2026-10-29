@@ -1335,11 +1335,32 @@ test("real lower-level Task helpers retain native files, layout, status metadata
   });
   assert.equal(runtime.taskWorkflowEnsureMainSeedMirror(root, { lineName: "other" }).reason, "target_not_default_line");
   const seed = runtime.taskWorkflowResolveMainSeedMirrorLocation(root, "fixture-seed");
-  assert.ok(seed === null || seed.target_path.startsWith(fixture + path.sep));
   runtime.configureRepository(root, { sprint: "on" });
   const task = runtime.taskQuick(root, { intent: "Exercise retained raw Task SDK", local: true, editRoot: path.join(fixture, "work") });
   const location = runtime.taskWorkflowResolveTaskWorktreeLocation(root, task.worktree.name);
-  assert.ok(location.target_path.startsWith(fixture + path.sep));
+  // Rust canonicalization can return a Windows extended-length path while
+  // Node realpath returns its ordinary form. Compare strict descendants in
+  // the same namespace, retaining rejection of siblings and escaped roots.
+  for (const [paths, parent, target, contained] of [
+    ...(seed === null ? [] : [[path, fixture, seed.target_path, true]]),
+    [path, fixture, location.target_path, true],
+    [path.win32, String.raw`C:\fixture`, String.raw`C:\fixture\worktrees\seed`, true],
+    [path.win32, String.raw`C:\fixture`, String.raw`\\?\c:\fixture\worktrees\seed`, true],
+    [path.win32, String.raw`\\?\C:\fixture`, String.raw`C:\fixture\worktrees\seed`, true],
+    [path.win32, String.raw`\\server\share\fixture`, String.raw`\\?\UNC\server\share\fixture\seed`, true],
+    [path.win32, String.raw`C:\fixture`, String.raw`\\?\C:\fixture-other\seed`, false],
+    [path.win32, String.raw`C:\fixture`, String.raw`\\?\C:\fixture\..\outside`, false],
+    [path.win32, String.raw`C:\fixture`, String.raw`\\?\D:\fixture\seed`, false],
+    [path.win32, String.raw`\\server\share\fixture`, String.raw`\\?\UNC\server\other\fixture\seed`, false],
+    [path.win32, String.raw`C:\fixture`, String.raw`\\?\C:\fixture`, false],
+  ]) {
+    const relative = paths.relative(paths.toNamespacedPath(parent), paths.toNamespacedPath(target));
+    assert.equal(
+      relative !== "" && relative !== ".." && !relative.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relative),
+      contained,
+      JSON.stringify({ parent, target, relative }),
+    );
+  }
   await writeFile(path.join(task.worktree.path, "sdk.txt"), "Retained raw SDK content\n");
   const snapshot = runtime.snapshotCapture(task.worktree.path, task.task_id, { message: "Retained raw SDK fixture" });
   assert.equal(runtime.taskWorkflowEnsureStatusManifest(root, snapshot.snapshot_id).source, "snapshot_binary_metadata");

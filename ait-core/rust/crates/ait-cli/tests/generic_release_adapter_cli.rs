@@ -39,9 +39,17 @@ fn seed_adapter_snapshot(root: &Path, message: &str) -> Value {
 
 #[test]
 fn generic_release_adapter_check_and_build_are_snapshot_derived_without_release_store() {
+    for working_directory in [".", "nested component"] {
+        assert_real_binary_adapter(working_directory);
+    }
+}
+
+fn assert_real_binary_adapter(working_directory: &str) {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
     run_json(root, &["init", "--json"]);
+    let component_root = root.join(working_directory);
+    fs::create_dir_all(&component_root).unwrap();
 
     let output_name = if cfg!(windows) {
         "component-bin.exe"
@@ -67,7 +75,7 @@ fn generic_release_adapter_check_and_build_are_snapshot_derived_without_release_
         "components": [{
             "id": "component",
             "ecosystem": "rust-fixture",
-            "working_directory": ".",
+            "working_directory": working_directory,
             "dependency_files": ["component.rs"],
             "commands": {
                 "test": [[rustc, "--version"]],
@@ -86,7 +94,7 @@ fn generic_release_adapter_check_and_build_are_snapshot_derived_without_release_
     )
     .unwrap();
     fs::write(
-        root.join("component.rs"),
+        component_root.join("component.rs"),
         "fn main() { println!(\"adapter smoke ok\"); }\n",
     )
     .unwrap();
@@ -155,6 +163,20 @@ fn generic_release_adapter_check_and_build_are_snapshot_derived_without_release_
         2
     );
     assert_eq!(built["metadata"]["build"]["license_material_count"], 2);
+    let commands = built["metadata"]["build"]["components"][0]["commands"]
+        .as_array()
+        .unwrap();
+    let smoke = commands
+        .iter()
+        .find(|command| command["phase"] == "smoke")
+        .unwrap();
+    assert_eq!(smoke["declared_argv"], json!([smoke_path]));
+    assert_eq!(smoke["argv"], json!([smoke_path]));
+    assert_eq!(smoke["status"], "pass");
+    assert!(smoke["output"]
+        .as_str()
+        .unwrap()
+        .contains("adapter smoke ok"));
     for artifact in artifacts {
         assert_eq!(artifact["sha256"].as_str().unwrap().len(), 64);
         assert!(artifact["size_bytes"].as_u64().unwrap() > 0);

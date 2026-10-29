@@ -984,7 +984,28 @@ fn generic_component_working_directory(
             component.id, component.working_directory
         ));
     }
-    Ok(working_directory)
+    Ok(canonical_working)
+}
+
+fn generic_command_program(working_directory: &Path, program: &str) -> PathBuf {
+    let path = Path::new(program);
+    let first = path.components().next();
+    // Rooted/prefixed programs retain their native addressing semantics. Bare
+    // names still use PATH; only component-relative paths need an explicit base.
+    let anchored = matches!(
+        first,
+        Some(std::path::Component::Prefix(_) | std::path::Component::RootDir)
+    );
+    let explicit_relative = program.chars().any(std::path::is_separator)
+        || matches!(
+            first,
+            Some(std::path::Component::CurDir | std::path::Component::ParentDir)
+        );
+    if !anchored && explicit_relative {
+        working_directory.join(path)
+    } else {
+        path.to_path_buf()
+    }
 }
 
 fn resolve_generic_command_argv(
@@ -1050,7 +1071,8 @@ fn run_generic_commands(
                     evidence: evidence.clone(),
                 },
             )?;
-        let mut command = Command::new(&resolved_argv[0]);
+        let program = generic_command_program(&working_directory, &resolved_argv[0]);
+        let mut command = Command::new(program);
         command
             .args(&resolved_argv[1..])
             .current_dir(&working_directory)
@@ -2334,6 +2356,101 @@ pub(super) fn assert_generic_release_artifacts_complete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn component_relative_programs_use_canonical_cwd_without_changing_path_search() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("nested component");
+        fs::create_dir(&cwd).unwrap();
+        let cwd = cwd.canonicalize().unwrap();
+        for program in ["./tool", "bin/tool with spaces", "../tool"] {
+            let resolved = generic_command_program(&cwd, program);
+            assert!(resolved.is_absolute());
+            assert_eq!(resolved, cwd.join(program));
+        }
+        #[cfg(windows)]
+        assert_eq!(
+            generic_command_program(&cwd, r".\component-bin.exe"),
+            cwd.join(r".\component-bin.exe")
+        );
+        for program in ["rustc", "rustc.exe", "tool with spaces"] {
+            assert_eq!(
+                generic_command_program(&cwd, program).as_os_str(),
+                Path::new(program).as_os_str()
+            );
+        }
+        let absolute = std::env::current_exe().unwrap();
+        assert_eq!(
+            generic_command_program(&cwd, absolute.to_str().unwrap()).as_os_str(),
+            absolute.as_os_str()
+        );
+    }
+
+    #[test]
+    fn shared_command_runner_preserves_missing_and_nonzero_failure_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("nested component");
+        fs::create_dir(&cwd).unwrap();
+        let component = GenericReleaseComponent {
+            id: "component".into(),
+            ecosystem: "fixture".into(),
+            working_directory: "nested component".into(),
+            dependency_files: Vec::new(),
+            prepare_commands: Vec::new(),
+            test_commands: Vec::new(),
+            build_commands: Vec::new(),
+            smoke_commands: Vec::new(),
+            artifacts: Vec::new(),
+        };
+        let record = json!({"release_id":"REL-TEST","version":"1.2.3"});
+        let missing = format!(".{}missing program", std::path::MAIN_SEPARATOR);
+        let argv = vec![
+            missing,
+            "$AIT_RELEASE_VERSION".into(),
+            "arg with spaces".into(),
+        ];
+        for phase in ["prepare", "test", "build", "smoke"] {
+            let failure = run_generic_commands(
+                temp.path(),
+                &component,
+                &record,
+                1767225600,
+                phase,
+                std::slice::from_ref(&argv),
+                Vec::new(),
+            )
+            .unwrap_err();
+            assert!(failure.detail.contains("could not start"));
+            assert_eq!(failure.evidence[0]["declared_argv"], json!(argv));
+            assert_eq!(
+                failure.evidence[0]["argv"],
+                json!([argv[0], "1.2.3", "arg with spaces"])
+            );
+            assert!(failure.evidence[0]["exit_code"].is_null());
+        }
+        let argv = vec![
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            "--adapter-intentional-invalid-option".into(),
+        ];
+        let failure = run_generic_commands(
+            temp.path(),
+            &component,
+            &record,
+            1767225600,
+            "smoke",
+            std::slice::from_ref(&argv),
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(failure.detail.contains("failed with exit code"));
+        assert_ne!(failure.evidence[0]["exit_code"].as_i64().unwrap(), 0);
+        assert_eq!(failure.evidence[0]["declared_argv"], json!(argv));
+        assert_eq!(failure.evidence[0]["argv"], json!(argv));
+        assert!(!failure.evidence[0]["output"].as_str().unwrap().is_empty());
+    }
 
     #[test]
     fn core_release_license_is_apache_only_and_locked_dependency_notice_stays_complete() {
