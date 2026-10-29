@@ -1729,6 +1729,13 @@ fn assemble_apt(
         );
     }
     let version = debian_version(&input.version)?;
+    // The 1.2 package contract uses the qualified glibc 2.35 bootstrap baseline.
+    let libc_dependency = if super::family_release::language_cli_bindings_required(&input.version)?
+    {
+        "libc6 (>= 2.35)"
+    } else {
+        "libc6 (>= 2.28)"
+    };
     let suite = if input.release_channel == "rc" {
         "testing"
     } else {
@@ -1821,9 +1828,9 @@ fn assemble_apt(
             };
             let homepage = format!("https://github.com/{}", github_source_identity(input)?);
             let dependencies = if transitional_runner_alias {
-                format!("ait-native (= {version}), libc6 (>= 2.28)")
+                format!("ait-native (= {version}), {libc_dependency}")
             } else {
-                "libc6 (>= 2.28)".to_string()
+                libc_dependency.to_string()
             };
             let runner_ownership_transition =
                 product_includes_runner && distribution.role == "product";
@@ -3089,7 +3096,8 @@ fn validate_npm_envelope(
     entries: &PackageEntries,
     node_materials: &[(FrozenLicenseMaterial, Vec<u8>)],
 ) -> Result<Vec<NpmAddonDefinition>, String> {
-    let expected_paths = BTreeSet::from([
+    let language_cli = super::family_release::language_cli_bindings_required(&input.version)?;
+    let mut expected_paths = BTreeSet::from([
         "package/LICENSE".to_string(),
         "package/NOTICE".to_string(),
         "package/README.md".to_string(),
@@ -3103,6 +3111,12 @@ fn validate_npm_envelope(
         "package/src/index.js".to_string(),
         "package/src/runtime.js".to_string(),
     ]);
+    if language_cli {
+        expected_paths.extend([
+            "package/src/terminal.js".to_string(),
+            "package/src/terminal-help.js".to_string(),
+        ]);
+    }
     if entries.keys().cloned().collect::<BTreeSet<_>>() != expected_paths {
         return Err(
             "Frozen npm envelope inventory differs from the direct Node-API contract.".to_string(),
@@ -3260,7 +3274,7 @@ fn validate_npm_envelope(
         );
     }
 
-    let runtime_paths = [
+    let mut runtime_paths = vec![
         "package/bin/ait.mjs",
         "package/src/agent.js",
         "package/src/contract.js",
@@ -3269,12 +3283,22 @@ fn validate_npm_envelope(
         "package/src/index.js",
         "package/src/runtime.js",
     ];
+    if language_cli {
+        runtime_paths.extend(["package/src/terminal.js", "package/src/terminal-help.js"]);
+    }
     let mut runtime_text = String::new();
+    let mut runtime_members = BTreeMap::new();
     for path in runtime_paths {
         let text = std::str::from_utf8(&entries[path].0)
             .map_err(|_| format!("Frozen npm runtime member {path:?} must be UTF-8."))?;
         runtime_text.push_str(text);
         runtime_text.push('\n');
+        runtime_members.insert(
+            path,
+            text.split_whitespace()
+                .collect::<String>()
+                .to_ascii_lowercase(),
+        );
     }
     let runtime = runtime_text.to_ascii_lowercase();
     for forbidden in [
@@ -3308,19 +3332,58 @@ fn validate_npm_envelope(
             ));
         }
     }
+    let compact_runtime = runtime.split_whitespace().collect::<String>();
     for required in [
         "native/ait_napi.node",
         "require(addonpath)",
-        "new nativeruntime().runcli",
-        "export { nativeruntime",
         "agentclient",
-        "interface nativeaddon",
-        "runcli(args: string[]): number",
+        "interfacenativeaddon",
     ] {
-        if !runtime.contains(required) {
+        if !compact_runtime.contains(required) {
             return Err(format!(
                 "Frozen npm runtime lacks required direct Node-API marker {required:?}."
             ));
+        }
+    }
+    let exports_runtime = runtime_members["package/src/index.js"]
+        .split("export{")
+        .skip(1)
+        .filter_map(|export| export.split_once("}from"))
+        .any(|(names, module)| {
+            names.split(',').any(|name| name == "nativeruntime")
+                && ["'./runtime.js'", "\"./runtime.js\""]
+                    .iter()
+                    .any(|expected| module.starts_with(expected))
+        });
+    if !exports_runtime {
+        return Err(
+            "Frozen npm root API must re-export NativeRuntime from runtime.js.".to_string(),
+        );
+    }
+    if language_cli {
+        let required_members: &[(&str, &[&str])] = &[
+            (
+                "package/bin/ait.mjs",
+                &["newnativeruntime()", "runterminal(process.argv.slice(2),"],
+            ),
+            ("package/src/runtime.js", &["exportclassnativeruntime"]),
+            ("package/src/index.d.ts", &["exportclassnativeruntime"]),
+            ("package/src/terminal.js", &["exportfunctionrunterminal("]),
+        ];
+        for &(path, markers) in required_members {
+            for &marker in markers {
+                if !runtime_members[path].contains(marker) {
+                    return Err(format!("Frozen npm language frontend {path:?} lacks required direct Node-API marker {marker:?}."));
+                }
+            }
+        }
+    } else {
+        for required in ["newnativeruntime().runcli", "runcli(args:string[]):number"] {
+            if !compact_runtime.contains(required) {
+                return Err(format!(
+                    "Frozen npm runtime lacks required direct Node-API marker {required:?}."
+                ));
+            }
         }
     }
     Ok(addons)
@@ -4239,6 +4302,231 @@ mod tests {
                 ),
             ),
         ])
+    }
+
+    fn npm_language_validation_fixture() -> (FamilyPackageInput, PackageEntries) {
+        let mut input = npm_validation_input();
+        input.version = "1.2.0".to_string();
+        input.release_channel = "stable".to_string();
+        input.tag = "v1.2.0".to_string();
+        for component in input.components.values_mut() {
+            component.version.clone_from(&input.version);
+        }
+        let mut entries = npm_validation_entries();
+        for path in [
+            "package/package.json",
+            "package/lib/npm-payload-contract.json",
+            "package/README.md",
+        ] {
+            let bytes = &mut entries.get_mut(path).unwrap().0;
+            *bytes = String::from_utf8(bytes.clone())
+                .unwrap()
+                .replace("1.0.0-rc.2", "1.2.0")
+                .into_bytes();
+        }
+        for (path, text) in [
+            ("package/bin/ait.mjs", "import { NativeRuntime } from '../src/index.js';\nimport { runTerminal } from '../src/terminal.js';\nconst runtime = new NativeRuntime();\nprocess.exitCode = runTerminal(process.argv.slice(2), { runtime });\n"),
+            ("package/src/index.js", "export {\n  requiredAddonExports,\n  NativeRuntime,\n} from \"./runtime.js\";\n"),
+            ("package/src/runtime.js", "const addonPath = 'native/ait_napi.node';\nconst addon = require(addonPath);\nexport class NativeRuntime {\n  resolveCallable(name) { return addon[name]; }\n  version() { return this.resolveCallable('version')(); }\n}\n"),
+            ("package/src/index.d.ts", "export interface NativeAddon { version(): string; }\nexport class NativeRuntime {\n  version(): string;\n  resolveCallable(name: keyof NativeAddon | string): (...args: unknown[]) => unknown;\n}\n"),
+            ("package/src/terminal.js", "export function runTerminal(args, { runtime }) {\n  if (args[0] === '--version') process.stdout.write(runtime.version());\n  return 0;\n}\n"),
+            ("package/src/terminal-help.js", "export function terminalHelp() { return 'Usage: ait'; }\n"),
+        ] {
+            let mode = if path == "package/bin/ait.mjs" { 0o755 } else { 0o644 };
+            entries.insert(path.to_string(), (text.as_bytes().to_vec(), mode));
+        }
+        (input, entries)
+    }
+
+    #[test]
+    fn npm_language_envelope_requires_exact_inventory_and_scans_terminal_members() {
+        let (input, entries) = npm_language_validation_fixture();
+        let materials = npm_validation_materials();
+        assert_npm_language_inventory_controls(&input, &entries, &materials);
+    }
+
+    fn assert_npm_language_inventory_controls(
+        input: &FamilyPackageInput,
+        entries: &PackageEntries,
+        materials: &[(FrozenLicenseMaterial, Vec<u8>)],
+    ) {
+        assert_eq!(entries.len(), 14);
+        assert_eq!(
+            validate_npm_envelope(input, entries, materials)
+                .unwrap()
+                .len(),
+            6
+        );
+        for path in ["package/src/terminal.js", "package/src/terminal-help.js"] {
+            let mut missing = entries.clone();
+            missing.remove(path);
+            assert!(validate_npm_envelope(input, &missing, materials)
+                .unwrap_err()
+                .contains("inventory differs"));
+            for marker in ["node:child_process", "https://example.invalid/addon"] {
+                let mut forbidden = entries.clone();
+                forbidden
+                    .get_mut(path)
+                    .unwrap()
+                    .0
+                    .extend_from_slice(format!("\n// {marker}\n").as_bytes());
+                assert!(validate_npm_envelope(input, &forbidden, materials)
+                    .unwrap_err()
+                    .contains("forbidden subprocess, download, build, or project-detection"));
+            }
+            let mut invalid_utf8 = entries.clone();
+            invalid_utf8.get_mut(path).unwrap().0.push(0xff);
+            assert!(validate_npm_envelope(input, &invalid_utf8, materials)
+                .unwrap_err()
+                .contains("must be UTF-8"));
+        }
+        for path in [
+            "package/src/unknown.js",
+            "package/bin/ait",
+            "package/bin/ait.exe",
+        ] {
+            let mut surplus = entries.clone();
+            surplus.insert(path.to_string(), (b"unexpected".to_vec(), 0o755));
+            assert!(validate_npm_envelope(input, &surplus, materials)
+                .unwrap_err()
+                .contains("inventory differs"));
+        }
+        let mut wrong_license = entries.clone();
+        wrong_license
+            .get_mut("package/LICENSE")
+            .unwrap()
+            .0
+            .push(b'!');
+        assert!(validate_npm_envelope(input, &wrong_license, materials)
+            .unwrap_err()
+            .contains("exact ait-node license bytes"));
+    }
+
+    #[test]
+    fn npm_language_envelope_requires_named_runtime_and_direct_frontend_shape() {
+        let (input, entries) = npm_language_validation_fixture();
+        let materials = npm_validation_materials();
+        assert_npm_language_frontend_controls(&input, &entries, &materials);
+    }
+
+    fn assert_npm_language_frontend_controls(
+        input: &FamilyPackageInput,
+        entries: &PackageEntries,
+        materials: &[(FrozenLicenseMaterial, Vec<u8>)],
+    ) {
+        for (path, original, replacement, expected) in [
+            (
+                "package/src/index.js",
+                "NativeRuntime,",
+                "OtherRuntime,",
+                "root API must re-export",
+            ),
+            (
+                "package/src/index.js",
+                "./runtime.js",
+                "./errors.js",
+                "root API must re-export",
+            ),
+            (
+                "package/bin/ait.mjs",
+                "runTerminal(process.argv",
+                "runCli(process.argv",
+                "language frontend",
+            ),
+            (
+                "package/src/runtime.js",
+                "class NativeRuntime",
+                "class OtherRuntime",
+                "language frontend",
+            ),
+            (
+                "package/src/index.d.ts",
+                "class NativeRuntime",
+                "class OtherRuntime",
+                "language frontend",
+            ),
+            (
+                "package/src/terminal.js",
+                "function runTerminal",
+                "function runCli",
+                "language frontend",
+            ),
+        ] {
+            let mut invalid = entries.clone();
+            let bytes = &mut invalid.get_mut(path).unwrap().0;
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            assert!(text.contains(original));
+            *bytes = text.replace(original, replacement).into_bytes();
+            assert!(validate_npm_envelope(input, &invalid, materials)
+                .unwrap_err()
+                .contains(expected));
+        }
+        let mut wrong_version = entries.clone();
+        let mut package: JsonValue =
+            serde_json::from_slice(&wrong_version["package/package.json"].0).unwrap();
+        package["version"] = json!("1.2.1");
+        wrong_version.get_mut("package/package.json").unwrap().0 =
+            serde_json::to_vec(&package).unwrap();
+        assert!(validate_npm_envelope(input, &wrong_version, materials)
+            .unwrap_err()
+            .contains("one portable direct Node-API product"));
+        let mut wrong_authority = entries.clone();
+        let mut contract: JsonValue =
+            serde_json::from_slice(&wrong_authority["package/lib/npm-payload-contract.json"].0)
+                .unwrap();
+        contract["payloads"][0]["binding_snapshot"] = json!("SNP-FFFFFFFFFFFF");
+        wrong_authority
+            .get_mut("package/lib/npm-payload-contract.json")
+            .unwrap()
+            .0 = serde_json::to_vec(&contract).unwrap();
+        assert!(validate_npm_envelope(input, &wrong_authority, materials)
+            .unwrap_err()
+            .contains("family binding/target mapping"));
+    }
+
+    #[test]
+    #[ignore = "requires AIT_FAMILY_TEST_ROOT, AIT_FAMILY_TEST_RELEASE_ID and AIT_FAMILY_TEST_PUBLIC_SOURCE from the selected artifact freeze"]
+    fn npm_language_envelope_validates_selected_artifact_and_controls() {
+        let root = PathBuf::from(
+            std::env::var_os("AIT_FAMILY_TEST_ROOT").expect("selected frozen family workspace"),
+        );
+        let repo = RepoRuntime::discover_from_path(&root).unwrap();
+        let release_id =
+            std::env::var("AIT_FAMILY_TEST_RELEASE_ID").expect("selected frozen family release");
+        let public_source = PathBuf::from(
+            std::env::var_os("AIT_FAMILY_TEST_PUBLIC_SOURCE")
+                .expect("selected public source authority"),
+        );
+        let input =
+            parse_family_package_input(&repo, &release_id, "npm", Some(&public_source)).unwrap();
+        let envelope =
+            portable_component_artifact(&input, "ait-node", "npm-napi-envelope").unwrap();
+        let bytes = read_frozen_bytes(
+            &repo,
+            &envelope.path,
+            envelope.size_bytes,
+            &envelope.sha256,
+            "Selected frozen npm envelope",
+        )
+        .unwrap();
+        let entries = read_npm_envelope_entries(&bytes).unwrap();
+        let materials = material_for_components(&input, &["ait-node".to_string()])
+            .unwrap()
+            .into_iter()
+            .map(|material| {
+                let bytes = read_frozen_bytes(
+                    &repo,
+                    &material.path,
+                    material.size_bytes,
+                    &material.sha256,
+                    "Selected frozen npm legal material",
+                )
+                .unwrap();
+                (material, bytes)
+            })
+            .collect::<Vec<_>>();
+        assert_npm_language_inventory_controls(&input, &entries, &materials);
+        assert_npm_language_frontend_controls(&input, &entries, &materials);
     }
 
     #[test]

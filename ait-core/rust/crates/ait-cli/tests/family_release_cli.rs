@@ -2421,6 +2421,100 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
 }
 
 #[test]
+#[ignore = "requires AIT_FAMILY_TEST_ROOT, AIT_FAMILY_TEST_RELEASE_ID and AIT_FAMILY_TEST_PUBLIC_SOURCE from the selected artifact freeze"]
+fn selected_family_apt_metadata_matches_native_platform_floor() {
+    let root = std::path::PathBuf::from(
+        std::env::var_os("AIT_FAMILY_TEST_ROOT").expect("selected frozen family workspace"),
+    );
+    let release_id =
+        std::env::var("AIT_FAMILY_TEST_RELEASE_ID").expect("selected frozen family release");
+    let public_source = std::path::PathBuf::from(
+        std::env::var_os("AIT_FAMILY_TEST_PUBLIC_SOURCE")
+            .expect("selected public source authority"),
+    );
+    let matrix: Value = serde_json::from_slice(
+        &fs::read(public_source.join("ci/native_bootstrap_matrix.json")).unwrap(),
+    )
+    .unwrap();
+    let floors = matrix["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|target| target["minimum_platform_kind"] == "glibc")
+        .map(|target| {
+            (
+                target["target"].as_str().unwrap(),
+                target["minimum_platform"].as_str().unwrap(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(floors.len(), 2);
+    let package = run_json(
+        &root,
+        &[
+            "release",
+            "package",
+            &release_id,
+            "--channel",
+            "apt",
+            "--public-source-root",
+            public_source.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(package["version"], matrix["version"]);
+    let rows = package["artifacts"].as_array().unwrap();
+    assert_eq!(rows.len(), 4);
+    let mut coverage = BTreeMap::<&str, BTreeMap<&str, bool>>::new();
+    for row in rows {
+        let target = row["target"].as_str().unwrap();
+        let identity = row["distribution_identity"].as_str().unwrap();
+        assert_eq!(row["kind"], "debian-package");
+        let members = ar_members(&fs::read(root.join(row["path"].as_str().unwrap())).unwrap());
+        let control = tar_gz_members(&members["control.tar.gz"]);
+        let control = std::str::from_utf8(&control["control"]).unwrap();
+        let dependencies = control
+            .lines()
+            .find_map(|line| line.strip_prefix("Depends: "))
+            .unwrap();
+        assert!(
+            dependencies.contains(&format!("libc6 (>= {})", floors[target])),
+            "{identity}/{target}: {dependencies}"
+        );
+        let data = tar_gz_members(&members["data.tar.gz"]);
+        match identity {
+            "ait-native" => {
+                for command in ["ait", "ait-server", "ait-runner"] {
+                    assert!(data.contains_key(&format!("usr/bin/{command}")));
+                }
+                assert!(control.contains("Breaks: ait-runner"));
+                assert!(control.contains("Replaces: ait-runner"));
+            }
+            "ait-runner" => {
+                assert!(dependencies.contains(&format!(
+                    "ait-native (= {})",
+                    package["version"].as_str().unwrap()
+                )));
+                assert!(!data.keys().any(|path| path.starts_with("usr/bin/")));
+                assert!(!control.contains("Breaks: ait-runner"));
+                assert!(!control.contains("Replaces: ait-runner"));
+            }
+            _ => panic!("unexpected APT package identity {identity:?}"),
+        }
+        assert!(coverage
+            .entry(target)
+            .or_default()
+            .insert(identity, true)
+            .is_none());
+    }
+    assert_eq!(
+        coverage.keys().copied().collect::<Vec<_>>(),
+        floors.keys().copied().collect::<Vec<_>>()
+    );
+    assert!(coverage.values().all(|packages| packages.len() == 2));
+}
+
+#[test]
 fn release_help_exposes_product_lifecycle_and_hides_internal_adapter() {
     let temp = TempDir::new().unwrap();
     let output = run(temp.path(), &["release", "--help"]);
