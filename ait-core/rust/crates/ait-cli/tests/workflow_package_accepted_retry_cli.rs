@@ -16,6 +16,11 @@ use std::process::Output;
 mod routed_resume;
 
 #[test]
+fn concurrent_config_publication_preserves_cli_and_sdk_admission_identity() {
+    routed_resume::config_publication_preserves_admission_identity();
+}
+
+#[test]
 fn fixture_phase_live_output_probe() {
     // This subprocess probe is armed only by Native's capture-contract driver.
     // A routine unarmed test run emits no marker and cannot qualify that proof.

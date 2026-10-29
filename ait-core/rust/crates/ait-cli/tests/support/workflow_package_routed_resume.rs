@@ -10,6 +10,110 @@ use std::time::Duration;
 
 struct ChildProcess(Option<Child>);
 
+pub fn config_publication_preserves_admission_identity() {
+    use ait_cli::runtime::RepoRuntime;
+    use ait_core::binary_db_generation::admit_activated_binary_db_generation_for_runtime;
+    use ait_core::repo_state_json::RootConfigLease;
+    use ait_core::task_store::TaskStore;
+    use std::io::{Seek, Write};
+    use std::sync::mpsc;
+
+    let fixture = Fixture::new();
+    let (task, _edit) = fixture.start("config-publication-identity");
+    let expected_task = fixture.task(&task);
+    let before = RepoRuntime::discover_from_path(&fixture.root).unwrap();
+    let expected_name = before.repo_name();
+    let expected_namespace = before.id_namespace_prefix();
+    let path = fixture.root.join(".ait/config.json");
+    let mut config: JsonValue = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["workflow_ready_poll_seconds"] = json!(43);
+    let complete = serde_json::to_vec_pretty(&config).unwrap();
+    let (held_tx, held_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (cli_tx, cli_rx) = mpsc::channel();
+    let (sdk_tx, sdk_rx) = mpsc::channel();
+    let readers_started = std::sync::Barrier::new(3);
+    std::thread::scope(|scope| {
+        let path = &path;
+        let writer = scope.spawn(move || {
+            let lease = RootConfigLease::try_acquire(path, true, true).unwrap();
+            // Hold the actual empty-file interval until both admission paths
+            // are running. Neither may observe EOF or a default owner.
+            lease.with_file(|file| file.set_len(0)).unwrap();
+            held_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            lease
+                .with_file(|file| {
+                    file.rewind()?;
+                    file.write_all(&complete)?;
+                    file.set_len(complete.len() as u64)?;
+                    file.flush()
+                })
+                .unwrap();
+        });
+        held_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let root = &fixture.root;
+        let task = &task;
+        let readers_started = &readers_started;
+        let cli_reader = scope.spawn(move || {
+            readers_started.wait();
+            let result = (|| -> Result<_, String> {
+                let repo = RepoRuntime::discover_from_path(root)?;
+                let task = TaskStore::get_task(&repo.task_store()?, task)
+                    .map_err(|error| error.to_string())?;
+                Ok((
+                    repo.repo_name(),
+                    repo.id_namespace_prefix(),
+                    task,
+                    repo.config["workflow_ready_poll_seconds"].clone(),
+                ))
+            })();
+            cli_tx.send(result).unwrap();
+        });
+        let expected_name = &expected_name;
+        let sdk_reader = scope.spawn(move || {
+            readers_started.wait();
+            let result = admit_activated_binary_db_generation_for_runtime(
+                root,
+                &root.join(".ait/binary-db"),
+                expected_name,
+            )
+            .map(|_| ());
+            sdk_tx.send(result).unwrap();
+        });
+        readers_started.wait();
+        for pending in [
+            cli_rx.recv_timeout(Duration::from_millis(50)).map(|_| ()),
+            sdk_rx.recv_timeout(Duration::from_millis(50)).map(|_| ()),
+        ] {
+            assert!(
+                matches!(pending, Err(mpsc::RecvTimeoutError::Timeout)),
+                "admission completed inside an unpublished empty-config interval"
+            );
+        }
+        release_tx.send(()).unwrap();
+        writer.join().unwrap();
+        let (name, namespace, actual_task, hint) = cli_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        sdk_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        cli_reader.join().unwrap();
+        sdk_reader.join().unwrap();
+        assert_eq!(&name, expected_name);
+        assert_eq!(namespace, expected_namespace);
+        assert_eq!(actual_task, expected_task);
+        assert_eq!(hint, 43);
+    });
+    assert_eq!(
+        serde_json::from_slice::<JsonValue>(&fs::read(&path).unwrap()).unwrap(),
+        config
+    );
+}
+
 impl ChildProcess {
     fn output(mut self) -> Output {
         self.0.take().unwrap().wait_with_output().unwrap()

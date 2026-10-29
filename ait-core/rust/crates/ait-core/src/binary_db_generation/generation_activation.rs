@@ -606,6 +606,13 @@ pub fn admit_activated_binary_db_generation_for_runtime(
     std::sync::Arc<std::sync::Mutex<BinaryDbReadLockSet>>,
 )> {
     let _range = perfetto_range!("ait.database.admission.complete");
+    let config_path = repo_root.join(".ait/config.json");
+    // Take config before metadata locks. Cleanup can own an exclusive config
+    // lease while retiring metadata; a reader must not hold metadata waiting
+    // for that writer. Keep this guard only through admission, never runtime
+    // waits or later configuration mutation.
+    let _configuration = crate::repo_state_json::RootConfigLease::read(&config_path)
+        .map_err(|error| format!("failed to read {}: {error}", config_path.display()))?;
     super::local_land_upgrade::admit_local_receipt_upgrade(
         repo_root,
         authority,
@@ -1415,7 +1422,7 @@ fn validate_lock_directory(lock_root: &Path) -> GenerationResult<()> {
 pub(crate) fn configured_repo_name(repo_root: &Path) -> GenerationResult<String> {
     let config_path = repo_root.join(".ait/config.json");
     let value: serde_json::Value = serde_json::from_slice(
-        &fs::read(&config_path)
+        &crate::repo_state_json::read_root_config_bytes(&config_path)
             .map_err(|error| format!("failed to read {}: {error}", config_path.display()))?,
     )
     .map_err(|error| format!("failed to parse {}: {error}", config_path.display()))?;

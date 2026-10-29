@@ -10,6 +10,7 @@ use crate::post_finish_hooks::{
 use crate::runtime::RepoRuntime;
 use crate::task_worktree_layout::config_task_worktree_summary;
 use ait_core::json_support::{json, JsonMap, JsonValue};
+use ait_core::repo_state_json::{read_root_config_bytes, RootConfigLease};
 use ait_core::server_operational::ServerRepositoryAuthorityConfig;
 use std::env;
 use std::fs;
@@ -979,7 +980,10 @@ fn option_i64_field(object: &JsonMap<String, JsonValue>, key: &str) -> Result<Op
 }
 
 fn read_json_object(path: &Path) -> JsonMap<String, JsonValue> {
-    let Ok(content) = fs::read_to_string(path) else {
+    let Ok(content) = read_root_config_bytes(path).and_then(|bytes| {
+        String::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    }) else {
         return JsonMap::new();
     };
     parse_object_or_empty(&content)
@@ -996,50 +1000,93 @@ fn write_json_pretty(file: &mut fs::File, payload: &JsonValue) -> Result<(), Str
 }
 
 /// Coordinate config writes with team provisioning without touching Agent storage.
-/// Provisioning uses an exclusive lease; cleanup can hold a shared lease.
+/// Provisioning uses an exclusive lease; read-only cleanup can hold a shared lease.
 /// Mutations also require exclusive access and preserve this inode.
-pub(crate) fn lock_root_config(repo: &RepoRuntime, exclusive: bool) -> Result<fs::File, String> {
-    let file = fs::File::open(repo.authoritative_repo_root().join(".ait/config.json"))
-        .map_err(|e| e.to_string())?;
-    lock_config_file(&file, exclusive)?;
-    Ok(file)
+pub(crate) fn lock_root_config(
+    repo: &RepoRuntime,
+    exclusive: bool,
+) -> Result<RootConfigLease, String> {
+    RootConfigLease::try_acquire(
+        &repo.authoritative_repo_root().join(".ait/config.json"),
+        exclusive,
+        false,
+    )
 }
 
-fn lock_config_file(file: &fs::File, exclusive: bool) -> Result<(), String> {
-    let result = if exclusive {
-        fs2::FileExt::try_lock_exclusive(file)
-    } else {
-        fs2::FileExt::try_lock_shared(file)
-    };
-    result.map_err(|_| {
-        "operation_busy: Repository configuration is in use; retry after preparation completes"
-            .to_string()
-    })
+/// An explicit exclusive writer capability for an operation that must keep
+/// provisioning excluded before publishing its final configuration update.
+/// Ordinary nested mutation still acquires its own lease and returns Busy.
+pub(crate) struct RootConfigMutation(RootConfigLease);
+
+pub(crate) fn begin_root_config_mutation(repo: &RepoRuntime) -> Result<RootConfigMutation, String> {
+    RootConfigLease::try_acquire(
+        &repo.authoritative_repo_root().join(".ait/config.json"),
+        true,
+        true,
+    )
+    .map(RootConfigMutation)
+}
+
+impl RootConfigMutation {
+    pub(crate) fn update(
+        &mut self,
+        updater: impl FnOnce(&mut JsonMap<String, JsonValue>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        update_root_config_on_lease(&self.0, true, updater)
+    }
 }
 
 fn update_root_config(
     repo: &RepoRuntime,
     updater: impl FnOnce(&mut JsonMap<String, JsonValue>) -> Result<(), String>,
 ) -> Result<(), String> {
-    let config_path = repo
-        .authoritative_repo_root()
-        .join(".ait")
-        .join("config.json");
-    let mut file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&config_path)
-        .map_err(|err| err.to_string())?;
-    lock_config_file(&file, true)?;
+    update_root_config_with_parser(repo, false, updater)
+}
+
+pub(crate) fn update_root_config_strict(
+    repo: &RepoRuntime,
+    updater: impl FnOnce(&mut JsonMap<String, JsonValue>) -> Result<(), String>,
+) -> Result<(), String> {
+    let lease = RootConfigLease::acquire_mutation(
+        &repo.authoritative_repo_root().join(".ait/config.json"),
+    )?;
+    update_root_config_on_lease(&lease, true, updater)
+}
+
+fn update_root_config_with_parser(
+    repo: &RepoRuntime,
+    strict: bool,
+    updater: impl FnOnce(&mut JsonMap<String, JsonValue>) -> Result<(), String>,
+) -> Result<(), String> {
+    let mutation = begin_root_config_mutation(repo)?;
+    update_root_config_on_lease(&mutation.0, strict, updater)
+}
+
+fn update_root_config_on_lease(
+    lease: &RootConfigLease,
+    strict: bool,
+    updater: impl FnOnce(&mut JsonMap<String, JsonValue>) -> Result<(), String>,
+) -> Result<(), String> {
     // Windows byte-range locks apply to other handles in this process too.
     // Keep both the read and rewrite on the exclusive lock's owning handle.
-    let mut content = String::new();
-    file.read_to_string(&mut content)
-        .map_err(|err| err.to_string())?;
-    let mut config = parse_object_or_empty(&content);
+    let content = lease.with_file(|file| {
+        file.rewind().map_err(|err| err.to_string())?;
+        let mut content = String::new();
+        file.read_to_string(&mut content)
+            .map_err(|err| err.to_string())?;
+        Ok::<_, String>(content)
+    })?;
+    let mut config = if strict {
+        parse_value(&content, "repository config")?
+            .as_object()
+            .cloned()
+            .ok_or("Repository config must be a JSON object")?
+    } else {
+        parse_object_or_empty(&content)
+    };
     updater(&mut config)?;
     PlanPreferences::from_config(&config)?;
-    write_json_pretty(&mut file, &JsonValue::Object(config))
+    lease.with_file(|file| write_json_pretty(file, &JsonValue::Object(config)))
 }
 
 #[cfg(test)]

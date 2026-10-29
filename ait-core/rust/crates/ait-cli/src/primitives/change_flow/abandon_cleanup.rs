@@ -345,8 +345,9 @@ impl PreparedCleanup {
             return Err(reason);
         }
         self.guard_pending_finish(root)?;
-        let _configuration = crate::config_surface::lock_root_config(root, false)?;
-        let removed = remove_one_worktree_after_task_abandon(root, &captured.name)?;
+        let mut configuration = crate::config_surface::begin_root_config_mutation(root)?;
+        let removed =
+            remove_one_worktree_after_task_abandon(root, &captured.name, &mut configuration)?;
         Ok(json!({"status":"removed","task_id":self.task_id,"worktree":removed}))
     }
 }

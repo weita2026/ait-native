@@ -822,13 +822,16 @@ pub(in crate::primitives) fn remove_one_worktree_after_authoritative_task_land(
 pub(in crate::primitives) fn remove_one_worktree_after_task_abandon(
     repo: &RepoRuntime,
     name: &str,
+    configuration: &mut crate::config_surface::RootConfigMutation,
 ) -> Result<JsonValue, String> {
-    remove_one_worktree_with_policy(
+    remove_one_worktree_with_policy_observed(
         repo,
         name,
         true,
         true,
         WorktreeRemovalWorkspaceStatusPolicy::SkipForAbandonedTask,
+        configuration,
+        |_| {},
     )
 }
 
@@ -1049,12 +1052,14 @@ fn remove_one_worktree_with_policy(
     force: bool,
     workspace_status_policy: WorktreeRemovalWorkspaceStatusPolicy,
 ) -> Result<JsonValue, String> {
+    let mut configuration = crate::config_surface::begin_root_config_mutation(repo)?;
     remove_one_worktree_with_policy_observed(
         repo,
         name,
         delete_path,
         force,
         workspace_status_policy,
+        &mut configuration,
         |_| {},
     )
 }
@@ -1065,6 +1070,7 @@ fn remove_one_worktree_with_policy_observed(
     delete_path: bool,
     force: bool,
     workspace_status_policy: WorktreeRemovalWorkspaceStatusPolicy,
+    configuration: &mut crate::config_surface::RootConfigMutation,
     mut observe_retirement: impl FnMut(bool),
 ) -> Result<JsonValue, String> {
     let removal =
@@ -1148,13 +1154,17 @@ fn remove_one_worktree_with_policy_observed(
             remove_path_entry(alias_path)?;
         }
     }
-    let clear_root_binding = || {
-        update_root_config(repo, |config| {
+    let mut clear_root_binding = || {
+        let clear = |config: &mut JsonMap<String, JsonValue>| {
             if config.get("worktree_name").and_then(JsonValue::as_str)
                 == Some(worktree_name.as_str())
             {
                 config.remove("worktree_name");
             }
+        };
+        configuration.update(|config| {
+            clear(config);
+            Ok(())
         })
     };
     if abandoned {
@@ -1467,12 +1477,16 @@ mod tests {
             .clone();
             let mut admission = None;
             let mut observations = 0;
+            let config_path = root.join(".ait/config.json");
+            let mut configuration = crate::config_surface::begin_root_config_mutation(&repo)
+                .expect("own config before metadata retirement");
             let removal = remove_one_worktree_with_policy_observed(
                 &repo,
                 name,
                 true,
                 true,
                 policy,
+                &mut configuration,
                 |retired| {
                     observations += 1;
                     let probe = fs::File::open(&lock_path).expect("open metadata lock");
@@ -1483,6 +1497,9 @@ mod tests {
                     );
                     assert_eq!(worktree_registry_path(&repo, name).exists(), !retired);
                     assert_eq!(worktree.join(".ait-worktree/cursor.bin").exists(), !retired);
+                    let contender = fs::File::open(&config_path).expect("open config contender");
+                    assert!(FileExt::try_lock_shared(&contender).is_err());
+                    assert!(FileExt::try_lock_exclusive(&contender).is_err());
                     if !retired {
                         assert!(worktree.join(WORKTREE_CONFIG_NAME).exists());
                         let (started, entering) = mpsc::sync_channel(0);
@@ -1504,6 +1521,7 @@ mod tests {
             assert_eq!(observations, 2);
             assert_eq!(removal["removed"], json!(true));
             assert!(!worktree.exists());
+            drop(configuration);
             admission
                 .unwrap()
                 .join()

@@ -326,8 +326,8 @@ class Recorder {
       exit_status: status,
       stdout_sha256: sha256Bytes(stdout),
       stderr_sha256: sha256Bytes(stderr),
-      stdout_tail: tail(stdout),
-      stderr_tail: tail(stderr),
+      stdout_tail: tail(stdout, options.captureLimit ?? 4096),
+      stderr_tail: tail(stderr, options.captureLimit ?? 4096),
     });
     const allowed = options.allowed ?? [0];
     if (options.recordOnly !== true && !allowed.includes(status)) {
@@ -702,7 +702,48 @@ function initializePriorState(recorder, aitSpec, root, priorVersion) {
   };
 }
 
-function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fixture = null) {
+function firstTaskFinish(recorder, aitSpec, args, options, currentTaskContract) {
+  if (!currentTaskContract) return jsonSpec(recorder, aitSpec, args, options);
+  // Keep the existing full native diagnostics in the command log. The compact
+  // view below is internal; the phase evidence continues to use its old fields.
+  const result = runSpec(recorder, aitSpec, [...args, "--full"], {
+    ...options, allowed: [0, 2], captureLimit: 128 * 1024,
+  });
+  let payload;
+  try { payload = JSON.parse(result.stdout); }
+  catch { fail(`${options.label} did not emit one JSON document`); }
+  if (payload.task_land_contract?.version !== "task-land-plan-closeout/v1" ||
+      payload.task_land_contract?.scope !== "local") {
+    fail("candidate first Task finish did not emit the selected full local contract");
+  }
+  if (!(options.allowed ?? [0]).includes(result.status) ||
+      (result.status === 2 && payload.closeout_status !== "partial")) {
+    const fields = ["local_line_sync", "main_seed_sync", "repo_root_restore",
+      "bound_worktree_cleanup", "bound_line_closeout", "plan_checklist_closeout",
+      "plan_markdown_materialization", "post_finish_hooks"];
+    const diagnostics = Object.fromEntries(fields.filter(key => payload[key] !== undefined)
+      .map(key => [key, payload[key]]));
+    fail(`${options.label} failed with ${result.status}: ${JSON.stringify(diagnostics)}`);
+  }
+  const components = { worktree_status: "bound_worktree_cleanup", line_status: "bound_line_closeout",
+    plan_status: "plan_checklist_closeout", plan_markdown_status: "plan_markdown_materialization" };
+  const closeout = { status: payload.closeout_status, task_status: payload.task_status,
+    change_status: payload.change_status };
+  const issues = {};
+  for (const [status, key] of Object.entries(components)) {
+    const component = payload[key];
+    closeout[status] = component?.status ?? null;
+    if (["failed", "blocked", "partial", "deferred"].includes(component?.status)) {
+      issues[key] = Object.fromEntries(["reason", "error", "detail", "path"]
+        .filter(field => component[field] != null).map(field => [field, component[field]]));
+    }
+  }
+  if (Object.keys(issues).length) closeout.issues = issues;
+  return { ...payload, closeout, next_action: payload.closeout_recovery ?? null };
+}
+
+function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fixture = null, version = null) {
+  const currentTaskContract = version !== null && requiresLanguageCli(version);
   if (!existsSync(root)) {
     mkdirSync(root, { recursive: false, mode: 0o755 });
   }
@@ -797,7 +838,7 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fix
   }
   const landedFile = path.join(worktree, "first-land.txt");
   writeFileSync(landedFile, expectedText, { encoding: "utf8", mode: 0o644 });
-  let landed = jsonSpec(
+  let landed = firstTaskFinish(
     recorder,
     aitSpec,
     [
@@ -810,19 +851,47 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fix
       "--json",
     ],
     { cwd: worktree, label: "candidate task finish", allowed: [0, 2] },
+    currentTaskContract,
   );
+  if (currentTaskContract && landed.closeout?.change_status !== null) {
+    fail("initial candidate Task finish unexpectedly reported a Change");
+  }
+  if (currentTaskContract && landed.task_id !== taskId) {
+    fail("initial candidate Task finish changed Task authority");
+  }
+  const acceptedSnapshot = landed.landed_snapshot_id;
+  const acceptedTarget = landed.target_line;
   const snapshot = jsonSpec(
     recorder,
     aitSpec,
     ["snapshot", "show", landed.landed_snapshot_id, "--json"],
     { cwd: root, label: "candidate integrated Snapshot show" },
   );
-  if (!/^SNP-[0-9A-F]{12}$/.test(snapshot.snapshot_id ?? "")) {
+  if (!/^SNP-[0-9A-F]{12}$/.test(snapshot.snapshot_id ?? "") ||
+      snapshot.snapshot_id !== acceptedSnapshot) {
     fail("candidate Snapshot identity is invalid");
   }
   if (snapshot.parent_snapshot_id !== baselineId) {
     fail("clean-host first Task Snapshot did not descend from the Task-start project baseline");
   }
+  const resumeCloseout = () => {
+    const resumed = firstTaskFinish(
+      recorder,
+      aitSpec,
+      ["task", "finish", taskId, "--local", "--json"],
+      { cwd: root, label: "candidate task finish closeout resume" },
+      currentTaskContract,
+    );
+    if (currentTaskContract && (
+      resumed.task_id !== taskId ||
+      resumed.landed_snapshot_id !== acceptedSnapshot ||
+      resumed.target_line !== acceptedTarget ||
+      resumed.closeout?.change_status !== null
+    )) {
+      fail("initial Task closeout recovery changed authority");
+    }
+    return resumed;
+  };
   let partialCloseoutHandled = false;
   let windowsPartialCloseoutVerified = false;
   if (
@@ -840,10 +909,14 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fix
     }
     if (process.platform === "win32") {
       if (
-        landed.closeout?.change_status !== "landed" ||
+        landed.closeout?.change_status !== (currentTaskContract ? null : "landed") ||
         landed.closeout?.plan_status !== "synced" ||
         landed.closeout?.line_status !== "failed" ||
-        landed.closeout?.worktree_status !== "failed"
+        landed.closeout?.worktree_status !== "failed" ||
+        (currentTaskContract && (
+          !/\bos error 32\b/.test(landed.closeout?.issues?.bound_worktree_cleanup?.error ?? "") ||
+          landed.closeout?.issues?.bound_line_closeout?.reason !== "feature_line_closeout_failed"
+        ))
       ) {
         fail("Windows partial Task finish did not preserve the exact authoritative closeout state");
       }
@@ -853,7 +926,7 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fix
         ["task", "show", taskId, "--local", "--json"],
         { cwd: root, label: "candidate completed Windows Task readback" },
       );
-      const change = jsonSpec(
+      const change = currentTaskContract ? null : jsonSpec(
         recorder,
         aitSpec,
         ["change", "show", taskId, "--local", "--json"],
@@ -882,9 +955,11 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fix
       if (
         task.task_id !== taskId ||
         task.status !== "completed" ||
-        change.task_id !== taskId ||
-        change.status !== "landed" ||
-        change.landed_snapshot_id !== landed.landed_snapshot_id ||
+        (!currentTaskContract && (
+          change.task_id !== taskId ||
+          change.status !== "landed" ||
+          change.landed_snapshot_id !== landed.landed_snapshot_id
+        )) ||
         mainLine.line_name !== landed.target_line ||
         mainLine.status !== "active" ||
         mainLine.head_snapshot_id !== landed.landed_snapshot_id ||
@@ -895,11 +970,18 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fix
       ) {
         fail("Windows partial Task finish authoritative readback is inconsistent");
       }
+      if (currentTaskContract) {
+        landed = resumeCloseout();
+      }
       const archived = jsonSpec(
         recorder,
         aitSpec,
-        ["line", "archive", featureLineName, "--json"],
-        { cwd: root, label: "candidate completed Windows feature Line archive" },
+        currentTaskContract
+          ? ["line", "show", featureLineName, "--json"]
+          : ["line", "archive", featureLineName, "--json"],
+        { cwd: root, label: currentTaskContract
+          ? "candidate automatically archived Windows feature Line readback"
+          : "candidate completed Windows feature Line archive" },
       );
       if (
         archived.line_name !== featureLineName ||
@@ -914,20 +996,15 @@ function firstLand(recorder, aitSpec, root, expectedText, priorState = null, fix
         target_line: landed.target_line,
         feature_line: featureLineName,
         task_completed: true,
-        change_landed: true,
+        change_landed: !currentTaskContract,
         plan_synced: true,
         worktree_registration_absent: true,
         feature_line_archived: true,
         second_land_applied: false,
       };
-      windowsPartialCloseoutVerified = true;
+      windowsPartialCloseoutVerified = !currentTaskContract;
     } else {
-      landed = jsonSpec(
-        recorder,
-        aitSpec,
-        ["task", "finish", taskId, "--local", "--json"],
-        { cwd: root, label: "candidate task finish closeout resume" },
-      );
+      landed = resumeCloseout();
     }
     partialCloseoutHandled = true;
   }
@@ -2623,6 +2700,9 @@ async function executeInstall({ config, status, row, checks, recorder, root }) {
       context.ait,
       path.join(root, "candidate-repository"),
       `clean-host ${row.id} ${config.release.version}\n`,
+      null,
+      null,
+      config.release.version,
     );
     mark(checks, "first_land");
     mark(checks, "generated_workflow_current");
@@ -2636,6 +2716,7 @@ async function executeInstall({ config, status, row, checks, recorder, root }) {
           `clean-host ${row.id} ${name} ${config.release.version}\n`,
           null,
           fixture,
+          config.release.version,
         );
         languageRoots.push({ language: name, root: result.root, snapshot_id: result.snapshot_id,
           toolchains: result.toolchains });
@@ -2761,6 +2842,8 @@ async function executeUpgrade({ options, config, status, row, checks, recorder, 
       repositoryRoot,
       `clean-host upgrade ${row.id} ${config.release.version}\n`,
       priorState,
+      null,
+      config.release.version,
     );
     mark(checks, "candidate_land");
     mark(checks, "generated_workflow_current");

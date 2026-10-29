@@ -32,7 +32,30 @@ impl RepoRuntime {
             let ait_dir = cur.join(APP_DIR);
             let worktree_config_path = cur.join(WORKTREE_CONFIG_NAME);
             if ait_dir.is_dir() {
-                let mut config = read_json_object(&ait_dir.join(CONFIG_NAME));
+                let config_path = ait_dir.join(CONFIG_NAME);
+                let mut config =
+                    match ait_core::repo_state_json::read_root_config_bytes(&config_path) {
+                        Ok(bytes) => {
+                            let content = String::from_utf8(bytes).map_err(|error| {
+                                format!("failed to read {}: {error}", config_path.display())
+                            })?;
+                            crate::json_support::parse_value(&content, "repository config")?
+                                .as_object()
+                                .cloned()
+                                .ok_or_else(|| {
+                                    format!("{} must be a JSON object", config_path.display())
+                                })?
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            JsonMap::new()
+                        }
+                        Err(error) => {
+                            return Err(format!(
+                                "failed to read {}: {error}",
+                                config_path.display()
+                            ))
+                        }
+                    };
                 if worktree_config_path.exists() {
                     let overlay = read_json_object(&worktree_config_path);
                     for (key, value) in overlay {

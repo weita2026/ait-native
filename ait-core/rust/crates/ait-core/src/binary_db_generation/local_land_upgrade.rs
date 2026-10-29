@@ -271,7 +271,8 @@ pub(super) fn validate_source(authority: &Path, repo: &Path, name: &str) -> Gene
         .map_err(|e| e.to_string())?;
     if count(&authority.join("change.bin"), 68)? != 0 {
         let config: serde_json::Value = serde_json::from_slice(
-            &fs::read(repo.join(".ait/config.json")).map_err(|e| e.to_string())?,
+            &crate::repo_state_json::read_root_config_bytes(&repo.join(".ait/config.json"))
+                .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
         let namespace = if name == "ait-runner" { "R" } else { "C" };
@@ -566,7 +567,8 @@ fn admit_local_metadata(repo: &Path, authority: &Path, name: &str) -> Generation
         return Err("Local source Repository owner mismatch".into());
     }
     let config: serde_json::Value = serde_json::from_slice(
-        &fs::read(repo.join(".ait/config.json")).map_err(|e| e.to_string())?,
+        &crate::repo_state_json::read_root_config_bytes(&repo.join(".ait/config.json"))
+            .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
     let namespace = match config.get("id_namespace_prefix") {

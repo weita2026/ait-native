@@ -145,6 +145,42 @@ impl Fixture {
 }
 
 #[test]
+fn config_ownership_blocks_cleanup_then_retry_publishes_binding_on_the_same_inode() {
+    use std::os::unix::fs::MetadataExt;
+    for exclusive in [false, true] {
+        let f = Fixture::new(true);
+        let path = f.root.root.join(".ait/config.json");
+        update_root_config(&f.root, |config| {
+            config.insert("worktree_name".into(), json!(f.name));
+            config.insert("publication_extension".into(), json!({"keep":true}));
+        })
+        .unwrap();
+        let original = fs::read(&path).unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+        let inode = (metadata.dev(), metadata.ino());
+        let lease = crate::config_surface::lock_root_config(&f.root, exclusive).unwrap();
+        let error = task_abandon(&f.root, &f.task, true, None).unwrap_err();
+        assert!(error.contains("operation_busy"), "{error}");
+        assert!(f.worktree.root.join("uncaptured.txt").exists());
+        let closed = f.task_record();
+        assert_eq!(closed["status"], "abandoned");
+        assert_eq!(
+            ait_core::repo_state_json::read_root_config_bytes(&path).unwrap(),
+            original
+        );
+        drop(lease);
+        task_abandon(&f.root, &f.task, true, None).unwrap();
+        f.assert_removed();
+        assert_eq!(f.task_record(), closed);
+        let config = read_json_value(&path);
+        assert!(config.get("worktree_name").is_none());
+        assert_eq!(config["publication_extension"], json!({"keep":true}));
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!((metadata.dev(), metadata.ino()), inode);
+    }
+}
+
+#[test]
 fn clean_and_dirty_owned_roots_are_removed_from_canonical_or_target_context() {
     for dirty in [false, true] {
         for from_target in [false, true] {

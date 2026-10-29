@@ -244,6 +244,7 @@ NODE
 test "$(grep -c 'CHECKSUM_ASSET_NAME.test(match\[2\])' "${phase_runner}")" = 2
 node --input-type=module - "${phase_runner}" "${temporary_root}" <<'NODE'
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -278,6 +279,151 @@ assert.deepEqual(aptArgs("1.1.1", null, "product"), ["ait-native=1.1.1"]);
 const versionSource = source.slice(source.indexOf("function requiresRelease120("), source.indexOf("\nexport function requiresChatRetirement"));
 const aliases = source.match(/^export function requires(?:ChatRetirement|LanguageCli)\(version\).+$/gm)
   .map(line => line.replace(/^export /, "")).join("\n");
+// Run actual firstLand against the retained native result shapes. The command
+// boundary is simulated; the lifecycle, authority and cleanup checks are real.
+const firstLandStart = source.indexOf("function firstLand(");
+const finishHelperSource = source.slice(source.indexOf("function firstTaskFinish("), firstLandStart);
+const firstLandSource = source.slice(firstLandStart, source.indexOf("\nasync function ", firstLandStart));
+const baselineId = "SNP-111111111111", landedId = "SNP-222222222222";
+const finishResult = (closeout = {}) => ({
+  command: "task.finish", contract: "ait-agent-action/v1", task_id: "LT-0001",
+  target_line: "main", landed_snapshot_id: landedId,
+  closeout: { change_status: null, task_status: "completed", plan_status: "synced",
+    plan_markdown_status: "in_sync", line_status: "archived", worktree_status: "removed",
+    status: "complete", ...closeout },
+  team_handoff: { reason: "missing_binding", notification_sent: false },
+  next_action: { command: "ait task finish LT-0001 --local" },
+});
+const cwdPartial = () => finishResult({ status: "partial", line_status: "failed", worktree_status: "failed",
+  issues: { bound_worktree_cleanup: { error: "The process cannot access the file. (os error 32)" },
+    bound_line_closeout: { reason: "feature_line_closeout_failed" } } });
+let finishVectorIndex = 0;
+function exerciseFirstLand({ platform = "linux", initial = finishResult(), resumed = finishResult(),
+  version = "1.2.0", mutate = () => {} } = {}) {
+  const parent = path.join(process.argv[3], `first-land-vector-${finishVectorIndex++}`);
+  mkdirSync(parent);
+  const root = path.join(parent, "repository"), worktree = path.join(parent, "lt-0001");
+  const expectedText = "exact installed project change\n", calls = [], recorder = { observations: {} };
+  let applyCount = 0, resumedCount = 0, archived = false;
+  const hash = value => createHash("sha256").update(value).digest("hex");
+  const sandbox = vm.createContext({ path, process: { platform }, existsSync, mkdirSync, readFileSync,
+    writeFileSync, rmSync, sha256Bytes: hash,
+    sha256File: file => hash(readFileSync(file)),
+    requireRegularFile(file) { assert(statSync(file).isFile()); },
+    generatedWorkflowCurrent() {}, fail(message) { throw new Error(message); },
+    runSpec(_recorder, _ait, args, options) {
+      assert(args.includes("--full")); assert.equal(options.captureLimit, 128 * 1024);
+      const result = sandbox.jsonSpec(_recorder, _ait, args, options);
+      const full = { ...result, task_land_contract: { version: "task-land-plan-closeout/v1", scope: "local" },
+        closeout_status: result.closeout.status, task_status: result.closeout.task_status,
+        change_status: result.closeout.change_status, closeout_recovery: result.next_action,
+        bound_worktree_cleanup: { status: result.closeout.worktree_status,
+          ...result.closeout.issues?.bound_worktree_cleanup },
+        bound_line_closeout: { status: result.closeout.line_status,
+          ...result.closeout.issues?.bound_line_closeout },
+        plan_checklist_closeout: { status: result.closeout.plan_status },
+        plan_markdown_materialization: { status: result.closeout.plan_markdown_status } };
+      delete full.closeout; delete full.next_action;
+      return { status: result.closeout.status === "complete" ? 0 : 2, stdout: JSON.stringify(full), stderr: "" };
+    },
+    jsonSpec(_recorder, _ait, args, options) {
+      calls.push({ args: Array.from(args), label: options.label, cwd: options.cwd });
+      if (args[0] === "init") {
+        mkdirSync(path.join(root, ".ait")); writeFileSync(path.join(root, ".ait/config.json"), "{}\n");
+        writeFileSync(path.join(root, "AGENTS.md"), "current generated guidance\n");
+        return {};
+      }
+      if (args[0] === "task" && args[1] === "start") {
+        mkdirSync(worktree); writeFileSync(path.join(worktree, "existing-project.mjs"),
+          readFileSync(path.join(root, "existing-project.mjs")));
+        return { task_id: "LT-0001", edit_root: worktree, worktree_name: "lt-0001", head_snapshot_id: baselineId };
+      }
+      if (args[0] === "snapshot") return args[2] === baselineId ? {
+        snapshot_id: baselineId, parent_snapshot_id: null, message: "Initialize Task base",
+        files: [{ path: "existing-project.mjs", sha256: hash("export const existingProject = true;\n") }],
+      } : { snapshot_id: landedId, parent_snapshot_id: baselineId, line_name: "feature/lt-0001" };
+      if (args[0] === "task" && args[1] === "finish") {
+        const recovery = options.label.includes("resume");
+        if (recovery) {
+          resumedCount++; assert(!args.includes("--message")); assert.equal(options.cwd, root); archived = true;
+        } else {
+          applyCount++; writeFileSync(path.join(root, "first-land.txt"), expectedText);
+          const sprint = path.join(root, "docs/sprints/clean_host.md");
+          writeFileSync(sprint, readFileSync(sprint, "utf8").replace("- [ ]", "- [x]"));
+          if (initial.closeout.status === "complete") rmSync(worktree, { recursive: true });
+        }
+        const result = structuredClone(recovery ? resumed : initial);
+        const status = result.closeout.status === "complete" ? 0 : 2;
+        if (!(options.allowed ?? [0]).includes(status)) throw new Error(`${options.label} failed with ${status}`);
+        return result;
+      }
+      if (args[0] === "task" && args[1] === "show") return { task_id: "LT-0001", status: "completed" };
+      if (args[0] === "change") return { task_id: "LT-0001", status: "landed", landed_snapshot_id: landedId };
+      if (args[0] === "worktree") return [];
+      if (args[0] === "line") {
+        if (args[1] === "archive") archived = true;
+        const result = { line_name: args[2], status: args[2] === "main" ? "active" : archived ? "archived" : "active",
+          head_snapshot_id: landedId };
+        mutate(result, args); return result;
+      }
+      throw new Error(`unexpected command: ${args}`);
+    },
+  });
+  vm.runInContext(versionSource + "\n" + aliases + "\n" + finishHelperSource + "\n" + firstLandSource + "\nthis.firstLand = firstLand;", sandbox);
+  let error;
+  try { sandbox.firstLand(recorder, {}, root, expectedText, null, null, version); } catch (failure) { error = failure; }
+  return { error, calls, applyCount, resumedCount, recorder, worktree };
+}
+const linuxFinish = exerciseFirstLand();
+assert.equal(linuxFinish.error, undefined); assert.equal(linuxFinish.applyCount, 1);
+const windowsFinish = exerciseFirstLand({ platform: "win32", initial: cwdPartial() });
+assert.equal(windowsFinish.error, undefined); assert.equal(windowsFinish.applyCount, 1);
+assert.equal(windowsFinish.resumedCount, 1); assert(!existsSync(windowsFinish.worktree));
+assert(!windowsFinish.calls.some(call => call.args[0] === "change" || call.args[1] === "archive"));
+assert.equal(windowsFinish.recorder.observations.windows_partial_task_land_closeout.change_landed, false);
+const legacyFinish = exerciseFirstLand({ platform: "win32", version: "1.1.4",
+  initial: finishResult({ change_status: "landed", status: "partial", line_status: "failed", worktree_status: "failed" }) });
+assert.equal(legacyFinish.error, undefined); assert.equal(legacyFinish.resumedCount, 0);
+assert(legacyFinish.calls.some(call => call.args[0] === "change"));
+const unknownPartial = finishResult({ status: "partial" });
+unknownPartial.main_seed_sync = { status: "failed", error: "retained native seed diagnostic" };
+assert.match(exerciseFirstLand({ platform: "darwin", initial: unknownPartial, resumed: unknownPartial }).error.message,
+  /closeout resume failed with 2: .*retained native seed diagnostic/);
+assert.match(exerciseFirstLand({ platform: "win32", initial: cwdPartial(), resumed: unknownPartial }).error.message,
+  /closeout resume failed with 2/);
+assert.match(exerciseFirstLand({ initial: finishResult({ change_status: "landed" }) }).error.message, /reported a Change/);
+assert.match(exerciseFirstLand({ initial: { ...finishResult(), task_id: "LT-0002" } }).error.message,
+  /changed Task authority/);
+const foreignPartial = cwdPartial(); foreignPartial.closeout.issues.bound_worktree_cleanup.error = "Access denied. (os error 5)";
+assert.match(exerciseFirstLand({ platform: "win32", initial: foreignPartial }).error.message, /authoritative closeout state/);
+assert.match(exerciseFirstLand({ platform: "win32", initial: cwdPartial(),
+  resumed: { ...finishResult(), landed_snapshot_id: "SNP-333333333333" } }).error.message, /changed authority/);
+assert.match(exerciseFirstLand({ platform: "darwin", initial: unknownPartial,
+  resumed: { ...finishResult(), landed_snapshot_id: "SNP-333333333333" } }).error.message, /changed authority/);
+assert.match(exerciseFirstLand({ platform: "darwin", initial: unknownPartial,
+  resumed: { ...finishResult(), task_id: "LT-0002" } }).error.message, /changed authority/);
+assert.match(exerciseFirstLand({ platform: "darwin", initial: unknownPartial,
+  resumed: { ...finishResult(), target_line: "other" } }).error.message, /changed authority/);
+assert.match(exerciseFirstLand({ platform: "win32", initial: cwdPartial(),
+  resumed: finishResult({ plan_status: "failed" }) }).error.message, /Task and Plan closeout/);
+assert.match(exerciseFirstLand({ platform: "win32", initial: cwdPartial(),
+  mutate(row, args) { if (args[2] === "main") row.head_snapshot_id = baselineId; } }).error.message, /readback is inconsistent/);
+console.log("Actual firstLand current/legacy authority and partial-closeout vectors passed");
+const nativeDiagnostic = JSON.stringify({ main_seed_sync: { status: "failed", error: "original seed error" },
+  existing_native_details: "x".repeat(20_000) });
+const recorderStart = source.indexOf("class Recorder {");
+const recorderSource = source.slice(recorderStart, source.indexOf("\nfunction commandExists", recorderStart));
+const commandTextSource = source.slice(source.indexOf("function tail("), recorderStart);
+const capture = vm.createContext({ MAX_CAPTURE: 64 * 1024 * 1024, COMMAND_TIMEOUT_MS: 30_000,
+  process: { env: {} }, sha256Bytes: value => createHash("sha256").update(value).digest("hex"),
+  spawnSync() { return { status: 2, stdout: nativeDiagnostic, stderr: "" }; },
+  fail(message) { throw new Error(message); } });
+vm.runInContext(commandTextSource + "\n" + recorderSource + "\nthis.Recorder = Recorder;", capture);
+const captured = new capture.Recorder();
+captured.run("/installed/ait", ["task", "finish", "LT-0001", "--json", "--full"],
+  { allowed: [0, 2], captureLimit: 128 * 1024 });
+assert.equal(captured.commands[0].stdout_tail, nativeDiagnostic);
+assert.equal(captured.commands[0].stdout_sha256, createHash("sha256").update(nativeDiagnostic).digest("hex"));
 const pythonSource = source.slice(source.indexOf("function pythonContext("), source.indexOf("\nfunction npmPackageRoot("));
 const pyRoot = path.join(process.argv[3], "python-language-cli"), pySite = path.join(pyRoot, "site");
 const pyScripts = path.join(pyRoot, "bin"), pyModule = path.join(pySite, "ait_python");
