@@ -2532,6 +2532,71 @@ mod tests {
         assert!(generator.contains("cmp -s \"$generated\" \"$notice\""));
     }
 
+    #[test]
+    fn core_release_profile_binds_one_active_component_and_six_target_declarations() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .expect("ait-core repository root should resolve");
+        let manifest_bytes = fs::read(repo_root.join(GENERIC_RELEASE_MANIFEST_PATH))
+            .expect("canonical Core release adapter should be readable");
+        let manifest = parse_slice_value(&manifest_bytes, "Core release adapter should parse")
+            .expect("canonical Core release adapter should contain valid JSON");
+        let adapter = parse_generic_release_adapter(&manifest)
+            .expect("canonical Core release adapter should satisfy its contract");
+        assert_eq!(adapter.components.len(), 1);
+        assert_eq!(adapter.components[0].id, "ait");
+        assert_eq!(adapter.components[0].ecosystem, "native");
+
+        let targets = [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-pc-windows-msvc",
+            "x86_64-pc-windows-msvc",
+        ];
+        assert_eq!(adapter.declared_artifact_count(), targets.len());
+        let mut bundle = bundle_for_manifest(&manifest, &[]);
+        bundle
+            .files
+            .get_mut(GENERIC_RELEASE_MANIFEST_PATH)
+            .unwrap()
+            .data = manifest_bytes.clone();
+        let mut record = executable_record(&adapter, &bundle);
+        record["version"] = json!(adapter.package.version);
+        let metadata = &record["metadata"]["release_adapter"];
+        assert_eq!(metadata["component_count"], 1);
+        assert_eq!(metadata["declared_artifact_count"], 6);
+        assert_eq!(metadata["manifest_sha256"], sha256_hex(&manifest_bytes));
+        assert_eq!(metadata["definition"], adapter.to_json());
+        for target in targets {
+            assert_eq!(adapter.selected_components(Some(target)).len(), 1);
+            assert_eq!(adapter.selected_artifact_count(Some(target)), 1);
+            record["target"] = json!(target);
+            validate_generic_release_identity(&record, &adapter, &bundle).unwrap();
+        }
+
+        let mut projected_definition = record.clone();
+        projected_definition["metadata"]["release_adapter"]["definition"]["components"][0]
+            ["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(1);
+        assert!(
+            validate_generic_release_identity(&projected_definition, &adapter, &bundle)
+                .unwrap_err()
+                .contains("candidate-bound Snapshot manifest")
+        );
+        let mut wrong_hash = record;
+        wrong_hash["metadata"]["release_adapter"]["manifest_sha256"] = json!("0".repeat(64));
+        assert!(
+            validate_generic_release_identity(&wrong_hash, &adapter, &bundle)
+                .unwrap_err()
+                .contains("candidate-bound Snapshot manifest")
+        );
+    }
+
     fn component_row(id: &str, ecosystem: &str, working_directory: &str) -> JsonValue {
         json!({
             "id": id,
@@ -2824,7 +2889,6 @@ mod tests {
         })
     }
 
-    #[cfg(unix)]
     fn executable_record(adapter: &GenericReleaseAdapter, bundle: &ReleaseBundle) -> JsonValue {
         json!({
             "contract": GENERIC_RELEASE_RECEIPT_CONTRACT,

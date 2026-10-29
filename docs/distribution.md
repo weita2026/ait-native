@@ -700,7 +700,7 @@ Channel metadata must preserve the aggregate boundary:
 | Homebrew | `ait-native` installs `ait` and `ait-server` | Same admitted pair | `ait-native` installs `ait`, `ait-server`, and `ait-runner` together |
 | apt | `ait-native` installs `ait` and `ait-server`; `ait-runner` is separately installable | Same admitted layout | `ait-native` owns all three executables; `ait-runner` is a dependency-only transition alias |
 | WinGet | `ait-native` installs `ait` and `ait-server` | Same admitted pair | The product package installs all three native executables |
-| PyPI/pip | `ait-native` contains `ait`, `ait-server`, and the direct Python binding | Same role | Same role; PyPI does not acquire the runner payload |
+| PyPI/pip | `ait-native` contains `ait`, `ait-server`, and the direct Python binding | Same role | Earlier frozen wheels retain that composition. For 1.2.0, terminal `ait` is the Python entrypoint plus PyO3 binding from `ait-python` only; no standalone native CLI/Server/Runner payload or bundled Server service. |
 | npm | `@wa120/ait-native` exposes the JS/TS API and in-process `ait` command without `ait-server` | Same role | Same role |
 | OCI | Immutable, separate `ait-server` and `ait-runner` images | Same role | Same role |
 
@@ -739,11 +739,15 @@ ait-runner
 For those later families, the apt `ait-runner` package remains discoverable
 only as a dependency-only transition alias to the exact `ait-native` version
 and owns no executable, so there is no `/usr/bin/ait-runner` collision. The
-PyPI unit retains the published two-command `ait`/`ait-server` contract and
-additionally contains the admitted Python binding. npm is not a server bundle:
-it contains the portable JS/TS facade plus the platform-selected Node-API addon
-and exposes only `ait` as a command. Neither registry creates a second product
-or independently selectable version.
+earlier frozen PyPI units retain their published two-command
+`ait`/`ait-server` composition and Python binding. The 1.2.0 PyPI unit selects
+only `ait-python` and exposes its Python `ait` entrypoint plus adjacent PyO3
+binding, without standalone native CLI/Server/Runner payloads or a bundled
+Server service. npm contains the portable JavaScript CLI/JS/TS facade plus the
+platform-selected Node-API addon and exposes only `ait` as a command. Both
+language CLIs call concrete Rust domain APIs through their bindings; neither
+may relay argv/command strings to Rust's CLI parser or launch another CLI.
+Neither registry creates a second product or independently selectable version.
 
 The three native executables retain independent source-component receipts and
 license notices. Package construction must prove that each installed byte is
@@ -823,7 +827,7 @@ remaining inactive after install or upgrade:
 | Homebrew | `brew services start ait-native`; stop with `brew services stop ait-native` | The exact 1.1.0 formula executes only `ait-server`, contains no runner, and starts no process during installation. Later runner-bundle formulas retain the same server-only service. |
 | apt | `sudo systemctl daemon-reload && sudo systemctl enable --now ait-server`; stop with `sudo systemctl disable --now ait-server` | The shipped, initially disabled `ait-server.service` uses `DynamicUser`, `StateDirectory=ait-native`, and `/var/lib/ait-native/server-data`. The separately packaged 1.1.0 runner has no unit; later product bundles also register no runner unit. The Debian packages have zero maintainer scripts. |
 | WinGet | Resolve `$ctl` from the installed `ait-server.exe` link with the PowerShell snippet below, then run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ctl start`; replace `start` with `status` or `stop` as needed | The exact 1.1.0 product exposes `ait.exe` and `ait-server.exe`. The adjacent `ait-server-control.ps1` manages only the server in the user session, stores PID/log state below `%LOCALAPPDATA%\AIT\runtime`, uses `%LOCALAPPDATA%\AIT\server-data`, verifies PID ownership, and does not register a Windows SCM service or runner daemon. |
-| PyPI/pip | Execute `ait-server`, or pass the installed executable to the user's own service manager | The wheel installs the same native command and adds no install hook or second lifecycle implementation. |
+| PyPI/pip | No bundled Server activation in 1.2.0. Earlier frozen wheels retain their original explicit `ait-server` invocation. | The 1.2.0 Python-entrypoint/PyO3 package owns no standalone Server/Runner payload or service. Earlier wheel evidence retains its original native-command scope. |
 
 WinGet accepts executable portable command aliases, not the packaged
 PowerShell controller itself. Resolve that supporting file beside the actual
@@ -971,7 +975,10 @@ portable manifests do not declare the unsupported `Scope` field. Together
 these checks keep the portable Windows acquisition paths independent of a
 separately preinstalled Visual C++ Redistributable.
 
-The four executables must have native artifacts for all six targets.
+The current 1.2.0 family requires native artifacts for all six targets for its
+three standalone executables: `ait`, `ait-server` and `ait-runner`. Retired
+chat-integration source creates no additional executable requirement; earlier
+frozen matrices retain their original scope.
 `ait-python` must produce binding payloads for the matching six PyPI
 `ait-native` platform wheels. `ait-node` must produce one portable npm JS/TS
 envelope and six target-specific Node-API addon packages, without a separate
@@ -1019,10 +1026,12 @@ The frozen 1.0.x and exact published 1.1.0 native product packages pair `ait`
 and `ait-server` on their admitted targets; 1.1.0 apt packages the runner
 separately. Every later family must pair `ait`, `ait-server`, and `ait-runner`
 in Homebrew on the four admitted macOS/Linux targets, apt on the two admitted
-Linux targets, and WinGet on the two admitted Windows targets. PyPI retains
-its `ait`/`ait-server` plus binding contract. npm instead requires the matching
-Node-API addon for each of the same six targets. A channel must not publish a
-target when any component declared by that channel is absent.
+Linux targets, and WinGet on the two admitted Windows targets. For 1.2.0,
+PyPI requires the Python `ait` entrypoint and matching PyO3 binding, without
+standalone native CLI/Server/Runner payloads. Earlier frozen wheels retain
+their original `ait`/`ait-server` plus binding composition. npm requires the
+matching Node-API addon for each of the same six targets. A channel must not
+publish a target when any component declared by that channel is absent.
 
 This six-target matrix is the exact current cross-platform claim. It is not a
 claim of support for every operating system or C library. Linux/musl, other
@@ -1046,8 +1055,10 @@ governed solely by [the centralized requirements above](#repository-language-neu
   invoke the CLI, inspect ambient `PATH`, or download a runtime after
   installation.
 - The npm facade selects only the adjacent package-owned `.node` addon by
-  declared OS/architecture/libc, exposes the typed import API, and sends `ait`
-  argv to `runCli` in-process without `child_process`.
+  declared OS/architecture/libc and exposes the typed domain API. Its JavaScript
+  `ait` CLI parses existing syntax and calls concrete Node-API functions;
+  argv/command-string relay to Rust's CLI parser/dispatcher and subprocess
+  transport are prohibited. The Python CLI follows the same rule through PyO3.
 - PyPI uses `ait-native` and npm uses `@wa120/ait-native` as their sole
   supported registry install identities; the npm scope is a registry namespace,
   not a second product, and component repository names are not alternate
@@ -1100,7 +1111,12 @@ Each generic receipt also carries the source repository's exact declared
 of the component artifact matrix. Family admission requires those two files for
 every source repository, rejects target-receipt disagreement, and freezes one
 deduplicated repository/Snapshot copy for downstream package assemblers. These
-legal files do not increase or weaken the 37 product-artifact requirements.
+legal files do not increase or weaken the product-artifact requirements. The
+current five-component 1.2.0 family requires 31 product artifacts: six each
+for Core, Server, Runner and Python, plus seven Node artifacts. The complete
+43-entry family inventory also includes ten repository `LICENSE`/`NOTICE`
+files and two family metadata entries. Product, legal and metadata counts
+retain their separate roles; earlier frozen inventories remain unchanged.
 
 The v3 family manifest is the sole release-identity input. An RC uses version
 `X.Y.Z-rc.N`, Python version `X.Y.ZrcN`, tag `vX.Y.Z-rc.N`, and channel `rc`;
@@ -1298,9 +1314,15 @@ aggregate artifacts while the public source remains clean and untagged:
   --output "${AIT_RELEASE_RECORDS}/03-candidate.json"
 ```
 
-Only `03-candidate.json` with all 32 rows admitted grants tag authority. Create
-and push the annotated tag exactly once, then bind that local readback and
-optionally dispatch protected authorization:
+`03-candidate.json` with all 32 rows admitted is required package evidence.
+For 1.2.0, also require the retained Web admission and the Product/A120 verdict
+under the [current SOP](release_sop.md#120-pre-publication-acceptance), including
+its accepted existing A120-10 collaboration. The legacy 32-row record alone
+does not establish that verdict. Preserve the conductor's existing pre-tag
+HOLD; after all required gates pass, use the separately authorized manual
+F–H route without editing the held state. Within the existing public tag and
+publication authority, create and push the annotated tag exactly once, then
+bind that local readback and optionally dispatch protected authorization:
 
 ```bash
 cd "${AIT_PUBLIC_SOURCE}"
@@ -1397,8 +1419,13 @@ fails, preserve the already-published immutable bytes and repair `main` before
 freezing a new release; never overwrite the failed release's evidence.
 
 For a release that the repository owner explicitly chooses as the default,
-promote only mutable aliases after `06-status.json` succeeds and, for a stable
-release, after retaining the merged WinGet PR and independent search proof.
+promote only mutable aliases after `06-status.json` succeeds and the current
+recipe's WinGet pre-review and submission steps complete. The recipe runs
+`latest_alias` before its closeout waits for WinGet merge and public discovery.
+Overall stable channel closeout still requires the merged manifest readback,
+independent public-source discovery and installation. Gate H separately
+requires the frozen executable comparison and actual site/docs readback;
+alias success does not complete those obligations.
 The approval value is the exact `REL-FAM-*` ID from `05-endpoints.json`, not a
 version wildcard. Production promotion runs only through the protected `pypi`
 GitHub environment so the maintainer machine never needs the npm or GHCR
@@ -1453,9 +1480,10 @@ relabel or overwrite earlier evidence.
 
 ### Implemented package-assembly boundary
 
-After all 37 component requirements pass `ait release check` and are frozen by
-`ait release build`, the same complete `REL-FAM-*` dossier is the only accepted
-input to every bundled-channel assembler:
+After all 31 current 1.2.0 component-artifact requirements pass
+`ait release check` and are frozen by `ait release build`, the same complete
+`REL-FAM-*` dossier is the only accepted input to every bundled-channel
+assembler:
 
 ```text
 ait release package <REL-FAM-ID> --channel homebrew --json
@@ -1492,12 +1520,13 @@ they do not create an apt repository index, mutate a Homebrew tap, submit a
 WinGet manifest, upload to PyPI/npm, create a tag, or authorize later endpoint
 mutation.
 
-The PyPI assembler preserves every admitted `ait-python` binding member,
-renames only the distribution metadata to `ait-native`, adds package-owned
-`ait` and `ait-server` files through the wheel scripts data scheme, installs
-all three repositories' legal material, and regenerates an exact final
-`RECORD`. The filename, `WHEEL` tag, family target, and `cp311-abi3` contract
-must agree.
+For 1.2.0, the PyPI assembler preserves the admitted `ait-python` Python CLI
+entrypoint and adjacent PyO3 binding, uses the sole distribution identity
+`ait-native`, retains applicable exact legal material and binding provenance,
+and regenerates an exact final `RECORD`. It must not inject standalone native
+CLI/Server/Runner files. Earlier frozen wheels retain their original scripts
+data scheme, native command payloads and legal inventories. The filename,
+`WHEEL` tag, family target and `cp311-abi3` contract must agree.
 
 The original RC.3 npm assembler preserves its seven frozen unscoped tarballs
 byte for byte. The owner-approved namespace supplement does not alter those
@@ -1585,8 +1614,9 @@ The workflow performs these bounded operations:
    GitHub Actions API, replay the admitted direct-parent version-only delta,
    verify the admission digest, and require both the target tag and every
    release tag on the admitted commit to remain absent;
-3. project 31 target/portable receipt jobs and 37 component artifacts from the
-   mapped family manifest;
+3. project the current five-component profile's 31 target/portable receipt
+   jobs and 31 product artifacts from the mapped family manifest, keeping
+   license and metadata inventory roles separate;
 4. run each repository-owned generic adapter directly in its fixed public
    subtree on the matching native runner;
 5. emit a `public_git_commit` receipt that binds the artifact bytes to one Git
@@ -1611,7 +1641,9 @@ All artifacts are run-scoped and `public_publish` remains false. The workflow
 does not create a tag, call `release promote`, sign an artifact, activate AIT
 remote Release authority, create a GitHub Release, or write to any registry.
 The additional monorepo source artifact does not change the five internal
-Snapshot authorities, 31 receipt, or 37 component-artifact counts. Hosted
+Snapshot authorities, 31 receipts or 31 product-artifact requirements. The
+43-entry complete family inventory retains its legal and metadata entries;
+it is not the component-artifact count. Hosted
 release source-cache count and live AIT server connection count are both zero.
 The GitHub-hosted runner labels are pinned in the root release-control
 [`native_bootstrap_matrix.json`](https://github.com/weita2026/ait-native/blob/main/ci/native_bootstrap_matrix.json); confirm
