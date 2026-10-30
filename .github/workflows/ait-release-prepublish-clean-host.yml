@@ -427,17 +427,11 @@ jobs:
 
       # Observe one pending closeout in its original VM, after both ordinary
       # uninstrumented attempts. This optional result never qualifies a row.
-      - name: Observe the original Mac seed closeout failure
+      - name: Prepare the original Mac seed observer source
+        id: seed_observer_source
         if: ${{ !cancelled() && steps.phase.outcome == 'failure' && matrix.channel == 'github' && matrix.lifecycle == 'product' && matrix.target == 'aarch64-apple-darwin' }}
         continue-on-error: true
         shell: bash
-        env:
-          AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: ${{ needs.stage.outputs.candidate_artifact_digest }}
-          AIT_CLEAN_HOST_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
-          AIT_CLEAN_HOST_SOURCE_ROOT: ${{ github.workspace }}/source
-          AIT_CLEAN_HOST_RUNNER_LABEL: ${{ matrix.runner }}
-          AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}
-          AIT_SEED_OBSERVATION_ROW: ${{ matrix.id }}
         run: |
           set -euo pipefail
           diagnostic="${RUNNER_TEMP}/mac-seed-observation"
@@ -539,10 +533,27 @@ jobs:
           INTERPOSE(observed_rename, rename)
           INTERPOSE(observed_renameat, renameat)
           C
+
+      - name: Observe the original Mac seed closeout failure
+        if: ${{ !cancelled() && steps.phase.outcome == 'failure' && matrix.channel == 'github' && matrix.lifecycle == 'product' && matrix.target == 'aarch64-apple-darwin' && steps.seed_observer_source.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: ${{ needs.stage.outputs.candidate_artifact_digest }}
+          AIT_CLEAN_HOST_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+          AIT_CLEAN_HOST_SOURCE_ROOT: ${{ github.workspace }}/source
+          AIT_CLEAN_HOST_RUNNER_LABEL: ${{ matrix.runner }}
+          AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}
+          AIT_SEED_OBSERVATION_ROW: ${{ matrix.id }}
+          AIT_SEED_OBSERVATION_CONFIG_SHA: ${{ inputs.candidate_authority_sha256 }}
+          AIT_SEED_OBSERVATION_STATUS_SHA: ${{ needs.stage.outputs.candidate_status_sha256 }}
+        run: |
+          set -euo pipefail
+          diagnostic="${RUNNER_TEMP}/mac-seed-observation"
           node control/ci/release_prepublish_verify.mjs stage \
             --root "${PWD}/candidate" \
-            --config-sha256 '${{ inputs.candidate_authority_sha256 }}' \
-            --status-sha256 '${{ needs.stage.outputs.candidate_status_sha256 }}' \
+            --config-sha256 "${AIT_SEED_OBSERVATION_CONFIG_SHA}" \
+            --status-sha256 "${AIT_SEED_OBSERVATION_STATUS_SHA}" \
             >"${diagnostic}/candidate-verify.log" 2>&1
           node --input-type=module >"${diagnostic}/observation.log" 2>&1 <<'NODE_SEED_OBSERVATION'
           import assert from 'node:assert/strict';

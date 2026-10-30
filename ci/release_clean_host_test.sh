@@ -839,7 +839,9 @@ NODE
 node --input-type=module - "${workflow}" <<'MAC_SEED_OBSERVATION_TEST'
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import os from 'node:os';
 import vm from 'node:vm';
 import path from 'node:path';
 const source = readFileSync(process.argv[2], 'utf8');
@@ -854,6 +856,74 @@ assert(install.includes("steps.phase.outcome == 'failure' && matrix.channel == '
 assert(install.slice(observe, install.indexOf('        run: |', observe)).includes('continue-on-error: true'));
 assert(install.includes("test '${{ steps.phase.outcome }}' = success"));
 assert(install.includes("test '${{ steps.upload.outcome }}' = success"));
+// GitHub limits each decoded run value to 21,000 UTF-16 characters. Mixed
+// text/expressions also become one escaped format expression in TemplateReader.
+function observationStep(name) {
+  const begin = install.indexOf('      - name: ' + name + '\n');
+  assert(begin >= 0);
+  const next = install.indexOf('\n      - name:', begin + 1);
+  const step = install.slice(begin, next < 0 ? undefined : next);
+  const marker = '        run: |\n', offset = step.indexOf(marker);
+  assert(offset >= 0);
+  const lines = [];
+  for (const line of step.slice(offset + marker.length).split('\n')) {
+    if (line === '') lines.push('');
+    else if (line.startsWith('          ')) lines.push(line.slice(10));
+    else break;
+  }
+  return { header: step.slice(0, offset), run: lines.join('\n').replace(/\n*$/, '\n') };
+}
+function requireLiteralObservationRun(body) {
+  assert(body.length <= 21000, 'observation run exceeds 21000 characters');
+  assert(!body.includes('${{'), 'observation run must remain literal');
+}
+const preparation = observationStep('Prepare the original Mac seed observer source');
+const diagnostic = observationStep('Observe the original Mac seed closeout failure');
+const prepareIndex = install.indexOf('- name: Prepare the original Mac seed observer source');
+assert(prepareIndex > install.indexOf('--output "${PWD}/evidence/install.json"') && prepareIndex < observe);
+for (const step of [preparation, diagnostic]) {
+  requireLiteralObservationRun(step.run);
+  assert(step.header.includes("steps.phase.outcome == 'failure' && matrix.channel == 'github' && matrix.lifecycle == 'product' && matrix.target == 'aarch64-apple-darwin'"));
+  assert(step.header.includes('continue-on-error: true'));
+  assert(step.run.includes('diagnostic="${RUNNER_TEMP}/mac-seed-observation"'));
+}
+assert(preparation.header.includes('id: seed_observer_source'));
+assert(diagnostic.header.includes("steps.seed_observer_source.outcome == 'success'"));
+assert(diagnostic.header.includes('AIT_SEED_OBSERVATION_CONFIG_SHA: ${{ inputs.candidate_authority_sha256 }}'));
+assert(diagnostic.header.includes('AIT_SEED_OBSERVATION_STATUS_SHA: ${{ needs.stage.outputs.candidate_status_sha256 }}'));
+requireLiteralObservationRun('x'.repeat(21000));
+assert.throws(() => requireLiteralObservationRun('x'.repeat(21001)), /21000/);
+assert.throws(() => requireLiteralObservationRun(preparation.run + diagnostic.run), /21000/);
+assert.throws(() => requireLiteralObservationRun('echo "${{ inputs.candidate_authority_sha256 }}"'), /literal/);
+// Two real shells share only RUNNER_TEMP. A controlled verifier records the
+// actual argv produced by the unchanged stage invocation and SHA env bindings.
+const flowRoot = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'ait-observer-env-flow-')));
+try {
+  mkdirSync(path.join(flowRoot, 'control/ci'), { recursive: true });
+  writeFileSync(path.join(flowRoot, 'control/ci/release_prepublish_verify.mjs'),
+    'process.stdout.write(JSON.stringify(process.argv.slice(2)));\n');
+  const env = { ...process.env, RUNNER_TEMP: flowRoot,
+    AIT_SEED_OBSERVATION_CONFIG_SHA: 'a'.repeat(64), AIT_SEED_OBSERVATION_STATUS_SHA: 'b'.repeat(64) };
+  const run = (body, environment = env) => spawnSync('bash', ['--noprofile', '--norc', '-c', body],
+    { cwd: flowRoot, env: environment, encoding: 'utf8' });
+  const prepared = run(preparation.run);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const cSource = preparation.run.slice(preparation.run.indexOf('#include <stdio.h>'), preparation.run.lastIndexOf('\nC\n') + 1);
+  assert.equal(readFileSync(path.join(flowRoot, 'mac-seed-observation/rename-observer.c'), 'utf8'), cSource);
+  const prefixEnd = diagnostic.run.indexOf('node --input-type=module');
+  assert(prefixEnd > 0);
+  const prefix = diagnostic.run.slice(0, prefixEnd);
+  const verified = run(prefix);
+  assert.equal(verified.status, 0, verified.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(flowRoot, 'mac-seed-observation/candidate-verify.log'), 'utf8')),
+    ['stage', '--root', path.join(flowRoot, 'candidate'), '--config-sha256', env.AIT_SEED_OBSERVATION_CONFIG_SHA,
+      '--status-sha256', env.AIT_SEED_OBSERVATION_STATUS_SHA]);
+  const missing = { ...env }; delete missing.AIT_SEED_OBSERVATION_STATUS_SHA;
+  assert.notEqual(run(prefix, missing).status, 0, 'missing hash binding must fail closed');
+  const failedPreparation = run(preparation.run);
+  assert.notEqual(failedPreparation.status, 0, 'preparation failure must not be hidden');
+} finally { rmSync(flowRoot, { recursive: true, force: true }); }
+console.log('Observation run boundaries/literal bodies, separate-shell preparation and exact SHA environment flow passed');
 const marker = "<<'NODE_SEED_OBSERVATION'\n";
 const js = source.slice(source.indexOf(marker) + marker.length, source.indexOf('\n          NODE_SEED_OBSERVATION'))
   .split('\n').map(line => line.slice(10)).join('\n');
@@ -1003,6 +1073,7 @@ function runtime(options = {}) {
     spawnSync(command, args, settings) {
       calls.push({ command, args, settings });
       const result = { pid: 4567, status: 0, signal: null, stdout: '', stderr: '' };
+      if (command === '/usr/bin/clang' && options.compileFailure) { result.status = 1; result.stderr = 'controlled compiler failure'; }
       if (command === '/sbin/mount') result.stdout = options.noRam ? '' : '/dev/disk9 on /Volumes/AIT_RAM (apfs, local)\n';
       if (command === '/usr/sbin/lsof') {
         result.status = options.writer ? 0 : 1; result.stdout = options.writer ? 'p999\nf1\naw\n' : '';
@@ -1039,7 +1110,7 @@ function runtime(options = {}) {
   return { attempts: attempts.length, exitCode: proc.exitCode ?? 0 };
 }
 for (const options of [{}, { success: true }]) assert.deepEqual(runtime(options), { attempts: 1, exitCode: 0 });
-for (const options of [{ wrongCandidate: true }, { noRam: true }, { dirty: true }, { writer: true }]) {
+for (const options of [{ wrongCandidate: true }, { noRam: true }, { dirty: true }, { writer: true }, { compileFailure: true }]) {
   assert.deepEqual(runtime(options), { attempts: 0, exitCode: 1 });
 }
 assert.deepEqual(runtime({ noCapture: true }), { attempts: 1, exitCode: 1 });

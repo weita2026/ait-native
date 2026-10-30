@@ -296,7 +296,7 @@ required review. Accepted formal retries reuse their original acceptance.
 - [Feature workflow](https://ait-native.dev/technical/workflows/feature/) and [regression repair](https://ait-native.dev/technical/workflows/regression/)
 - [Components](https://ait-native.dev/components/) and [release status](https://ait-native.dev/proof/)
 
-Release source: **v1.2.0**. `ait-monorepo-source.json` records
+Release source: **v1.1.4**. `ait-monorepo-source.json` records
 the exported component Snapshots. See [release status](https://ait-native.dev/proof/)
 for package-channel availability.
 
