@@ -24,7 +24,7 @@ node --input-type=module - "${repo_root}/ci/release_language_repositories.mjs" \
   "${node_entry_host}" <<'NODE_ENTRY'
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
@@ -34,32 +34,45 @@ if (process.argv[3] === "windows") assert.equal(process.platform, "win32");
 const { languageRepository, seedLanguageRepository, verifyLanguageRepository, runLanguageRepository } =
   await import(pathToFileURL(modulePath));
 const source = readFileSync(modulePath, "utf8");
-const helper = source.slice(source.indexOf("function nodeWorkingDirectory("),
+const helper = source.slice(source.indexOf("function foreignRuntimeWorkingDirectory("),
   source.indexOf("export function runLanguageRepository("));
 const ordinary = path.win32.resolve("C:/bound worktree/project");
 const namespaced = path.win32.toNamespacedPath(ordinary);
 let mismatch = false;
+let zeroInode = false, wrongDevice = false, notDirectory = false;
 const inspected = [];
 const sandbox = vm.createContext({ process: { platform: "win32" },
   statSync(file, options) {
     assert.equal(options.bigint, true); inspected.push(file);
-    return { dev: 1n, ino: mismatch && file === ordinary ? 2n : 1n,
-      isDirectory: () => true };
+    return { dev: wrongDevice && file === ordinary ? 2n : 1n,
+      ino: zeroInode ? 0n : mismatch && file === ordinary ? 2n : 1n,
+      isDirectory: () => !notDirectory };
   },
 });
-vm.runInContext(helper + "\nthis.cwd = nodeWorkingDirectory;", sandbox);
-assert.equal(sandbox.cwd(namespaced, "node"), ordinary);
-assert.deepEqual(inspected, [namespaced, ordinary]);
-mismatch = true;
-assert.throws(() => sandbox.cwd(namespaced, "node"), /physical worktree/);
+vm.runInContext(helper + "\nthis.cwd = foreignRuntimeWorkingDirectory;", sandbox);
+for (const command of ["node", "java", "javac"]) {
+  inspected.length = 0;
+  assert.equal(sandbox.cwd(namespaced, command), ordinary);
+  assert.deepEqual(inspected, [namespaced, ordinary]);
+  mismatch = true;
+  assert.throws(() => sandbox.cwd(namespaced, command), /physical worktree/);
+  mismatch = false;
+  for (const invalid of ["zeroInode", "wrongDevice", "notDirectory"]) {
+    zeroInode = invalid === "zeroInode"; wrongDevice = invalid === "wrongDevice"; notDirectory = invalid === "notDirectory";
+    assert.throws(() => sandbox.cwd(namespaced, command), /physical worktree/);
+  }
+  zeroInode = wrongDevice = notDirectory = false;
+}
 inspected.length = 0;
-for (const [root, command] of [[ordinary, "node"], [namespaced, "cargo"],
-  [path.win32.toNamespacedPath("//server/share/project"), "node"], ["/ordinary/project", "node"]]) {
+for (const [root, command] of [[ordinary, "node"], [ordinary, "java"], [namespaced, "cargo"],
+  [namespaced, "go"], [namespaced, "java.exe"], [namespaced, "C:\\JDK\\bin\\java.exe"],
+  [path.win32.toNamespacedPath("//server/share/project"), "java"],
+  [path.win32.toNamespacedPath("//server/share/project"), "node"], ["/ordinary/project", "javac"]]) {
   assert.equal(sandbox.cwd(root, command), root);
 }
 assert.equal(inspected.length, 0);
 sandbox.process.platform = "darwin";
-assert.equal(sandbox.cwd(namespaced, "node"), namespaced);
+for (const command of ["node", "java", "javac"]) assert.equal(sandbox.cwd(namespaced, command), namespaced);
 
 // This portion uses the real shared runner and real Node, with no VM mocks.
 const root = mkdtempSync(path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), "ait node entry "));
@@ -97,9 +110,84 @@ try {
   console.log("Node entry-path regression: actual " + process.platform + "/" + process.arch + " " + process.version +
     "; real build/test path forms=" + roots.length + "; test failures propagate");
 } finally { rmSync(root, { recursive: true, force: true }); }
+
+// JVM execution belongs to the existing real Windows Q lanes. The Unix lane
+// checks the boundary above; it cannot substitute for a native Windows JDK.
+if (process.platform === "win32") {
+  const javaRoot = mkdtempSync(path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), "ait java launch "));
+  const fixture = languageRepository("java");
+  const run = (command, args, cwd) => {
+    const result = spawnSync(command, args, { cwd, env: process.env, encoding: "utf8",
+      timeout: 120000, maxBuffer: 16 * 1024 * 1024 });
+    return { command, args, cwd, status: result.status, signal: result.signal,
+      stdout: result.stdout ?? "", stderr: result.stderr ?? "", error: result.error?.message ?? null };
+  };
+  try {
+    const roots = [javaRoot, path.toNamespacedPath(javaRoot)];
+    for (const command of ["javac", "java"]) {
+      const resolved = run("where.exe", [command], javaRoot);
+      assert.equal(resolved.status, 0, JSON.stringify(resolved));
+      const executable = realpathSync(resolved.stdout.trim().split(/\r?\n/)[0]);
+      const identity = run(command, command === "java" ? ["-XshowSettings:properties", "-version"] :
+        ["-J-XshowSettings:properties", "-version"], javaRoot);
+      console.log("JVM actual PATH identity " + JSON.stringify({ executable, resolution: resolved, identity }));
+      assert.equal(identity.status, 0, JSON.stringify(identity));
+      assert.match(identity.stderr + identity.stdout, /os\.arch\s*=\s*\S+/);
+    }
+    for (const inputRoot of roots) {
+      const a = statSync(javaRoot, { bigint: true }), b = statSync(inputRoot, { bigint: true });
+      assert(a.isDirectory() && b.isDirectory() && a.ino !== 0n && a.ino === b.ino && a.dev === b.dev);
+      seedLanguageRepository(javaRoot, fixture);
+      const manifest = JSON.parse(readFileSync(path.join(javaRoot, "qualification.json"), "utf8"));
+      rmSync(path.join(javaRoot, "build"), { recursive: true, force: true });
+      mkdirSync(path.join(javaRoot, "build"));
+      const raw = [...manifest.toolchains, manifest.build, manifest.test].map(([command, ...args]) => run(command, args, inputRoot));
+      console.log("JVM raw path control " + JSON.stringify({ inputRoot, raw,
+        mainClass: path.join(javaRoot, "build/java/Main.class"),
+        mainClassExists: existsSync(path.join(javaRoot, "build/java/Main.class")) }));
+      // Raw controls may succeed or fail on a given JDK. The adapted shared
+      // runner must execute all four unchanged commands successfully.
+      for (const failure of [null, "compile", "classpath", "text", "binary"]) {
+        seedLanguageRepository(javaRoot, fixture);
+        rmSync(path.join(javaRoot, "build"), { recursive: true, force: true });
+        if (failure === "compile") writeFileSync(path.join(javaRoot, "src/Main.java"), "invalid Java source");
+        const calls = [];
+        const recorder = { run(command, args, options) {
+          if (options.label === "java repository test") {
+            const mainClass = path.join(javaRoot, "build/java/Main.class");
+            assert(statSync(mainClass).isFile(), "compiler must emit the intended Main.class");
+            if (failure === "classpath") rmSync(mainClass);
+            if (failure === "text") writeFileSync(path.join(javaRoot, "data/space name/naïve.txt"), "incorrect\n");
+            if (failure === "binary") writeFileSync(path.join(javaRoot, "data/bytes.bin"), Buffer.from([1]));
+          }
+          const result = run(command, args, options.cwd); calls.push(result);
+          if (result.error || result.status !== 0) throw new Error(options.label + " failed: " + JSON.stringify(result));
+          return result;
+        } };
+        if (failure) {
+          assert.throws(() => runLanguageRepository(recorder, inputRoot, fixture),
+            failure === "compile" ? /java repository build failed/ : /java repository test failed/);
+        } else {
+          verifyLanguageRepository(inputRoot, fixture);
+          const toolchains = runLanguageRepository(recorder, inputRoot, fixture);
+          assert.equal(toolchains.length, 2);
+          verifyLanguageRepository(inputRoot, fixture);
+          assert.deepEqual(calls.map(call => [call.command, ...call.args]),
+            [...manifest.toolchains, manifest.build, manifest.test]);
+          console.log("JVM shared runner path pair " + JSON.stringify({ inputRoot, calls,
+            mainClass: realpathSync(path.join(javaRoot, "build/java/Main.class")) }));
+        }
+        assert(calls.every(call => call.cwd === javaRoot));
+        assert.equal(calls.length, failure === "compile" ? 3 : 4);
+      }
+    }
+    console.log("JVM launch regression: actual win32/" + process.arch +
+      "; ordinary/namespaced probes, compile, classpath and fixture bytes passed; compile/classpath/text/binary failures propagate");
+  } finally { rmSync(javaRoot, { recursive: true, force: true }); }
+}
 NODE_ENTRY
 if [[ ${node_entry_host} == windows ]]; then
-  printf 'Focused native Windows Node entry-path regression passed\n'
+  printf 'Focused native Windows Node and JVM launch regressions passed\n'
   exit 0
 fi
 
@@ -1022,6 +1110,7 @@ assert(!js.includes('mkdtempSync') && !js.includes('chmodSync') && !js.includes(
 console.log('Same-context observation guards reject changed authority, unsafe closeout, wrong branch and unavailable capture; ordinary enforcement preserved');
 // Execute the complete inline orchestration with controlled child/filesystem
 // boundaries. This proves ordering and result preservation, not hosted capture.
+let discoveryParser;
 function runtime(options = {}) {
   const p = phase(), bytes = Buffer.from('landed fixture\n');
   const files = [{ path: 'first-land.txt', sha256: createHash('sha256').update(bytes).digest('hex'), mode: '0o644' }];
@@ -1038,6 +1127,8 @@ function runtime(options = {}) {
   const status = { candidate: { stage_receipt_sha256: 'c'.repeat(64) } };
   const env = { RUNNER_TEMP: '/runner/temp', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1', GITHUB_JOB: 'install',
     ImageVersion: 'current', ImageOS: 'macos15', RUNNER_NAME: 'same-vm', AIT_SEED_OBSERVATION_ROW: 'github-arm',
+    AIT_CLEAN_HOST_PYTHON: '/runner/python/bin/python3', PATH: '/usr/bin:/bin', HOME: '/Users/runner', TMPDIR: '/runner/temp',
+    UNRELATED_SECRET: 'must not enter discovery logs',
     AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: 'sha256:' + 'd'.repeat(64) };
   p.row.id = 'github-arm'; p.row.runner = 'macos-15';
   p.release = { ...authority.release, verification_stage: 'pre_tag',
@@ -1074,6 +1165,22 @@ function runtime(options = {}) {
       calls.push({ command, args, settings });
       const result = { pid: 4567, status: 0, signal: null, stdout: '', stderr: '' };
       if (command === '/usr/bin/clang' && options.compileFailure) { result.status = 1; result.stderr = 'controlled compiler failure'; }
+      if (command === '/usr/bin/which') result.stdout = '/usr/bin/hdiutil\n';
+      if (command === 'hdiutil') {
+        assert.deepEqual(Array.from(args), ['info', '-plist']);
+        const observer = !!settings.env.DYLD_INSERT_LIBRARIES;
+        result.stdout = observer && options.discoveryMismatch ? '<plist><dict/></plist>' : '<plist>controlled writable ram image</plist>';
+        if (options.discoveryFailure) { result.status = 1; result.stderr = 'controlled hdiutil failure'; }
+      }
+      if (command === env.AIT_CLEAN_HOST_PYTHON) {
+        assert.equal(args[0], '-c');
+        assert(args[1].includes('plistlib.loads'));
+        discoveryParser = args[1];
+        result.stdout = JSON.stringify(settings.input.includes('writable ram image') ? [
+          { 'image-path': options.nonRam ? '/tmp/disk.dmg' : 'ram://123456', writeable: !options.readonlyRam,
+            'mount-points': [options.wrongMount ? '/Volumes/other' : '/Volumes/AIT_RAM'] }] : []);
+        if (options.invalidPlist) { result.status = 1; result.stdout = ''; result.stderr = 'controlled XML parse failure'; }
+      }
       if (command === '/sbin/mount') result.stdout = options.noRam ? '' : '/dev/disk9 on /Volumes/AIT_RAM (apfs, local)\n';
       if (command === '/usr/sbin/lsof') {
         result.status = options.writer ? 0 : 1; result.stdout = options.writer ? 'p999\nf1\naw\n' : '';
@@ -1096,6 +1203,7 @@ function runtime(options = {}) {
           result.status = options.success ? 0 : 2;
           const response = closeout(true);
           if (options.success) { response.closeout_status = 'complete'; response.main_seed_sync.status = 'refreshed'; }
+          if (options.childUnavailable) response.main_seed_sync = { status: 'skipped', reason: 'managed_ephemeral_root_unavailable' };
           result.stdout = JSON.stringify(response);
           if (!options.noCapture) data.set(diagnostic + '/rename.log', Buffer.from(rename));
         }
@@ -1107,14 +1215,49 @@ function runtime(options = {}) {
   const attempts = calls.filter(call => call.command === cli && call.args[0] === 'task' && call.args[1] === 'finish');
   assert.deepEqual(data.get('evidence/install.json'), original);
   assert.equal(JSON.parse(data.get('evidence/install.json')).status, 'fail');
+  const discoveryCalls = calls.filter(call => call.command === 'hdiutil');
+  if (discoveryCalls.length) {
+    assert.equal(discoveryCalls.length, 2);
+    assert.equal(discoveryCalls[0].settings.env.DYLD_INSERT_LIBRARIES, undefined);
+    assert.equal(discoveryCalls[1].settings.env.DYLD_INSERT_LIBRARIES, diagnostic + '/rename-observer.dylib');
+    assert.equal(discoveryCalls[1].settings.env.CORE_SEED_RENAME_LOG, diagnostic + '/rename.log');
+    const logs = ['discovery-ordinary-parent', 'discovery-observer-parent'].map(name =>
+      JSON.parse(data.get(diagnostic + '/' + name + '.log').toString()));
+    for (const log of logs) {
+      assert.match(log.scope, /parent probe only/);
+      assert.deepEqual(Object.keys(log.launcher_env).sort(),
+        ['PATH', 'HOME', 'TMPDIR', 'DYLD_INSERT_LIBRARIES', 'CORE_SEED_RENAME_LOG'].sort());
+      assert(!JSON.stringify(log).includes(env.UNRELATED_SECRET));
+      assert.equal(log.resolved.stdout, '/usr/bin/hdiutil\n');
+      assert.equal(log.info_plist.exit, options.discoveryFailure ? 1 : 0);
+    }
+    const attemptIndex = calls.findIndex(call => call.command === cli && call.args[1] === 'finish');
+    if (attemptIndex >= 0) assert(calls.indexOf(discoveryCalls[1]) < attemptIndex);
+  }
   return { attempts: attempts.length, exitCode: proc.exitCode ?? 0 };
 }
 for (const options of [{}, { success: true }]) assert.deepEqual(runtime(options), { attempts: 1, exitCode: 0 });
-for (const options of [{ wrongCandidate: true }, { noRam: true }, { dirty: true }, { writer: true }, { compileFailure: true }]) {
+for (const options of [{ wrongCandidate: true }, { noRam: true }, { dirty: true }, { writer: true }, { compileFailure: true },
+  { discoveryMismatch: true }, { discoveryFailure: true }, { invalidPlist: true }, { readonlyRam: true },
+  { nonRam: true }, { wrongMount: true }]) {
   assert.deepEqual(runtime(options), { attempts: 0, exitCode: 1 });
 }
 assert.deepEqual(runtime({ noCapture: true }), { attempts: 1, exitCode: 1 });
-console.log('Inline observation orchestration: single guarded attempt, child-only injection, unsafe inputs refused and original failure bytes preserved');
+assert.deepEqual(runtime({ childUnavailable: true }), { attempts: 1, exitCode: 1 });
+// Execute the exact embedded parser with real plist XML, including the field
+// spelling Core consumes. Mocked orchestration alone would miss parser errors.
+const xml = '<plist version="1.0"><dict><key>images</key><array><dict>' +
+  '<key>image-path</key><string>ram://123456</string><key>writeable</key><true/>' +
+  '<key>system-entities</key><array><dict><key>mount-point</key><string>/Volumes/AIT_RAM</string>' +
+  '</dict></array></dict></array></dict></plist>';
+for (const [input, writable] of [[xml, true], [xml.replace('<true/>', '<false/>'), false]]) {
+  const parsed = spawnSync('python3', ['-c', discoveryParser], { input, encoding: 'utf8' });
+  assert.equal(parsed.status, 0, parsed.stderr);
+  assert.deepEqual(JSON.parse(parsed.stdout), [{ 'image-path': 'ram://123456', writeable: writable,
+    'mount-points': ['/Volumes/AIT_RAM'] }]);
+}
+assert.notEqual(spawnSync('python3', ['-c', discoveryParser], { input: 'invalid XML', encoding: 'utf8' }).status, 0);
+console.log('Inline observation orchestration: matching parent discovery probes, single guarded CLI attempt, unsafe inputs refused and original failure bytes preserved');
 MAC_SEED_OBSERVATION_TEST
 test "$(grep -c 'name: Activate preinstalled Linux Homebrew' "${workflow}")" = 3
 test "$(grep -c 'name: Bootstrap Windows Package Manager' "${workflow}")" = 3

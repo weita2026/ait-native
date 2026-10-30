@@ -109,19 +109,19 @@ export function verifyLanguageRepository(root, fixture, snapshot = null) {
   }
 }
 
-function nodeWorkingDirectory(root, command) {
-  // Node's relative main-entry loader cannot resolve this Win32 namespace
-  // spelling. Adapt only its foreign-runtime cwd; Core retains the exact root.
+function foreignRuntimeWorkingDirectory(root, command) {
+  // Keep bare Node/JVM launches on a verified ordinary drive spelling.
+  // This launch boundary does not change Core's worktree or fixture arguments.
   const prefix = "\\\\?\\";
-  if (process.platform !== "win32" || command !== "node" ||
+  if (process.platform !== "win32" || !["node", "java", "javac"].includes(command) ||
       !root.startsWith(prefix) || !/^[A-Za-z]:\\/.test(root.slice(prefix.length))) return root;
   const ordinary = root.slice(prefix.length);
   const originalDirectory = statSync(root, { bigint: true });
-  const nodeDirectory = statSync(ordinary, { bigint: true });
-  if (!originalDirectory.isDirectory() || !nodeDirectory.isDirectory() ||
-      originalDirectory.ino === 0n || nodeDirectory.ino === 0n ||
-      originalDirectory.dev !== nodeDirectory.dev || originalDirectory.ino !== nodeDirectory.ino) {
-    throw new Error("Node language cwd does not preserve the physical worktree");
+  const launchDirectory = statSync(ordinary, { bigint: true });
+  if (!originalDirectory.isDirectory() || !launchDirectory.isDirectory() ||
+      originalDirectory.ino === 0n || launchDirectory.ino === 0n ||
+      originalDirectory.dev !== launchDirectory.dev || originalDirectory.ino !== launchDirectory.ino) {
+    throw new Error("Foreign runtime language cwd does not preserve the physical worktree");
   }
   return ordinary;
 }
@@ -139,7 +139,7 @@ export function runLanguageRepository(recorder, root, fixture) {
   const toolchains = [];
   for (const [command, ...args] of manifest.toolchains) {
     const result = recorder.run(command, args, {
-      cwd: nodeWorkingDirectory(root, command), label: `${fixture.name} toolchain ${command} version`,
+      cwd: foreignRuntimeWorkingDirectory(root, command), label: `${fixture.name} toolchain ${command} version`,
       env: { ...process.env, CARGO_NET_OFFLINE: "true", GOPROXY: "off", GOTOOLCHAIN: "local" },
     });
     const versionOutput = `${result?.stdout ?? ""}\n${result?.stderr ?? ""}`.trim();
@@ -153,7 +153,7 @@ export function runLanguageRepository(recorder, root, fixture) {
   for (const phase of ["build", "test"]) {
     const [command, ...args] = manifest[phase];
     recorder.run(command, args, {
-      cwd: nodeWorkingDirectory(root, command),
+      cwd: foreignRuntimeWorkingDirectory(root, command),
       label: `${fixture.name} repository ${phase}`,
       env: { ...process.env, CARGO_NET_OFFLINE: "true", GOPROXY: "off", GOTOOLCHAIN: "local" },
     });
