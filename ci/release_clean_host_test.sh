@@ -16,6 +16,93 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+# Keep this focused part executable by the existing native Windows Q lanes.
+# The remaining shell/fixture controls continue in the ordinary Unix lane.
+node_entry_host=unix
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) node_entry_host=windows ;; esac
+node --input-type=module - "${repo_root}/ci/release_language_repositories.mjs" \
+  "${node_entry_host}" <<'NODE_ENTRY'
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import vm from "node:vm";
+import { pathToFileURL } from "node:url";
+const modulePath = process.argv[2];
+if (process.argv[3] === "windows") assert.equal(process.platform, "win32");
+const { languageRepository, seedLanguageRepository, verifyLanguageRepository, runLanguageRepository } =
+  await import(pathToFileURL(modulePath));
+const source = readFileSync(modulePath, "utf8");
+const helper = source.slice(source.indexOf("function nodeWorkingDirectory("),
+  source.indexOf("export function runLanguageRepository("));
+const ordinary = path.win32.resolve("C:/bound worktree/project");
+const namespaced = path.win32.toNamespacedPath(ordinary);
+let mismatch = false;
+const inspected = [];
+const sandbox = vm.createContext({ process: { platform: "win32" },
+  statSync(file, options) {
+    assert.equal(options.bigint, true); inspected.push(file);
+    return { dev: 1n, ino: mismatch && file === ordinary ? 2n : 1n,
+      isDirectory: () => true };
+  },
+});
+vm.runInContext(helper + "\nthis.cwd = nodeWorkingDirectory;", sandbox);
+assert.equal(sandbox.cwd(namespaced, "node"), ordinary);
+assert.deepEqual(inspected, [namespaced, ordinary]);
+mismatch = true;
+assert.throws(() => sandbox.cwd(namespaced, "node"), /physical worktree/);
+inspected.length = 0;
+for (const [root, command] of [[ordinary, "node"], [namespaced, "cargo"],
+  [path.win32.toNamespacedPath("//server/share/project"), "node"], ["/ordinary/project", "node"]]) {
+  assert.equal(sandbox.cwd(root, command), root);
+}
+assert.equal(inspected.length, 0);
+sandbox.process.platform = "darwin";
+assert.equal(sandbox.cwd(namespaced, "node"), namespaced);
+
+// This portion uses the real shared runner and real Node, with no VM mocks.
+const root = mkdtempSync(path.join(process.env.RUNNER_TEMP ?? os.tmpdir(), "ait node entry "));
+try {
+  const fixture = languageRepository("typescript_node");
+  seedLanguageRepository(root, fixture);
+  const manifest = JSON.parse(readFileSync(path.join(root, "qualification.json"), "utf8"));
+  const roots = process.platform === "win32" ? [root, path.toNamespacedPath(root)] : [root];
+  for (const inputRoot of roots) {
+    rmSync(path.join(root, "build"), { recursive: true, force: true });
+    const calls = [];
+    const recorder = corruptTest => ({ run(command, args, options) {
+      calls.push({ command, args, cwd: options.cwd, label: options.label });
+      if (corruptTest && options.label.endsWith("repository test")) {
+        writeFileSync(path.join(root, "build/node/result.txt"), "incorrect");
+      }
+      const result = spawnSync(command, args, { ...options, encoding: "utf8" });
+      if (result.error) throw result.error;
+      if (result.status !== 0) throw new Error(options.label + " failed with " + result.status + ": " + result.stderr);
+      return result;
+    } });
+    verifyLanguageRepository(inputRoot, fixture);
+    runLanguageRepository(recorder(false), inputRoot, fixture);
+    assert.equal(readFileSync(path.join(root, "build/node/result.txt"), "utf8"), "42");
+    assert.deepEqual(calls.map(call => call.args), [["--version"], manifest.build.slice(1), manifest.test.slice(1)]);
+    assert(calls.every(call => call.command === "node" && call.cwd === root));
+    assert.deepEqual(calls.map(call => call.label), ["typescript_node toolchain node version",
+      "typescript_node repository build", "typescript_node repository test"]);
+    calls.length = 0;
+    assert.throws(() => runLanguageRepository(recorder(true), inputRoot, fixture), /repository test failed/);
+    assert.equal(calls.at(-1).label, "typescript_node repository test");
+    assert(calls.every(call => call.cwd === root));
+    verifyLanguageRepository(inputRoot, fixture);
+  }
+  console.log("Node entry-path regression: actual " + process.platform + "/" + process.arch + " " + process.version +
+    "; real build/test path forms=" + roots.length + "; test failures propagate");
+} finally { rmSync(root, { recursive: true, force: true }); }
+NODE_ENTRY
+if [[ ${node_entry_host} == windows ]]; then
+  printf 'Focused native Windows Node entry-path regression passed\n'
+  exit 0
+fi
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -749,6 +836,215 @@ for (const name of [
   assert.equal(rule.test(name), false, `expected unsafe checksum asset name: ${name}`);
 }
 NODE
+node --input-type=module - "${workflow}" <<'MAC_SEED_OBSERVATION_TEST'
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+import path from 'node:path';
+const source = readFileSync(process.argv[2], 'utf8');
+const install = source.slice(source.indexOf('  install:'), source.indexOf('  upgrade:'));
+assert(!source.includes('  mac_seed_observation:'));
+assert(!source.includes('steps.seed_observation.outputs'));
+assert(!source.includes('needs.aggregate.outputs.mac_seed'));
+const observe = install.indexOf('- name: Observe the original Mac seed closeout failure');
+assert(observe > install.indexOf('--output "${PWD}/evidence/install.json"'));
+assert(observe < install.indexOf('- name: Upload install-phase evidence'));
+assert(install.includes("steps.phase.outcome == 'failure' && matrix.channel == 'github' && matrix.lifecycle == 'product' && matrix.target == 'aarch64-apple-darwin'"));
+assert(install.slice(observe, install.indexOf('        run: |', observe)).includes('continue-on-error: true'));
+assert(install.includes("test '${{ steps.phase.outcome }}' = success"));
+assert(install.includes("test '${{ steps.upload.outcome }}' = success"));
+const marker = "<<'NODE_SEED_OBSERVATION'\n";
+const js = source.slice(source.indexOf(marker) + marker.length, source.indexOf('\n          NODE_SEED_OBSERVATION'))
+  .split('\n').map(line => line.slice(10)).join('\n');
+const pure = js.slice(js.indexOf('const digest ='), js.indexOf('// Runtime observation:'));
+const sandbox = vm.createContext({ assert, createHash, path });
+vm.runInContext(pure + '\nthis.api = { selectOriginal, validateCloseout, validateObservation, commandText };', sandbox);
+const { selectOriginal, validateCloseout, validateObservation, commandText } = sandbox.api;
+const copy = value => JSON.parse(JSON.stringify(value));
+const repository = '/runner/temp/ait-clean-host-install-Ab1234/candidate-repository';
+const cli = path.join(path.dirname(repository), 'github-bin/ait');
+const task = 'LT-0001', snapshot = 'SNP-0123456789AB', target = 'main';
+const worktree = '/Volumes/AIT_RAM/.ait-repos/0123456789ab/candidate-repository/lt-0001';
+const seed = path.join(path.dirname(worktree), '.ait-internal/main-seed');
+const receipt = { status: 'succeeded', task_id: task, landed_snapshot_id: snapshot,
+  target_line: target, change_ref: null, pre_land_target_snapshot_id: 'SNP-ABCDEF012345' };
+function closeout(recovery) {
+  return { task_id: task, task: { task_id: task, status: 'completed', local_finish: receipt }, task_status: 'completed',
+    apply_status: 'done', current_line: target, line_name: target, target_line: target, landed_snapshot_id: snapshot,
+    change: null, change_id: null, change_ref: null, change_status: null, local_finish: receipt,
+    execution_status: recovery ? 'already_landed' : 'applied', auto_snapshot: recovery ? null : {
+      snapshot_id: snapshot, newly_created: true, files: [{ path: 'first-land.txt', sha256: 'a'.repeat(64) }] },
+    automatic_reconciliation: { status: 'completed', mutated: false, receipt_store_mutated: false,
+      actions: [], findings: [], summary: { remaining_count: 0 } },
+    workspace_action: 'restored', repo_root_restore: { status: 'restored', target_snapshot_id: snapshot,
+      workspace_root: repository, dirty_outside_paths: [], plan: { write_count: recovery ? 0 : 1,
+        remove_count: 0, unchanged_count: recovery ? 1 : 0 } },
+    bound_worktree_cleanup: recovery ? { task_id: task, status: 'skipped', reason: 'no_bound_worktree' } : {
+      task_id: task, status: 'removed', worktree: { removed: true, deleted_path: true, workspace_status: 'clean', path: worktree } },
+    bound_line_closeout: { status: 'archived', task_id: task, task_status: 'completed', target_line: target,
+      expected_revision_snapshot_id: snapshot, local: { status: 'archived', line: { head_snapshot_id: snapshot, status: 'archived' } } },
+    plan_checklist_closeout: { status: 'synced', sync: { status: 'ok' }, updated: !recovery },
+    plan_markdown_materialization: { status: 'in_sync', drift: [], skipped: [] },
+    main_seed_sync: { path: seed, name: 'main-seed', line_name: target, root_source: 'macos_ram_volume',
+      seed_snapshot_id: snapshot, baseline_seed_snapshot_id: null, refresh_strategy: 'full_snapshot_materialization',
+      fallback_used: true, fallback_reason: 'task_worktree_promotion_unavailable', copy_error: null, copy_strategy: null,
+      materialized_write_count: 3, status: 'failed',
+      error: `Failed to install staged main seed ${path.dirname(seed)}/.main-seed.tmp-1234-20261030T001313Z at ${seed}: Permission denied (os error 13)` },
+    closeout_status: 'partial', closeout_recovery: { idempotent: true, command: `ait task finish ${task} --local` } };
+}
+function command(label, args, stdout = {}, status = 0, cwd = repository) {
+  const text = JSON.stringify(stdout);
+  return { label, command: commandText(cli, args), cwd, exit_status: status, stdout_tail: text,
+    stdout_sha256: createHash('sha256').update(text).digest('hex'), stderr_tail: '' };
+}
+const row = { channel: 'github', lifecycle: 'product', target: 'aarch64-apple-darwin', os: 'macos', architecture: 'arm64' };
+function phase() {
+  return { contract: 'ait.release.clean-host.phase/v1', phase: 'install', status: 'fail', row,
+    error: { category: 'lifecycle_failure' }, commands: [command('candidate ait init', ['init', '--json']),
+      command('candidate task start', ['task', 'start', '--from', 'docs/sprints/clean_host.md#clean-host/first-land',
+        '--intent', 'Prove exact clean-host first land', '--json'], { task_id: task, edit_root_source: 'managed',
+        edit_root: worktree, head_snapshot_id: receipt.pre_land_target_snapshot_id }),
+      command('candidate task finish', ['task', 'finish', task, '--message', 'Clean-host first Snapshot', '--local', '--json', '--full'], closeout(false), 2, worktree),
+      command('candidate integrated Snapshot show', ['snapshot', 'show', snapshot, '--json'], {
+        snapshot_id: snapshot, parent_snapshot_id: receipt.pre_land_target_snapshot_id, files: closeout(false).auto_snapshot.files }),
+      command('candidate task finish closeout resume', ['task', 'finish', task, '--local', '--json', '--full'], closeout(true), 2)] };
+}
+// VM realm arrays must share the guard's realm for strict deep comparisons.
+const inside = value => vm.runInContext('(' + JSON.stringify(value) + ')', sandbox);
+const selected = selectOriginal(inside(phase()), inside(row));
+assert.equal(selected.task, task);
+for (const mutate of [p => { p.status = 'pass'; }, p => { p.commands.at(-1).exit_status = 0; },
+  p => { p.commands[2].exit_status = 0; }, p => { p.commands[2].cwd = repository; },
+  p => { p.commands.at(-1).command += ' --message changed'; },
+  p => { p.commands.at(-1).stdout_tail = '{truncated'; },
+  p => { p.commands[0].cwd = '/other/candidate-repository'; }]) {
+  const changed = phase(); mutate(changed); assert.throws(() => selectOriginal(inside(changed), inside(row)));
+}
+for (const mutate of [v => { v.task_id = 'LT-0002'; }, v => { v.target_line = 'other'; },
+  v => { v.auto_snapshot = {}; }, v => { v.local_finish = { ...v.local_finish, landed_snapshot_id: 'SNP-AAAAAAAAAAAA' }; },
+  v => { v.automatic_reconciliation.mutated = true; }, v => { v.automatic_reconciliation.actions = [{}]; },
+  v => { v.repo_root_restore.status = 'failed'; }, v => { v.repo_root_restore.plan.write_count = 1; },
+  v => { v.bound_worktree_cleanup.reason = 'permission_failure'; }, v => { v.bound_line_closeout.status = 'failed'; },
+  v => { v.plan_checklist_closeout.status = 'failed'; }, v => { v.plan_markdown_materialization.drift = [{}]; },
+  v => { v.main_seed_sync.root_source = 'repo_local_fallback'; }, v => { v.main_seed_sync.status = 'skipped'; },
+  v => { v.main_seed_sync.baseline_seed_snapshot_id = snapshot; }, v => { v.main_seed_sync.refresh_strategy = 'already_aligned'; },
+  v => { v.main_seed_sync.error = v.main_seed_sync.error.replace('os error 13', 'os error 1'); },
+  v => { v.main_seed_sync.path = '/other/main-seed'; }]) {
+  const changed = closeout(true); mutate(changed); assert.throws(() => validateCloseout(inside(changed), selected, true));
+}
+const success = closeout(true); success.closeout_status = 'complete'; success.main_seed_sync.status = 'refreshed';
+validateCloseout(inside(success), selected, true, false);
+const pid = 4567;
+const rename = [`LOADED pid=${pid} euid=501 egid=20 executable=${cli}`,
+  `RENAME pid=${pid} euid=501 egid=20 sfd=-2 src=${path.dirname(seed)}/.main-seed.tmp-4567-20261030T001313Z dfd=-2 dst=${seed}`,
+  'source path=/stage uid=501 gid=20 mode=755', 'source_parent path=/parent uid=501 gid=20 mode=755',
+  'destination path=/seed lstat_errno=2', 'destination_parent path=/parent uid=501 gid=20 mode=755',
+  `RESULT pid=${pid} result=-1 errno=13`].join('\n');
+validateObservation(rename, pid, cli, seed);
+for (const text of [rename.replace(`LOADED pid=${pid}`, 'LOADED pid=1'),
+  rename.replace('source_parent path=', 'missing path='), rename.replace(`RESULT pid=${pid}`, 'RESULT pid=1'),
+  rename.replace('/.main-seed.tmp-', '/other-'), rename.replace(`executable=${cli}`, 'executable=/other/ait')]) {
+  assert.throws(() => validateObservation(text, pid, cli, seed));
+}
+assert.equal((js.match(/probe\('commands', cli, \['task', 'finish'/g) ?? []).length, 1);
+assert(!js.includes('mkdtempSync') && !js.includes('chmodSync') && !js.includes('exerciseLifecycle'));
+console.log('Same-context observation guards reject changed authority, unsafe closeout, wrong branch and unavailable capture; ordinary enforcement preserved');
+// Execute the complete inline orchestration with controlled child/filesystem
+// boundaries. This proves ordering and result preservation, not hosted capture.
+function runtime(options = {}) {
+  const p = phase(), bytes = Buffer.from('landed fixture\n');
+  const files = [{ path: 'first-land.txt', sha256: createHash('sha256').update(bytes).digest('hex'), mode: '0o644' }];
+  for (const item of p.commands) {
+    const value = JSON.parse(item.stdout_tail);
+    if (value.auto_snapshot) value.auto_snapshot.files = files;
+    if (item.label === 'candidate integrated Snapshot show') value.files = files;
+    item.stdout_tail = JSON.stringify(value);
+    item.stdout_sha256 = createHash('sha256').update(item.stdout_tail).digest('hex');
+  }
+  const assetBytes = Buffer.from('exact frozen CLI'), assetDigest = createHash('sha256').update(assetBytes).digest('hex');
+  const authority = { release: { id: 'REL-FAM-0123456789ABCDEF', version: '1.2.0', python_version: '1.2.0',
+    channel: 'stable', tag: 'v1.2.0', source_commit: 'b'.repeat(40) } };
+  const status = { candidate: { stage_receipt_sha256: 'c'.repeat(64) } };
+  const env = { RUNNER_TEMP: '/runner/temp', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1', GITHUB_JOB: 'install',
+    ImageVersion: 'current', ImageOS: 'macos15', RUNNER_NAME: 'same-vm', AIT_SEED_OBSERVATION_ROW: 'github-arm',
+    AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: 'sha256:' + 'd'.repeat(64) };
+  p.row.id = 'github-arm'; p.row.runner = 'macos-15';
+  p.release = { ...authority.release, verification_stage: 'pre_tag',
+    endpoint_config_sha256: createHash('sha256').update(JSON.stringify(authority)).digest('hex'),
+    operator_status_sha256: createHash('sha256').update(JSON.stringify(status)).digest('hex'),
+    candidate_stage_receipt_sha256: status.candidate.stage_receipt_sha256,
+    candidate_artifact_digest: options.wrongCandidate ? 'sha256:' + 'e'.repeat(64) : env.AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST };
+  p.runner = { run_id: env.GITHUB_RUN_ID, run_attempt: '1', job: 'install', image_version: env.ImageVersion,
+    image_os: env.ImageOS, runner_name: env.RUNNER_NAME, label: p.row.runner };
+  const assetName = `ait-1.2.0-${p.row.target}`;
+  p.observations = { github_assets: [{ name: assetName, source: 'frozen_candidate_stage', digest: 'sha256:' + assetDigest }] };
+  const data = new Map(Object.entries({
+    'evidence/install.json': JSON.stringify(p),
+    'candidate/ait-release.clean-host-matrix.json': JSON.stringify({ rows: [p.row] }),
+    'candidate/ait-release.endpoints.authority.json': JSON.stringify(authority),
+    'candidate/ait-release.prepublish-candidate.json': JSON.stringify(status),
+    [cli]: assetBytes, ['candidate/assets/' + assetName]: assetBytes,
+    [path.join(repository, 'first-land.txt')]: bytes,
+    [path.join(repository, '.ait/config.json')]: '{"frozen":true}',
+    [path.join(repository, 'docs/sprints/clean_host.md')]: '# Clean Host First Land [plan-ref: clean-host/root]\n\n## Work\n\n- [x] Materialize the exact clean-host file. [ref: clean-host/first-land]\n',
+  }).map(([key, value]) => [key, Buffer.from(value)]));
+  const original = Buffer.from(data.get('evidence/install.json'));
+  const calls = [], diagnostic = '/runner/temp/mac-seed-observation', proc = { platform: 'darwin', arch: 'arm64', env };
+  const missing = file => Object.assign(new Error('not found: ' + file), { code: 'ENOENT' });
+  const context = vm.createContext({ assert, createHash, path, Buffer, process: proc,
+    console: { log() {}, error() {} },
+    readFileSync(file, encoding) { if (!data.has(file)) throw missing(file); return encoding ? data.get(file).toString() : data.get(file); },
+    writeFileSync(file, text, settings) { data.set(file, Buffer.from((settings?.flag === 'a' ? data.get(file)?.toString() ?? '' : '') + text)); },
+    realpathSync: file => file,
+    existsSync: file => data.has(file),
+    statSync: file => ({ dev: file === '/Volumes/AIT_RAM' ? 2 : 1 }),
+    lstatSync(file) { if (file === seed) throw missing(file); return { mode: 0o644, isFile: () => true }; },
+    spawnSync(command, args, settings) {
+      calls.push({ command, args, settings });
+      const result = { pid: 4567, status: 0, signal: null, stdout: '', stderr: '' };
+      if (command === '/sbin/mount') result.stdout = options.noRam ? '' : '/dev/disk9 on /Volumes/AIT_RAM (apfs, local)\n';
+      if (command === '/usr/sbin/lsof') {
+        result.status = options.writer ? 0 : 1; result.stdout = options.writer ? 'p999\nf1\naw\n' : '';
+      }
+      if (command === cli) {
+        assert.equal(settings.cwd, repository);
+        if (args[0] !== 'task' || args[1] !== 'finish') assert.equal(settings.env.DYLD_INSERT_LIBRARIES, undefined);
+        if (args[0] === 'status') result.stdout = JSON.stringify({ current_line: 'main', head_snapshot_id: snapshot,
+          workspace_dirty: !!options.dirty, is_worktree: false, snapshot_count: 2 });
+        else if (args[0] === 'line') result.stdout = JSON.stringify({ head_snapshot_id: snapshot });
+        else if (args[0] === 'workflow') result.stdout = JSON.stringify({ status: 'completed', mutated: false,
+          findings: [], summary: { remaining_count: 0, total_finding_count: 0 },
+          inventory: { interrupted_operation_count: 0, worktree_count: 0, selected_change_count: 0 },
+          sources: { workspace_lock: { active: false } } });
+        else if (args[1] === 'show') result.stdout = JSON.stringify({ status: 'completed', local_finish: receipt });
+        else {
+          assert.deepEqual(args, vm.runInContext(JSON.stringify(['task', 'finish', task, '--local', '--json', '--full']), context));
+          assert.equal(settings.env.DYLD_INSERT_LIBRARIES, diagnostic + '/rename-observer.dylib');
+          assert.equal(settings.env.CORE_SEED_RENAME_LOG, diagnostic + '/rename.log');
+          result.status = options.success ? 0 : 2;
+          const response = closeout(true);
+          if (options.success) { response.closeout_status = 'complete'; response.main_seed_sync.status = 'refreshed'; }
+          result.stdout = JSON.stringify(response);
+          if (!options.noCapture) data.set(diagnostic + '/rename.log', Buffer.from(rename));
+        }
+      }
+      return result;
+    },
+  });
+  vm.runInContext(js.slice(js.indexOf('const digest =')), context);
+  const attempts = calls.filter(call => call.command === cli && call.args[0] === 'task' && call.args[1] === 'finish');
+  assert.deepEqual(data.get('evidence/install.json'), original);
+  assert.equal(JSON.parse(data.get('evidence/install.json')).status, 'fail');
+  return { attempts: attempts.length, exitCode: proc.exitCode ?? 0 };
+}
+for (const options of [{}, { success: true }]) assert.deepEqual(runtime(options), { attempts: 1, exitCode: 0 });
+for (const options of [{ wrongCandidate: true }, { noRam: true }, { dirty: true }, { writer: true }]) {
+  assert.deepEqual(runtime(options), { attempts: 0, exitCode: 1 });
+}
+assert.deepEqual(runtime({ noCapture: true }), { attempts: 1, exitCode: 1 });
+console.log('Inline observation orchestration: single guarded attempt, child-only injection, unsafe inputs refused and original failure bytes preserved');
+MAC_SEED_OBSERVATION_TEST
 test "$(grep -c 'name: Activate preinstalled Linux Homebrew' "${workflow}")" = 3
 test "$(grep -c 'name: Bootstrap Windows Package Manager' "${workflow}")" = 3
 grep -F 'test -x /home/linuxbrew/.linuxbrew/bin/brew' "${workflow}" >/dev/null
@@ -759,7 +1055,7 @@ test "$(grep -Fc 'Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_P
   "${workflow}")" = 3
 test "$(grep -c '^        id: python$' "${workflow}")" = 2
 test "$(grep -Fc 'AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}' \
-  "${workflow}")" = 2
+  "${workflow}")" = 3
 python_command_source=$(sed -n '/^function pythonCommand() {$/,/^}$/p' "${phase_runner}")
 grep -F 'process.env.AIT_CLEAN_HOST_PYTHON' <<<"${python_command_source}" >/dev/null
 grep -F 'requireExecutableFile(configured, "configured clean-host Python")' \

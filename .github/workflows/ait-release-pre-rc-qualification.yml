@@ -261,6 +261,12 @@ jobs:
           }
           '@ | node --input-type=module
           if ($LASTEXITCODE -ne 0) { throw 'Native initialization case did not execute and pass' }
+          $gitBash = Join-Path $env:ProgramFiles 'Git/bin/bash.exe'
+          if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) {
+            throw 'Existing native Git Bash is unavailable'
+          }
+          & $gitBash --noprofile --norc source/ci/release_clean_host_test.sh
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows Node entry-path regression failed' }
 
       - name: Run native retained-source regressions for the selected family
         shell: pwsh

@@ -425,6 +425,460 @@ jobs:
             --prior-python-version '${{ inputs.prior_python_version }}' \
             --output "${PWD}/evidence/install.json"
 
+      # Observe one pending closeout in its original VM, after both ordinary
+      # uninstrumented attempts. This optional result never qualifies a row.
+      - name: Observe the original Mac seed closeout failure
+        if: ${{ !cancelled() && steps.phase.outcome == 'failure' && matrix.channel == 'github' && matrix.lifecycle == 'product' && matrix.target == 'aarch64-apple-darwin' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: ${{ needs.stage.outputs.candidate_artifact_digest }}
+          AIT_CLEAN_HOST_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+          AIT_CLEAN_HOST_SOURCE_ROOT: ${{ github.workspace }}/source
+          AIT_CLEAN_HOST_RUNNER_LABEL: ${{ matrix.runner }}
+          AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}
+          AIT_SEED_OBSERVATION_ROW: ${{ matrix.id }}
+        run: |
+          set -euo pipefail
+          diagnostic="${RUNNER_TEMP}/mac-seed-observation"
+          mkdir "${diagnostic}"
+          cat >"${diagnostic}/rename-observer.c" <<'C'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <stdint.h>
+          #include <string.h>
+          #include <unistd.h>
+          #include <errno.h>
+          #include <fcntl.h>
+          #include <sys/stat.h>
+          #include <sys/mount.h>
+          #include <sys/acl.h>
+          #include <sys/syscall.h>
+          #include <mach-o/dyld.h>
+          #include <limits.h>
+
+          __attribute__((constructor)) static void loaded(void) {
+            int saved = errno;
+            const char *p = getenv("CORE_SEED_RENAME_LOG");
+            if (p) {
+              FILE *f = fopen(p, "a");
+              if (f) {
+                char exe[PATH_MAX]; uint32_t size = sizeof(exe);
+                if (_NSGetExecutablePath(exe, &size)) snprintf(exe, sizeof(exe), "unavailable");
+                fprintf(f, "LOADED pid=%d euid=%d egid=%d executable=%s\n",
+                  getpid(), geteuid(), getegid(), exe);
+                fclose(f);
+              }
+            }
+            errno = saved;
+          }
+          static void describe(FILE *f, const char *label, const char *p) {
+            struct stat s;
+            if (lstat(p, &s)) {
+              fprintf(f, "%s path=%s lstat_errno=%d\n", label, p, errno); return;
+            }
+            int writable = access(p, W_OK), access_errno = writable ? errno : 0;
+            fprintf(f, "%s path=%s uid=%u gid=%u mode=%o flags=%u write_access=%d access_errno=%d\n",
+              label, p, s.st_uid, s.st_gid, s.st_mode, s.st_flags, writable, access_errno);
+            struct statfs v;
+            if (!statfs(p, &v)) fprintf(f, "%s fs=%s mount=%s mount_flags=%llu\n",
+              label, v.f_fstypename, v.f_mntonname, (unsigned long long)v.f_flags);
+            else fprintf(f, "%s statfs_errno=%d\n", label, errno);
+            acl_t a = acl_get_file(p, ACL_TYPE_EXTENDED);
+            if (a) {
+              ssize_t len = 0; char *t = acl_to_text(a, &len);
+              if (t) { fprintf(f, "%s ACL=%.*s\n", label, (int)len, t); acl_free(t); }
+              else fprintf(f, "%s acl_text_errno=%d\n", label, errno);
+              acl_free(a);
+            } else fprintf(f, "%s acl_errno=%d\n", label, errno);
+          }
+          static void describe_at(FILE *f, const char *label, int fd, const char *p) {
+            char full[PATH_MAX], base[PATH_MAX];
+            if (p[0] == '/') {
+              if (snprintf(full, sizeof(full), "%s", p) >= (int)sizeof(full)) {
+                fprintf(f, "%s metadata_path_too_long\n", label); return;
+              }
+            }
+            else if (fd == AT_FDCWD ? getcwd(base, sizeof(base)) != NULL : fcntl(fd, F_GETPATH, base) != -1) {
+              if (snprintf(full, sizeof(full), "%s/%s", base, p) >= (int)sizeof(full)) {
+                fprintf(f, "%s metadata_path_too_long\n", label); return;
+              }
+            } else { fprintf(f, "%s metadata_path_errno=%d\n", label, errno); return; }
+            describe(f, label, full);
+            char *last = strrchr(full, '/');
+            if (last) {
+              if (last == full) last[1] = '\0'; else *last = '\0';
+              char parent_label[64]; snprintf(parent_label, sizeof(parent_label), "%s_parent", label);
+              describe(f, parent_label, full);
+            }
+          }
+          static FILE *before(int sfd, const char *src, int dfd, const char *dst) {
+            const char *log = getenv("CORE_SEED_RENAME_LOG");
+            if (!log || !src || !dst || (!strstr(src, "main-seed") && !strstr(dst, "main-seed"))) return NULL;
+            FILE *f = fopen(log, "a"); if (!f) return NULL;
+            fprintf(f, "RENAME pid=%d euid=%d egid=%d sfd=%d src=%s dfd=%d dst=%s\n",
+              getpid(), geteuid(), getegid(), sfd, src, dfd, dst);
+            describe_at(f, "source", sfd, src); describe_at(f, "destination", dfd, dst);
+            fflush(f); return f;
+          }
+          static int observed_rename(const char *src, const char *dst) {
+            int saved = errno; FILE *f = before(AT_FDCWD, src, AT_FDCWD, dst); errno = saved;
+            int r = (int)syscall(SYS_rename, src, dst), e = errno;
+            if (f) { fprintf(f, "RESULT pid=%d result=%d errno=%d\n", getpid(), r, e); fclose(f); }
+            errno = e; return r;
+          }
+          static int observed_renameat(int sfd, const char *src, int dfd, const char *dst) {
+            int saved = errno; FILE *f = before(sfd, src, dfd, dst); errno = saved;
+            int r = (int)syscall(SYS_renameat, sfd, src, dfd, dst), e = errno;
+            if (f) { fprintf(f, "RESULT pid=%d renameat result=%d errno=%d\n", getpid(), r, e); fclose(f); }
+            errno = e; return r;
+          }
+          #define INTERPOSE(replacement, replacee) \
+          __attribute__((used)) static struct { const void *replacement; const void *replacee; } interpose_##replacee \
+          __attribute__((section("__DATA,__interpose"))) = {(const void *)(uintptr_t)&replacement, (const void *)(uintptr_t)&replacee};
+          INTERPOSE(observed_rename, rename)
+          INTERPOSE(observed_renameat, renameat)
+          C
+          node control/ci/release_prepublish_verify.mjs stage \
+            --root "${PWD}/candidate" \
+            --config-sha256 '${{ inputs.candidate_authority_sha256 }}' \
+            --status-sha256 '${{ needs.stage.outputs.candidate_status_sha256 }}' \
+            >"${diagnostic}/candidate-verify.log" 2>&1
+          node --input-type=module >"${diagnostic}/observation.log" 2>&1 <<'NODE_SEED_OBSERVATION'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { readFileSync, writeFileSync, realpathSync, lstatSync, statSync, existsSync } from 'node:fs';
+          import { spawnSync } from 'node:child_process';
+          import path from 'node:path';
+          
+          const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+          const commandText = (command, args) => [command, ...args].map(value =>
+            /^[A-Za-z0-9_./:@%+=,-]+$/.test(value) ? value : JSON.stringify(value)).join(' ');
+          function response(command) {
+            assert.equal(command.stdout_sha256, digest(command.stdout_tail), 'complete original stdout required');
+            assert.equal(command.stderr_tail, '');
+            return JSON.parse(command.stdout_tail);
+          }
+          function validateCloseout(value, accepted, recovery, failedSeed = true) {
+            const { task, snapshot, target, receipt, repository, seed } = accepted;
+            assert.equal(value.task_id, task);
+            assert.equal(value.task?.task_id, task);
+            assert.equal(value.task_status, 'completed');
+            assert.equal(value.task.status, 'completed');
+            assert.equal(value.apply_status, 'done');
+            assert.equal(value.target_line, target);
+            assert.equal(value.current_line, target);
+            assert.equal(value.line_name, target);
+            assert.equal(value.landed_snapshot_id, snapshot);
+            for (const field of ['change', 'change_id', 'change_ref', 'change_status']) assert.equal(value[field], null);
+            assert.deepEqual(value.local_finish, receipt);
+            assert.deepEqual(value.task.local_finish, receipt);
+            assert.equal(receipt.status, 'succeeded');
+            assert.equal(receipt.task_id, task);
+            assert.equal(receipt.landed_snapshot_id, snapshot);
+            assert.equal(receipt.target_line, target);
+            assert.equal(receipt.change_ref, null);
+            assert.equal(value.execution_status, recovery ? 'already_landed' : 'applied');
+            if (recovery) assert.equal(value.auto_snapshot, null);
+            else {
+              assert.equal(value.auto_snapshot?.snapshot_id, snapshot);
+              assert.equal(value.auto_snapshot.newly_created, true);
+            }
+            const reconcile = value.automatic_reconciliation;
+            assert.equal(reconcile?.status, 'completed');
+            assert.equal(reconcile.mutated, false);
+            assert.equal(reconcile.receipt_store_mutated, false);
+            assert.deepEqual(reconcile.actions, []);
+            assert.deepEqual(reconcile.findings, []);
+            assert.equal(reconcile.summary?.remaining_count, 0);
+            const restore = value.repo_root_restore;
+            assert.equal(value.workspace_action, 'restored');
+            assert.equal(restore?.status, 'restored');
+            assert.equal(restore.target_snapshot_id, snapshot);
+            assert.equal(restore.workspace_root, repository);
+            assert.deepEqual(restore.dirty_outside_paths, []);
+            if (recovery) {
+              assert.equal(restore.plan?.write_count, 0);
+              assert.equal(restore.plan?.remove_count, 0);
+            }
+            const cleanup = value.bound_worktree_cleanup;
+            assert.equal(cleanup?.task_id, task);
+            if (recovery) {
+              assert.equal(cleanup.status, 'skipped');
+              assert.equal(cleanup.reason, 'no_bound_worktree');
+            } else {
+              assert.equal(cleanup.status, 'removed');
+              assert.equal(cleanup.worktree?.removed, true);
+              assert.equal(cleanup.worktree?.deleted_path, true);
+              assert.equal(cleanup.worktree?.workspace_status, 'clean');
+            }
+            const line = value.bound_line_closeout;
+            assert(['archived', 'already_archived'].includes(line?.status));
+            assert(['archived', 'already_archived'].includes(line.local?.status));
+            assert.equal(line.task_id, task);
+            assert.equal(line.task_status, 'completed');
+            assert.equal(line.target_line, target);
+            assert.equal(line.expected_revision_snapshot_id, snapshot);
+            assert.equal(line.local.line?.head_snapshot_id, snapshot);
+            assert.equal(line.local.line?.status, 'archived');
+            assert.equal(value.plan_checklist_closeout?.status, 'synced');
+            assert.equal(value.plan_checklist_closeout.sync?.status, 'ok');
+            assert.equal(value.plan_markdown_materialization?.status, 'in_sync');
+            assert.deepEqual(value.plan_markdown_materialization.drift, []);
+            assert.deepEqual(value.plan_markdown_materialization.skipped, []);
+            if (recovery) assert.equal(value.plan_checklist_closeout.updated, false);
+            const sync = value.main_seed_sync;
+            assert.equal(sync?.path, seed);
+            assert.equal(sync.name, 'main-seed');
+            assert.equal(sync.line_name, target);
+            assert.equal(sync.root_source, 'macos_ram_volume');
+            assert.equal(sync.seed_snapshot_id, snapshot);
+            assert.equal(sync.baseline_seed_snapshot_id, null);
+            assert.equal(sync.refresh_strategy, 'full_snapshot_materialization');
+            assert.equal(sync.fallback_used, true);
+            assert.equal(sync.fallback_reason, 'task_worktree_promotion_unavailable');
+            assert.equal(sync.copy_error, null);
+            assert.equal(sync.copy_strategy, null);
+            assert(sync.materialized_write_count > 0);
+            if (failedSeed) {
+              assert.equal(value.closeout_status, 'partial');
+              assert.equal(sync.status, 'failed');
+              const prefix = 'Failed to install staged main seed ';
+              const suffix = ` at ${seed}: Permission denied (os error 13)`;
+              assert(sync.error?.startsWith(prefix) && sync.error.endsWith(suffix));
+              const staged = sync.error.slice(prefix.length, -suffix.length);
+              assert.equal(path.dirname(staged), path.dirname(seed));
+              assert.match(path.basename(staged), /^\.main-seed\.tmp-[0-9]+-[0-9]{8}T[0-9]{6}Z$/);
+              assert.equal(value.closeout_recovery?.idempotent, true);
+              assert.equal(value.closeout_recovery.command, `ait task finish ${task} --local`);
+            } else {
+              assert.equal(value.closeout_status, 'complete');
+              assert.equal(sync.status, 'refreshed');
+            }
+          }
+          function selectOriginal(phase, row) {
+            assert.equal(phase.contract, 'ait.release.clean-host.phase/v1');
+            assert.equal(phase.phase, 'install');
+            assert.equal(phase.status, 'fail');
+            assert.equal(phase.error?.category, 'lifecycle_failure');
+            assert.deepEqual(phase.row, row);
+            assert.equal(row.channel, 'github');
+            assert.equal(row.lifecycle, 'product');
+            assert.equal(row.target, 'aarch64-apple-darwin');
+            assert.equal(row.os, 'macos');
+            assert.equal(row.architecture, 'arm64');
+            const one = label => {
+              const matches = phase.commands.filter(command => command.label === label);
+              assert.equal(matches.length, 1, `one original ${label} required`);
+              return matches[0];
+            };
+            const init = one('candidate ait init'), start = one('candidate task start');
+            const first = one('candidate task finish'), resume = one('candidate task finish closeout resume');
+            assert.equal(first.exit_status, 2);
+            assert.equal(resume.exit_status, 2);
+            assert.equal(phase.commands.at(-1), resume);
+            for (const command of phase.commands) {
+              if (command === first || command === resume) continue;
+              if (command.label === 'server inactive process check') assert.equal(command.exit_status, 1);
+              else if (command.label !== 'explicit foreground server lifecycle') assert.equal(command.exit_status, 0);
+            }
+            const started = response(start), landed = response(first), resumed = response(resume);
+            const repository = init.cwd;
+            assert(path.isAbsolute(repository));
+            assert.equal(path.basename(repository), 'candidate-repository');
+            const cli = path.join(path.dirname(repository), 'github-bin', 'ait');
+            const task = started.task_id, snapshot = landed.landed_snapshot_id, target = landed.target_line;
+            assert.match(task, /^LT-[0-9]{4,}$/);
+            assert.match(snapshot, /^SNP-[0-9A-F]{12}$/);
+            assert.equal(target, 'main');
+            assert.equal(started.edit_root_source, 'managed');
+            assert.match(started.edit_root, /^\/Volumes\/AIT_RAM\/\.ait-repos\/[a-f0-9]+\/candidate-repository\/lt-[0-9]+$/);
+            assert.equal(first.cwd, started.edit_root);
+            assert.equal(start.cwd, repository);
+            assert.equal(resume.cwd, repository);
+            assert.equal(init.command, commandText(cli, ['init', '--json']));
+            assert.equal(start.command, commandText(cli, ['task', 'start', '--from',
+              'docs/sprints/clean_host.md#clean-host/first-land', '--intent', 'Prove exact clean-host first land', '--json']));
+            assert.equal(first.command, commandText(cli, ['task', 'finish', task, '--message',
+              'Clean-host first Snapshot', '--local', '--json', '--full']));
+            assert.equal(resume.command, commandText(cli, ['task', 'finish', task, '--local', '--json', '--full']));
+            const accepted = { task, snapshot, target, repository, cli, receipt: landed.local_finish,
+              seed: path.join(path.dirname(started.edit_root), '.ait-internal', 'main-seed') };
+            validateCloseout(landed, accepted, false);
+            validateCloseout(resumed, accepted, true);
+            assert.equal(landed.bound_worktree_cleanup.worktree.path, started.edit_root);
+            const shown = response(one('candidate integrated Snapshot show'));
+            assert.equal(shown.snapshot_id, snapshot);
+            assert.equal(shown.parent_snapshot_id, started.head_snapshot_id);
+            assert.deepEqual(shown.files, landed.auto_snapshot.files);
+            assert.equal(resumed.repo_root_restore.plan.unchanged_count, shown.files.filter(file => file.path === 'first-land.txt').length);
+            return { ...accepted, shown, original: resumed };
+          }
+          function validateObservation(text, pid, cli, seed) {
+            assert(text.split('\n').some(line => line.startsWith(`LOADED pid=${pid} `) && line.endsWith(` executable=${cli}`)),
+              'matching installed CLI loader PID required');
+            const lines = text.split('\n');
+            const begin = lines.findIndex(line => line.startsWith(`RENAME pid=${pid} `) &&
+              line.includes(` src=${path.dirname(seed)}/.main-seed.tmp-`) && line.endsWith(` dst=${seed}`));
+            assert(begin >= 0, 'matching staged-main-seed rename required');
+            const end = lines.findIndex((line, index) => index > begin && line.startsWith(`RESULT pid=${pid} `));
+            assert(end > begin, 'matching rename result required');
+            const metadata = lines.slice(begin + 1, end);
+            assert(!metadata.some(line => line.startsWith('RENAME ')), 'interleaved rename metadata unavailable');
+            for (const label of ['source', 'destination', 'source_parent', 'destination_parent']) {
+              assert(metadata.some(line => line.startsWith(`${label} path=`)), `pre-call ${label} metadata required`);
+            }
+          }
+          
+          // Runtime observation: no new repository or Task is created here.
+          const diagnostic = path.join(process.env.RUNNER_TEMP, 'mac-seed-observation');
+          const log = (name, text) => writeFileSync(path.join(diagnostic, name + '.log'), text, { flag: 'a' });
+          function probe(name, command, args, cwd, allowed = [0], env = process.env) {
+            const result = spawnSync(command, args, { cwd, env, encoding: 'utf8', timeout: 120000, maxBuffer: 16 * 1024 * 1024 });
+            log(name, `\n${commandText(command, args)}\npid=${result.pid} exit=${result.status} signal=${result.signal}\n${result.stdout ?? ''}\n${result.stderr ?? ''}\n${result.error?.message ?? ''}\n`);
+            assert(!result.error && allowed.includes(result.status), `${name} unavailable; see probe exit/stderr`);
+            return result;
+          }
+          try {
+            assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64');
+            assert(!process.env.DYLD_INSERT_LIBRARIES && !process.env.CORE_SEED_RENAME_LOG, 'ordinary environment must be uninstrumented');
+            const environment = { ...process.env };
+            const read = file => JSON.parse(readFileSync(file, 'utf8'));
+            const phaseBytes = readFileSync('evidence/install.json');
+            const phase = JSON.parse(phaseBytes);
+            const matrix = read('candidate/ait-release.clean-host-matrix.json');
+            const authorityFile = 'candidate/ait-release.endpoints.authority.json';
+            const statusFile = 'candidate/ait-release.prepublish-candidate.json';
+            const authority = read(authorityFile), status = read(statusFile);
+            const rows = matrix.rows.filter(row => row.id === process.env.AIT_SEED_OBSERVATION_ROW);
+            assert.equal(rows.length, 1);
+            const row = rows[0];
+            for (const field of ['id', 'version', 'python_version', 'channel', 'tag', 'source_commit']) {
+              assert.equal(phase.release[field], authority.release[field]);
+            }
+            assert.equal(phase.release.verification_stage, 'pre_tag');
+            assert.equal(phase.release.endpoint_config_sha256, digest(readFileSync(authorityFile)));
+            assert.equal(phase.release.operator_status_sha256, digest(readFileSync(statusFile)));
+            assert.equal(phase.release.candidate_stage_receipt_sha256, status.candidate.stage_receipt_sha256);
+            assert.equal(phase.release.candidate_artifact_digest, environment.AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST);
+            for (const [field, expected] of Object.entries({ run_id: environment.GITHUB_RUN_ID,
+              run_attempt: environment.GITHUB_RUN_ATTEMPT, job: environment.GITHUB_JOB,
+              image_version: environment.ImageVersion, image_os: environment.ImageOS,
+              runner_name: environment.RUNNER_NAME, label: row.runner })) assert.equal(phase.runner[field], expected);
+            const accepted = selectOriginal(phase, row);
+            const { repository, cli, seed, task, snapshot, shown } = accepted;
+            const parent = realpathSync(environment.RUNNER_TEMP);
+            assert.equal(path.dirname(path.dirname(repository)), parent);
+            assert.match(path.basename(path.dirname(repository)), /^ait-clean-host-install-[a-zA-Z0-9]+$/);
+            assert.equal(realpathSync(repository), repository);
+            assert.equal(realpathSync(cli), cli);
+            const assetName = `ait-${authority.release.version}-${row.target}`;
+            const assets = phase.observations.github_assets.filter(asset => asset.name === assetName);
+            assert.equal(assets.length, 1);
+            assert.equal(assets[0].source, 'frozen_candidate_stage');
+            assert.equal(assets[0].digest, 'sha256:' + digest(readFileSync(cli)));
+            assert.equal(digest(readFileSync(path.join('candidate/assets', assetName))), digest(readFileSync(cli)));
+            for (const [command, args] of [['/usr/bin/id', []], ['/usr/bin/uname', ['-a']],
+              ['/usr/bin/sw_vers', []], ['/usr/bin/hdiutil', ['info']]]) probe('host-before', command, args);
+            const mounts = probe('host-before', '/sbin/mount', []).stdout;
+            assert(mounts.includes(' on /Volumes/AIT_RAM ('), 'original RAM mount is unavailable');
+            assert.notEqual(statSync('/Volumes/AIT_RAM').dev, statSync('/Volumes').dev);
+            assert.equal(realpathSync(path.dirname(seed)), path.dirname(seed));
+            probe('host-before', '/bin/ls', ['-ldeO@', repository, path.join(repository, '.ait/config.json'), path.dirname(seed)]);
+            const writers = probe('host-before', '/usr/sbin/lsof', ['-F', 'pfa', '+D', repository, '+D', path.dirname(seed)], undefined, [0, 1]);
+            assert.equal(writers.stderr.trim(), '', 'writer probe is unavailable');
+            assert(!/^a[wu]$/m.test(writers.stdout), 'another process has a writable case descriptor');
+            const configPath = path.join(repository, '.ait/config.json');
+            const planPath = path.join(repository, 'docs/sprints/clean_host.md');
+            const frozenConfig = readFileSync(configPath), frozenPlan = readFileSync(planPath);
+            assert.equal(frozenPlan.toString(), '# Clean Host First Land [plan-ref: clean-host/root]\n\n## Work\n\n- [x] Materialize the exact clean-host file. [ref: clean-host/first-land]\n');
+            const cliJson = args => JSON.parse(probe('commands', cli, args, repository, [0], environment).stdout);
+            function unchangedCase() {
+              assert.deepEqual(readFileSync(configPath), frozenConfig);
+              assert.deepEqual(readFileSync(planPath), frozenPlan);
+              assert.deepEqual(readFileSync('evidence/install.json'), phaseBytes);
+              assert.equal(digest(readFileSync(cli)), assets[0].digest.slice(7));
+              for (const file of shown.files) {
+                assert(!file.path.split('/').includes('..') && !path.isAbsolute(file.path));
+                const selected = path.join(repository, file.path);
+                const metadata = lstatSync(selected);
+                assert(metadata.isFile());
+                assert.equal(metadata.mode & 0o777, Number.parseInt(file.mode.slice(2), 8));
+                assert.equal(digest(readFileSync(selected)), file.sha256);
+              }
+              const state = cliJson(['status', '--json', '--full']);
+              assert.equal(state.current_line, 'main'); assert.equal(state.head_snapshot_id, snapshot);
+              assert.equal(state.workspace_dirty, false); assert.equal(state.is_worktree, false);
+              const line = cliJson(['line', 'show', 'main', '--json']);
+              assert.equal(line.head_snapshot_id, snapshot);
+              const current = cliJson(['task', 'show', task, '--local', '--json']);
+              assert.equal(current.status, 'completed'); assert.deepEqual(current.local_finish, accepted.receipt);
+              const reconciliation = cliJson(['workflow', 'reconcile', '--task', task, '--dry-run', '--json']);
+              assert.equal(reconciliation.status, 'completed'); assert.equal(reconciliation.mutated, false);
+              // Read-only inventory may omit the apply-only actions field.
+              assert.deepEqual(reconciliation.actions ?? [], []);
+              assert.deepEqual(reconciliation.findings, []); assert.equal(reconciliation.summary.remaining_count, 0);
+              assert.equal(reconciliation.summary.total_finding_count, 0);
+              assert.equal(reconciliation.sources.workspace_lock.active, false);
+              assert.equal(reconciliation.inventory.interrupted_operation_count, 0);
+              assert.equal(reconciliation.inventory.worktree_count, 0);
+              assert.equal(reconciliation.inventory.selected_change_count, 0);
+              return state.snapshot_count;
+            }
+            const count = unchangedCase();
+            probe('compile', '/usr/bin/clang', ['-dynamiclib', '-Wall', '-Wextra', '-o',
+              path.join(diagnostic, 'rename-observer.dylib'), path.join(diagnostic, 'rename-observer.c')]);
+            // A live seed created since the ordinary response would select another
+            // branch. Missing paths are recorded; permission/read errors stop here.
+            try {
+              const metadata = lstatSync(seed);
+              log('host-before', `seed path=${seed} mode=${metadata.mode} uid=${metadata.uid} gid=${metadata.gid}\n`);
+              assert(metadata.isDirectory() && !metadata.isSymbolicLink());
+              try {
+                const marker = JSON.parse(readFileSync(path.join(seed, '.ait-worktree.json'), 'utf8'));
+                assert(!marker.seed_snapshot_id && !marker.materialized_snapshot_id, 'live seed baseline changed');
+              } catch (error) {
+                log('host-before', `seed marker: ${error.code ?? ''} ${error.message}\n`);
+                if (error.code !== 'ENOENT') throw error;
+              }
+            } catch (error) {
+              log('host-before', `seed layout: ${error.code ?? ''} ${error.message}\n`);
+              if (error.code !== 'ENOENT') throw error;
+            }
+            const finalMounts = probe('host-before', '/sbin/mount', []).stdout;
+            assert.equal(finalMounts, mounts, 'mount layout changed before diagnostic attempt');
+            const finalWriters = probe('host-before', '/usr/sbin/lsof',
+              ['-F', 'pfa', '+D', repository, '+D', path.dirname(seed)], undefined, [0, 1]);
+            assert.equal(finalWriters.stderr.trim(), '');
+            assert(!/^a[wu]$/m.test(finalWriters.stdout), 'concurrent writer appeared');
+            // The only instrumented child and the only extra finish attempt. Direct argv;
+            // all read-only guards above must pass before any closeout recovery mutation.
+            const result = probe('commands', cli, ['task', 'finish', task, '--local', '--json', '--full'], repository, [0, 2],
+              { ...environment, DYLD_INSERT_LIBRARIES: path.join(diagnostic, 'rename-observer.dylib'),
+                CORE_SEED_RENAME_LOG: path.join(diagnostic, 'rename.log') });
+            validateCloseout(JSON.parse(result.stdout), accepted, true, result.status === 2);
+            assert.equal(unchangedCase(), count, 'diagnostic recovery created a Snapshot');
+            assert(existsSync(path.join(diagnostic, 'rename.log')), 'observer injection unavailable');
+            validateObservation(readFileSync(path.join(diagnostic, 'rename.log'), 'utf8'), result.pid, cli, seed);
+            console.log('Captured only this diagnostic same-receipt full/no-baseline attempt; ordinary qualification remains failed and the original denial cause remains unresolved.');
+          } catch (error) {
+            console.error('Observation unavailable: ' + error.message);
+            process.exitCode = 1;
+          } finally {
+            probe('host-after', '/sbin/mount', []);
+          }
+          NODE_SEED_OBSERVATION
+
+      # Keep the existing diagnostic retention default and separate artifact.
+      - name: Retain isolated Mac observation logs
+        if: ${{ always() && matrix.channel == 'github' && matrix.lifecycle == 'product' && matrix.target == 'aarch64-apple-darwin' && steps.phase.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ait-macos-seed-observation-${{ inputs.release_id }}
+          path: ${{ runner.temp }}/mac-seed-observation/*.log
+          if-no-files-found: warn
+          compression-level: 0
+
       - name: Upload install-phase evidence
         id: upload
         if: always()
@@ -592,8 +1046,6 @@ jobs:
       aggregate_artifact_id: ${{ steps.upload.outputs.artifact-id }}
       aggregate_artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
       aggregate_status_sha256: ${{ steps.aggregate.outputs.aggregate_status_sha256 }}
-      mac_seed_row: ${{ steps.seed_observation.outputs.row }}
-      mac_seed_runner: ${{ steps.seed_observation.outputs.runner }}
     steps:
       - name: Check out the exact release-control source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -624,49 +1076,6 @@ jobs:
           path: candidate
           repository: ${{ github.repository }}
           run-id: ${{ needs.stage.outputs.candidate_run_id }}
-
-      # Selection is read-only and optional. Its output never enters the
-      # qualification inventory, status, or caller's published outputs.
-      - name: Select an original Mac seed failure for observation
-        id: seed_observation
-        continue-on-error: true
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE'
-          import { readFileSync, appendFileSync } from 'node:fs';
-          import assert from 'node:assert/strict';
-          const read = file => JSON.parse(readFileSync(file, 'utf8'));
-          const matrix = read('candidate/ait-release.clean-host-matrix.json');
-          const authority = read('candidate/ait-release.endpoints.authority.json');
-          const selected = matrix.rows.filter(row => row.channel === 'github' &&
-            row.lifecycle === 'product' && row.target === 'aarch64-apple-darwin');
-          assert.equal(selected.length, 1);
-          const [row] = selected;
-          assert.equal(row.os, 'macos');
-          assert.equal(row.architecture, 'arm64');
-          const original = read(`rows/${row.id}.json`);
-          assert.equal(original.contract, 'ait.release.clean-host.row/v1');
-          assert.deepEqual(original.row, row);
-          assert.equal(original.release.id, authority.release.id);
-          assert.equal(original.release.source_commit, authority.release.source_commit);
-          const phase = original.phases.install;
-          assert.deepEqual(phase.row, row);
-          assert.deepEqual(phase.release, original.release);
-          const failedSeed = phase.status === 'fail' && phase.commands.some(command => {
-            if (command.label !== 'candidate task finish' || command.exit_status !== 2) return false;
-            try {
-              const seed = JSON.parse(command.stdout_tail).main_seed_sync;
-              return seed?.status === 'failed' &&
-                /Failed to install staged main seed/.test(seed.error ?? '') &&
-                /Permission denied \(os error 13\)/.test(seed.error ?? '');
-            } catch { return false; }
-          });
-          if (failedSeed) {
-            assert.match(row.id, /^[a-z0-9-]+$/);
-            assert.match(row.runner, /^[a-z0-9-]+$/);
-            appendFileSync(process.env.GITHUB_OUTPUT, `row=${row.id}\nrunner=${row.runner}\n`);
-          }
-          NODE
 
       - name: Aggregate the complete pre-tag row inventory
         id: aggregate
@@ -741,237 +1150,3 @@ jobs:
           test '${{ steps.aggregate.outcome }}' = success
           test '${{ steps.upload.outcome }}' = success
 
-  # This single optional job observes only the failed ARM64 first-Task case.
-  # Every qualifying install/upgrade remains uninstrumented. Nothing below
-  # is consumed by aggregate or exported as qualification evidence.
-  mac_seed_observation:
-    needs: [stage, aggregate]
-    if: ${{ always() && !cancelled() && needs.stage.result == 'success' && needs.aggregate.outputs.mac_seed_row != '' }}
-    continue-on-error: true
-    runs-on: ${{ needs.aggregate.outputs.mac_seed_runner }}
-    timeout-minutes: 20
-    steps:
-      - name: Check out the exact diagnostic control source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: ${{ github.sha }}
-          path: control
-          persist-credentials: false
-
-      - name: Select the same lifecycle Node runtime
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: "24.5.0"
-          check-latest: false
-
-      - name: Download the same immutable pre-tag candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          artifact-ids: ${{ needs.stage.outputs.candidate_artifact_id }}
-          merge-multiple: true
-          github-token: ${{ github.token }}
-          path: candidate
-          repository: ${{ github.repository }}
-          run-id: ${{ needs.stage.outputs.candidate_run_id }}
-
-      - name: Compile the read-only seed rename observer
-        shell: bash
-        run: |
-          set -euo pipefail
-          diagnostic="${RUNNER_TEMP}/mac-seed-observation"
-          mkdir "${diagnostic}"
-          {
-            id; uname -a; sw_vers; /sbin/mount
-            printf 'ImageOS=%s ImageVersion=%s RUNNER_NAME=%s RUNNER_ARCH=%s\n' \
-              "${ImageOS:-}" "${ImageVersion:-}" "${RUNNER_NAME:-}" "${RUNNER_ARCH:-}"
-          } >"${diagnostic}/host-before.log" 2>&1
-          cat >"${diagnostic}/rename-observer.c" <<'C'
-          #include <stdio.h>
-          #include <stdlib.h>
-          #include <stdint.h>
-          #include <string.h>
-          #include <unistd.h>
-          #include <errno.h>
-          #include <fcntl.h>
-          #include <sys/stat.h>
-          #include <sys/mount.h>
-          #include <sys/acl.h>
-          #include <sys/syscall.h>
-          #include <mach-o/dyld.h>
-          #include <limits.h>
-
-          __attribute__((constructor)) static void loaded(void) {
-            int saved = errno;
-            const char *p = getenv("CORE_SEED_RENAME_LOG");
-            if (p) {
-              FILE *f = fopen(p, "a");
-              if (f) {
-                char exe[PATH_MAX]; uint32_t size = sizeof(exe);
-                if (_NSGetExecutablePath(exe, &size)) snprintf(exe, sizeof(exe), "unavailable");
-                fprintf(f, "LOADED pid=%d euid=%d egid=%d executable=%s\n",
-                  getpid(), geteuid(), getegid(), exe);
-                fclose(f);
-              }
-            }
-            errno = saved;
-          }
-          static void describe(FILE *f, const char *label, const char *p) {
-            struct stat s;
-            if (lstat(p, &s)) {
-              fprintf(f, "%s path=%s lstat_errno=%d\n", label, p, errno); return;
-            }
-            int writable = access(p, W_OK), access_errno = writable ? errno : 0;
-            fprintf(f, "%s path=%s uid=%u gid=%u mode=%o flags=%u write_access=%d access_errno=%d\n",
-              label, p, s.st_uid, s.st_gid, s.st_mode, s.st_flags, writable, access_errno);
-            struct statfs v;
-            if (!statfs(p, &v)) fprintf(f, "%s fs=%s mount=%s mount_flags=%llu\n",
-              label, v.f_fstypename, v.f_mntonname, (unsigned long long)v.f_flags);
-            else fprintf(f, "%s statfs_errno=%d\n", label, errno);
-            acl_t a = acl_get_file(p, ACL_TYPE_EXTENDED);
-            if (a) {
-              ssize_t len = 0; char *t = acl_to_text(a, &len);
-              if (t) { fprintf(f, "%s ACL=%.*s\n", label, (int)len, t); acl_free(t); }
-              else fprintf(f, "%s acl_text_errno=%d\n", label, errno);
-              acl_free(a);
-            } else fprintf(f, "%s acl_errno=%d\n", label, errno);
-          }
-          static void describe_at(FILE *f, const char *label, int fd, const char *p) {
-            char full[PATH_MAX], base[PATH_MAX];
-            if (p[0] == '/') {
-              if (snprintf(full, sizeof(full), "%s", p) >= (int)sizeof(full)) {
-                fprintf(f, "%s metadata_path_too_long\n", label); return;
-              }
-            }
-            else if (fd == AT_FDCWD ? getcwd(base, sizeof(base)) != NULL : fcntl(fd, F_GETPATH, base) != -1) {
-              if (snprintf(full, sizeof(full), "%s/%s", base, p) >= (int)sizeof(full)) {
-                fprintf(f, "%s metadata_path_too_long\n", label); return;
-              }
-            } else { fprintf(f, "%s metadata_path_errno=%d\n", label, errno); return; }
-            describe(f, label, full);
-            char *last = strrchr(full, '/');
-            if (last) {
-              if (last == full) last[1] = '\0'; else *last = '\0';
-              char parent_label[64]; snprintf(parent_label, sizeof(parent_label), "%s_parent", label);
-              describe(f, parent_label, full);
-            }
-          }
-          static FILE *before(int sfd, const char *src, int dfd, const char *dst) {
-            const char *log = getenv("CORE_SEED_RENAME_LOG");
-            if (!log || !src || !dst || (!strstr(src, "main-seed") && !strstr(dst, "main-seed"))) return NULL;
-            FILE *f = fopen(log, "a"); if (!f) return NULL;
-            fprintf(f, "RENAME pid=%d euid=%d egid=%d sfd=%d src=%s dfd=%d dst=%s\n",
-              getpid(), geteuid(), getegid(), sfd, src, dfd, dst);
-            describe_at(f, "source", sfd, src); describe_at(f, "destination", dfd, dst);
-            fflush(f); return f;
-          }
-          static int observed_rename(const char *src, const char *dst) {
-            int saved = errno; FILE *f = before(AT_FDCWD, src, AT_FDCWD, dst); errno = saved;
-            int r = (int)syscall(SYS_rename, src, dst), e = errno;
-            if (f) { fprintf(f, "RESULT pid=%d result=%d errno=%d\n", getpid(), r, e); fclose(f); }
-            errno = e; return r;
-          }
-          static int observed_renameat(int sfd, const char *src, int dfd, const char *dst) {
-            int saved = errno; FILE *f = before(sfd, src, dfd, dst); errno = saved;
-            int r = (int)syscall(SYS_renameat, sfd, src, dfd, dst), e = errno;
-            if (f) { fprintf(f, "RESULT pid=%d renameat result=%d errno=%d\n", getpid(), r, e); fclose(f); }
-            errno = e; return r;
-          }
-          #define INTERPOSE(replacement, replacee) \
-          __attribute__((used)) static struct { const void *replacement; const void *replacee; } interpose_##replacee \
-          __attribute__((section("__DATA,__interpose"))) = {(const void *)(uintptr_t)&replacement, (const void *)(uintptr_t)&replacee};
-          INTERPOSE(observed_rename, rename)
-          INTERPOSE(observed_renameat, renameat)
-          C
-          clang -dynamiclib -Wall -Wextra -o "${diagnostic}/rename-observer.dylib" \
-            "${diagnostic}/rename-observer.c" >"${diagnostic}/compile.log" 2>&1
-
-      - name: Observe only the existing first-Task case
-        shell: bash
-        env:
-          AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: ${{ needs.stage.outputs.candidate_artifact_digest }}
-          AIT_CLEAN_HOST_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
-          AIT_CLEAN_HOST_RUNNER_LABEL: ${{ needs.aggregate.outputs.mac_seed_runner }}
-          AIT_SEED_OBSERVATION_ROW: ${{ needs.aggregate.outputs.mac_seed_row }}
-          AIT_SEED_OBSERVATION_PRIOR: ${{ inputs.prior_version }}
-          AIT_SEED_OBSERVATION_PRIOR_PYTHON: ${{ inputs.prior_python_version }}
-        run: |
-          set -euo pipefail
-          node control/ci/release_prepublish_verify.mjs stage \
-            --root "${PWD}/candidate" \
-            --config-sha256 '${{ inputs.candidate_authority_sha256 }}' \
-            --status-sha256 '${{ needs.stage.outputs.candidate_status_sha256 }}' >/dev/null
-          node --input-type=module >"${RUNNER_TEMP}/mac-seed-observation/commands.log" 2>&1 <<'NODE'
-          import { readFileSync, realpathSync, mkdtempSync, existsSync } from 'node:fs';
-          import { pathToFileURL } from 'node:url';
-          import path from 'node:path';
-          try {
-          const diagnostic = path.join(process.env.RUNNER_TEMP, 'mac-seed-observation');
-          const phaseFile = path.resolve('control/ci/release_clean_host_phase.mjs');
-          // Expose private helpers only in this ephemeral diagnostic module.
-          // Their implementations and the installed family bytes are unchanged.
-          let source = readFileSync(phaseFile, 'utf8').replaceAll(
-            /from "\.\/([^"\n]+)"/g,
-            (_, relative) => `from ${JSON.stringify(pathToFileURL(path.join(path.dirname(phaseFile), relative)).href)}`);
-          const guard = 'if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {';
-          if (!source.includes(guard)) throw new Error('diagnostic module entry guard changed');
-          source = source.replace(guard, 'if (false) {') +
-            '\nexport { Recorder, validateInputs, nativePlatform, githubRunner, candidateRoot, githubContext, exactContextVersion, exerciseLifecycle, firstLand };\n';
-          const api = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
-          const read = file => JSON.parse(readFileSync(path.join('candidate', file), 'utf8'));
-          const config = read('ait-release.endpoints.authority.json');
-          const status = read('ait-release.prepublish-candidate.json');
-          const row = api.validateInputs({ 'row-id': process.env.AIT_SEED_OBSERVATION_ROW,
-            'prior-version': process.env.AIT_SEED_OBSERVATION_PRIOR,
-            'prior-python-version': process.env.AIT_SEED_OBSERVATION_PRIOR_PYTHON },
-            read('ait-release.clean-host-matrix.json'), config, status);
-          api.nativePlatform(row); api.githubRunner(row);
-          const recorder = new api.Recorder();
-          const root = mkdtempSync(path.join(realpathSync(process.env.RUNNER_TEMP), 'ait-clean-host-install-'));
-          let caseError;
-          try {
-            const context = await api.githubContext(config, row, config.release.version, root, recorder, api.candidateRoot(status));
-            api.exactContextVersion(context, row, config.release.version, recorder);
-            await api.exerciseLifecycle(context, row, root, recorder);
-            context.ait.environment = { ...context.ait.environment,
-              DYLD_INSERT_LIBRARIES: path.join(diagnostic, 'rename-observer.dylib'),
-              CORE_SEED_RENAME_LOG: path.join(diagnostic, 'rename.log') };
-            api.firstLand(recorder, context.ait, path.join(root, 'candidate-repository'),
-              `clean-host ${row.id} ${config.release.version}\n`, null, null, config.release.version);
-            console.log('Diagnostic first-Task case passed; ordinary qualification retains its original result.');
-          } catch (error) {
-            caseError = error;
-          } finally {
-            for (const command of recorder.commands) {
-              console.log(`\n${command.label} | ${command.command} | exit ${command.exit_status}\n${command.stdout_tail}\n${command.stderr_tail}`);
-            }
-          }
-          if (caseError) console.log(`Diagnostic first-Task case failed: ${caseError.message}`);
-          const log = path.join(diagnostic, 'rename.log');
-          if (!existsSync(log)) throw new Error('Observer unavailable: no loader/rename log was produced.');
-          const observation = readFileSync(log, 'utf8');
-          const loaded = [...observation.matchAll(/^LOADED pid=(\d+) .* executable=.*\/github-bin\/ait$/gm)].map(match => match[1]);
-          if (!loaded.some(pid => observation.includes(`RENAME pid=${pid} `) && observation.includes(`RESULT pid=${pid} `))) {
-            throw new Error('Observer unavailable: matching installed CLI LOADED/RENAME/RESULT records are required.');
-          }
-          console.log('Observer captured the diagnostic case before native cleanup; this is not qualification evidence.');
-          if (caseError) throw caseError;
-          } catch (error) { console.error(error.message); process.exitCode = 1; }
-          NODE
-
-      - name: Save final diagnostic host mounts
-        if: always()
-        shell: bash
-        run: |
-          mkdir -p "${RUNNER_TEMP}/mac-seed-observation"
-          /sbin/mount >"${RUNNER_TEMP}/mac-seed-observation/host-after.log" 2>&1
-
-      # Use the existing bootstrap-diagnostic retention default. The four
-      # qualification artifacts retain their separate retention contract.
-      - name: Retain isolated Mac observation logs
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ait-macos-seed-observation-${{ inputs.release_id }}
-          path: ${{ runner.temp }}/mac-seed-observation/*.log
-          if-no-files-found: warn
-          compression-level: 0
