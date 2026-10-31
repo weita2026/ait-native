@@ -26,7 +26,7 @@ test("binding info and version come from the real in-process addon", () => {
   assert.equal(payload.runtime_authority, "rust");
   assert.equal(payload.node_binding, "napi");
   assert.equal(payload.process_transport_allowed, false);
-  assert.equal(payload.version, "1.1.4");
+  assert.equal(payload.version, "1.2.0");
   assert.deepEqual(payload.supported_surfaces, ["ait-core"]);
   assert.equal(runtime.version(), payload.version);
 });
@@ -88,7 +88,7 @@ test("core metadata validation does not call retired capability exports", () => 
     runtime_authority: "rust",
     node_binding: "napi",
     process_transport_allowed: false,
-    version: "1.1.4",
+    version: "1.2.0",
     supported_surfaces: ["ait-core"],
   };
   runtime.call = (name) => {
