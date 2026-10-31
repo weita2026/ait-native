@@ -1402,6 +1402,17 @@ case "${mode}" in
       $(jq -er '.candidate_authority.sha256' "${receipts}") ]] ||
       fail 65 'receipt binding candidate authority digest is not exact'
     validate_candidate_config "${candidate_authority}" "${release_id}"
+    jq -e '
+      .prior_release == .candidate_authority.record.prior_release and
+      ((.release | has("prior_version") | not) or
+        .release.prior_version == .prior_release.version)
+    ' "${receipts}" >/dev/null ||
+      fail 65 'receipt prior release differs from the bound candidate authority'
+    validate_prior_release \
+      "$(jq -er '.release.version' "${receipts}")" \
+      "$(jq -er '.release.channel' "${receipts}")" \
+      "$(jq -er '.prior_release.version' "${receipts}")" \
+      "$(jq -er '.prior_release.python_version' "${receipts}")"
     if [[ -n ${run_id} ]]; then
       [[ ${run_id} =~ ^[1-9][0-9]*$ &&
         -z ${run_record}${candidate_artifact_record}${candidate_root}${aggregate_artifact_record}${aggregate_root} ]] || usage
@@ -1499,7 +1510,7 @@ case "${mode}" in
         {
           contract: "ait.release.operator.pre-tag-candidate-binding/v1",
           status: "ready_for_immutable_tag",
-          release: $r.release,
+          release: ($r.release + {prior_version: $r.prior_release.version}),
           source_dossier: $r.source_dossier,
           candidate_authority: $r.candidate_authority,
           qualification: {

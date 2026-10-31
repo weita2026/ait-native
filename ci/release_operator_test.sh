@@ -835,6 +835,7 @@ candidate_binding=${temporary_root}/candidate-binding.json
 jq -e '
   .contract == "ait.release.operator.pre-tag-candidate-binding/v1" and
   .status == "ready_for_immutable_tag" and
+  .release.prior_version == "1.2.3-rc.4" and
   .qualification.clean_host_rows == 32 and
   .qualification.tag_state_at_closeout == "absent" and
   .tag == {created: false, verified: false} and
@@ -1171,9 +1172,10 @@ jq -e '
 # isolated fixture records and a fresh local Git authority.
 node --input-type=module - "${repo_root}" "${temporary_root}" <<'SCOPED_OPERATOR_TEST'
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 const [root, temporary] = process.argv.slice(2);
 const scope = path.join(temporary, 'stable-120'); mkdirSync(scope);
@@ -1205,7 +1207,8 @@ const receipts = read(path.join(temporary, 'receipts.json'));
 receipts.release = release(receipts.release);
 const authority = receipts.candidate_authority.record;
 authority.release = release(authority.release);
-authority.prior_release = { version: '1.1.4', python_version: '1.1.4' };
+receipts.prior_release = { version: '1.1.4', python_version: '1.1.4' };
+authority.prior_release = { ...receipts.prior_release };
 const defaults = read(path.join(root, 'release/endpoint-publication.defaults.json'));
 authority.endpoints = {
   github: { ...defaults.endpoints.github, prerelease: false }, pypi: defaults.endpoints.pypi,
@@ -1240,6 +1243,77 @@ const bindArgs = ['bind-candidate', '--source-root', source, '--receipts', recei
   '--candidate-root', candidate, '--aggregate-artifact-record', path.join(temporary, 'aggregate-artifact.json'), '--aggregate-root', aggregate];
 run(operator, [...bindArgs, '--output', bindingFile]);
 assert.equal(read(bindingFile).qualification.clean_host_rows, 24);
+assert.equal(read(bindingFile).release.prior_version, '1.1.4');
+assert.equal(Object.hasOwn(receipts.release, 'prior_version'), false, 'the receipt keeps its existing prior_release authority');
+for (const [label, change] of [
+  ['missing-prior', value => { delete value.prior_release; }],
+  ['different-prior', value => { value.prior_release.version = '1.1.3'; }],
+  ['conflicting-release-prior', value => { value.release.prior_version = '1.1.3'; }],
+  ['release-prior-without-authority', value => { value.release.prior_version = '1.1.4'; delete value.prior_release; }],
+  ['missing-authority-prior', value => { delete value.candidate_authority.record.prior_release; }],
+  ['invalid-transition', value => { value.prior_release = value.candidate_authority.record.prior_release = { version: '1.2.0', python_version: '1.2.0' }; }],
+]) {
+  const rejected = structuredClone(receipts); change(rejected);
+  const authorityFile = path.join(scope, `${label}-authority.json`); json(authorityFile, rejected.candidate_authority.record);
+  rejected.candidate_authority.sha256 = sha(authorityFile);
+  const rejectedReceipts = path.join(scope, `${label}-receipts.json`); json(rejectedReceipts, rejected);
+  const rejectedArgs = [...bindArgs]; rejectedArgs[rejectedArgs.indexOf('--receipts') + 1] = rejectedReceipts;
+  const rejectedOutput = path.join(scope, `${label}-candidate.json`);
+  run(operator, [...rejectedArgs, '--output', rejectedOutput], 1);
+  assert.equal(existsSync(rejectedOutput), false);
+}
+
+// The local Native control tree includes Web orchestration. The public
+// monorepo export runs the existing operator checks without that local scope.
+if (existsSync(path.join(root, 'ci/release_web_admission.sh'))) {
+  // Carry a real bind-candidate result through the actual input producer, full
+  // operation validator and existing admission status/preflight. The Plan has
+  // its own release role; no candidate field is supplied by a shared fixture.
+  const { validateWebOperation } = await import(pathToFileURL(path.join(root, 'ci/release_web_controls.mjs')).href);
+  const { digest } = await import(pathToFileURL(path.join(root, 'ci/release_receipt_transaction.mjs')).href);
+  const webRoot = path.join(scope, 'web'), webOutput = path.join(scope, 'web-admission');
+  mkdirSync(path.join(webRoot, 'acceptance/manifests'), { recursive: true }); mkdirSync(webOutput);
+  writeFileSync(path.join(webRoot, 'acceptance/manifests/ait-command-matrix.tsv'), 'fixture\n');
+  const native = path.join(scope, 'web-ait.mjs'), service = path.join(scope, 'web-service'), dispatched = path.join(scope, 'unexpected-dispatch');
+  const webSnapshot = 'SNP-CCCCCCCCCCCC';
+  const config = { repo_name: 'ait-web-test', repository_index: 23, id_namespace_prefix: { value: 'WT' },
+    workflow_default_scope: Object.fromEntries(['workflow', 'task', 'change'].map(key => [key, { value: 'local', source: 'fixture' }])),
+    agent_teams: false, sprint: { value: 'off', enabled: false, source: 'fixture' } };
+  const webStatus = { current_line: 'main', workspace_dirty: false, worktree_name: null, head_snapshot_id: webSnapshot,
+    worktree_hygiene: { manual_review_candidate_count: 0, stale_count: 0 }, reconciliation: { total_finding_count: 0 } };
+  const queue = { summary: { attention_required_count: 0, dirty_worktree_count: 0 }, remote: { reviewer_inbox: { count: 0 } } };
+  const remote = { repository: { repository_index: 23, repository_name: 'ait-web-test', namespace: 'WT', tombstoned: false } };
+  writeFileSync(native, `#!/usr/bin/env node\nconst rows=${JSON.stringify({ config, status: webStatus, queue, worktree: [], repo: remote })};if(!(process.argv[2] in rows))process.exit(99);console.log(JSON.stringify(rows[process.argv[2]]));\n`, { mode: 0o755 });
+  writeFileSync(service, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(dispatched)},'unexpected service or acceptance launch');process.exit(99);\n`, { mode: 0o755 });
+  const componentsFile = path.join(scope, 'web-components.json');
+  json(componentsFile, Object.fromEntries(['core', 'server', 'runner', 'python', 'node', 'web_test'].map(key => [key, webSnapshot])));
+  const webInput = path.join(webOutput, 'qualification-input.json');
+  const initArgs = [path.join(root, 'ci/release_web_admission_init.mjs'), '--candidate', bindingFile, '--components', componentsFile,
+    '--repository', webRoot, '--ait', native, '--server-bin', service, '--community-bin', service, '--community-cli-bin', service,
+    '--server-url', 'http://127.0.0.1:8088/', '--seed', '42', '--output', webInput];
+  const isolated = { ...process.env, AIT_RELEASE_OPERATION_ROOT: '', AIT_RELEASE_OPERATION_TOKEN: '' };
+  const initialized = spawnSync(process.execPath, initArgs, { encoding: 'utf8', env: isolated });
+  assert.equal(initialized.status, 0, initialized.stderr);
+  const webInputRecord = read(webInput), boundCandidate = read(bindingFile);
+  assert.deepEqual(webInputRecord.release, boundCandidate.release);
+  assert.equal(webInputRecord.candidate_authority_sha256, receipts.candidate_authority.sha256);
+  const webPlanRelease = { channel: 'stable', prior_version: '1.1.4', version: '1.2.0', tag: 'v1.2.0' };
+  const plan = { contract: 'ait.release.conductor-plan/v1', records_root: scope, release: webPlanRelease,
+    phases: [{ id: 'web_admission', actions: [{ id: 'bind-web-admission-input', type: 'command', argv: [process.execPath, ...initArgs], outputs: [webInput] }] }] };
+  const planFile = path.join(scope, 'conductor-plan.json'), stateFile = path.join(scope, 'conductor-state.json');
+  json(planFile, plan);
+  json(stateFile, { contract: 'ait.release.conductor-state/v1', plan_sha256: sha(planFile), release: webPlanRelease,
+    phases: [{ id: 'web_admission', actions: [{ id: 'bind-web-admission-input', status: 'complete', outputs: { [webInput]: digest(webInput) } }] }] });
+  validateWebOperation(webInput, webInputRecord, webRoot);
+  const preflight = spawnSync('bash', [path.join(root, 'ci/release_web_admission.sh'), 'status', '--input', webInput,
+    '--repository', webRoot, '--ait', native, '--server-bin', service, '--server-data', scope,
+    '--community-bin', service, '--community-cli-bin', service, '--server-url', 'http://127.0.0.1:8088/',
+    '--chrome', service, '--output-dir', webOutput], { encoding: 'utf8', env: isolated });
+  assert.equal(preflight.status, 0, preflight.stderr);
+  for (const step of ['foundation', 'solo_local', 'solo_remote', 'randomized_3000', 'closeout']) assert(preflight.stdout.includes(`${step}: pending`));
+  assert.equal(existsSync(dispatched), false);
+  assert.equal(readdirSync(path.join(webOutput, 'receipts')).length, 0);
+}
 const failedRun = path.join(scope, 'failed-run.json'); json(failedRun, { ...read(path.join(temporary, 'candidate-run.json')), conclusion: 'failure' });
 const failedArgs = [...bindArgs]; failedArgs[failedArgs.indexOf('--run-record') + 1] = failedRun;
 run(operator, [...failedArgs, '--output', path.join(scope, 'rejected-failed-e.json')], 1);
