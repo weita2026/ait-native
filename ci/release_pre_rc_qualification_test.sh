@@ -149,6 +149,8 @@ const lifecycleCalls = path.join(lifecycle, "cargo.calls"), stub = path.join(lif
 fs.mkdirSync(lifecycleBin, { recursive: true }); fs.mkdirSync(path.join(lifecycle, "source/ci"), { recursive: true });
 fs.copyFileSync(path.join(path.dirname(process.argv[2]), "../../ci/release_windows_retained_source.mjs"),
   path.join(lifecycle, "source/ci/release_windows_retained_source.mjs"));
+fs.copyFileSync(path.join(path.dirname(process.argv[2]), "../../ci/release_core_installed_cases.mjs"),
+  path.join(lifecycle, "source/ci/release_core_installed_cases.mjs"));
 fs.writeFileSync(path.join(lifecycleBin, "cargo"), '#!/bin/sh\nexec "$QA_REAL_NODE" "$QA_CARGO_STUB" "$@"\n', { mode: 0o755 });
 fs.writeFileSync(stub, `
 const fs = require("node:fs"), args = process.argv.slice(2), name = args[args.indexOf("--") - 1];

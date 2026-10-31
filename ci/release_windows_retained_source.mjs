@@ -6,6 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { installedCoreCases, requireExecutedCoreCase } from "./release_core_installed_cases.mjs";
 
 export const SERVER_CASES = [
   "package_restart_reprepares_same_sealed_mode_with_new_ci_and_agent_review",
@@ -208,6 +209,7 @@ export function runCoreGitlessCase(cargo, manifest) {
     "Git-free lifecycle case needs one complete summary");
   assert(/^test result: ok\. 1 passed; 0 failed; 0 ignored;/m.test(stdout),
     "Git-free lifecycle case must execute once with zero ignored");
+  return stdout;
 }
 
 function nativeCommandEvent(descriptor, event, detail) {
@@ -512,23 +514,56 @@ function nativeContext({ target, root, logs }) {
   return { target, root, env, run, targetDir, cargo };
 }
 
-function runCoreGitlessPrerequisite({ target, root, env, run, targetDir, cargo }) {
+function runCoreAcceptancePrerequisite({ target, root, env, run, targetDir, cargo }) {
   const coreManifest = path.join(root, "ait-core/rust/Cargo.toml");
-  run("core-native-build", "cargo", ["build", "--locked", "--manifest-path", coreManifest,
-    "-p", "ait-cli", "--bin", "ait-cli", "--target", target, "--target-dir", targetDir]);
-  const coreCli = path.join(targetDir, target, "debug/ait-cli.exe");
-  assert(path.isAbsolute(coreCli) && statSync(coreCli).isFile(),
-    "matching current Core QA executable is unavailable; qualification remains HOLD");
-  const priorCli = env.AIT_TEST_CLI_BIN;
-  env.AIT_TEST_CLI_BIN = coreCli;
-  try { runCoreGitlessCase(cargo, coreManifest); }
+  const ciRoot = env.TEST_SERVER_CI_RAM_ROOT;
+  assert(ciRoot && path.isAbsolute(ciRoot) && statSync(ciRoot).isDirectory(),
+    "native Windows CI runtime root TEST_SERVER_CI_RAM_ROOT is unavailable; qualification remains HOLD");
+  const keys = ["AIT_TEST_CLI_BIN", "TEST_REVIEWED_SERVER_BIN", "TEST_NATIVE_RUNNER_BIN", "TEST_SERVER_CI_RAM_ROOT"];
+  const prior = keys.map(key => env[key]);
+  const pairedKeys = keys.slice(1);
+  try {
+    for (const key of keys) delete env[key];
+    for (const [label, manifest, pkg, bin] of [
+      ["core-native-build", coreManifest, "ait-cli", "ait-cli"],
+      ["server-native-build", path.join(root, "ait-server/rust/Cargo.toml"), "ait-server", "ait-server"],
+      ["runner-native-build", path.join(root, "ait-runner/Cargo.toml"), "ait-runner", "ait-runner"],
+    ]) run(label, "cargo", ["build", "--locked", "--manifest-path", manifest, "-p", pkg, "--bin", bin,
+      "--target", target, "--target-dir", targetDir]);
+    const binaries = ["ait-cli", "ait-server", "ait-runner"].map(bin => path.join(targetDir, target, `debug/${bin}.exe`));
+    for (const binary of binaries) assert(path.isAbsolute(binary) && statSync(binary).isFile(),
+      "matching current native QA executable is unavailable; qualification remains HOLD");
+    env.AIT_TEST_CLI_BIN = binaries[0];
+    for (const [index, [test, selector, mode]] of installedCoreCases.entries()) {
+      for (const key of pairedKeys) delete env[key];
+      if (mode === "paired") Object.assign(env, { TEST_REVIEWED_SERVER_BIN: binaries[1],
+        TEST_NATIVE_RUNNER_BIN: binaries[2], TEST_SERVER_CI_RAM_ROOT: ciRoot });
+      let stdout;
+      if (selector === CORE_GITLESS_CASE && test === "workflow_recovery_cli") {
+        stdout = runCoreGitlessCase(cargo, coreManifest);
+      } else {
+        const label = `core-acceptance-${index + 1}`;
+        const flags = ["-p", "ait-cli", "--test", test, selector, "--", "--exact",
+          ...(mode === "paired" ? ["--ignored"] : [])];
+        const listing = cargo(`${label}-case-list`, coreManifest, [...flags, "--list"]);
+        assert.equal(selectNativeCase(listing, selector), selector, "require the exact Core acceptance identity");
+        assert.equal((listing.match(/: test\r?$/gm) ?? []).length, 1, "Core acceptance listing must contain exactly one case");
+        stdout = cargo(label, coreManifest, [...flags, "--test-threads=1", "--nocapture", "--color", "never"]);
+      }
+      requireExecutedCoreCase(stdout, selector);
+      assert.equal((stdout.match(/^test .+ \.\.\. (?:ok|FAILED|ignored)\r?$/gm) ?? []).length, 1,
+        "Core acceptance case must execute exactly once");
+    }
+  }
   finally {
-    if (priorCli === undefined) delete env.AIT_TEST_CLI_BIN;
-    else env.AIT_TEST_CLI_BIN = priorCli;
+    for (const [index, key] of keys.entries()) {
+      if (prior[index] === undefined) delete env[key];
+      else env[key] = prior[index];
+    }
   }
 }
 
-function executeCases({ target, root, env, run, targetDir, cargo }) {
+function executeCases({ root, cargo }) {
   const serverManifest = path.join(root, "ait-server/rust/Cargo.toml");
   const coreManifest = path.join(root, "ait-core/rust/Cargo.toml");
   runCoreEditRootCases(cargo, coreManifest);
@@ -547,21 +582,6 @@ function executeCases({ target, root, env, run, targetDir, cargo }) {
         [...flags, names[index], "--", "--exact", "--test-threads=1", "--color", "never"]), names[index]);
     }
   }
-  const coreFlags = ["-p", "ait-cli", "--test", "workflow_package_accepted_retry_cli"];
-  const coreList = cargo("core-native-case-list", coreManifest, [...coreFlags, "--", "--list"]);
-  const coreName = selectNativeCase(coreList, CORE_CASE);
-  const ciRoot = env.TEST_SERVER_CI_RAM_ROOT;
-  assert(ciRoot && path.isAbsolute(ciRoot) && statSync(ciRoot).isDirectory(),
-    "native Windows CI runtime root TEST_SERVER_CI_RAM_ROOT is unavailable; qualification remains HOLD");
-  for (const [label, manifest, pkg, bin] of [
-    ["server-native-build", serverManifest, "ait-server", "ait-server"],
-    ["runner-native-build", path.join(root, "ait-runner/Cargo.toml"), "ait-runner", "ait-runner"],
-  ]) run(label, "cargo", ["build", "--locked", "--manifest-path", manifest, "-p", pkg, "--bin", bin,
-    "--target", target, "--target-dir", targetDir]);
-  env.TEST_REVIEWED_SERVER_BIN = path.join(targetDir, target, "debug/ait-server.exe");
-  env.TEST_NATIVE_RUNNER_BIN = path.join(targetDir, target, "debug/ait-runner.exe");
-  requirePassedCase(cargo("core-native-runner-restart", coreManifest,
-    [...coreFlags, coreName, "--", "--exact", "--ignored", "--test-threads=1", "--color", "never"]), coreName);
   process.stdout.write("Native retained-source protocol regressions completed; actual agent and platform qualification gates remain separate.\n");
 }
 
@@ -569,7 +589,7 @@ function executeCases({ target, root, env, run, targetDir, cargo }) {
 // family versions or producing the release qualification carrier.
 export function runNativeWindowsQa(input) {
   const context = nativeContext(input);
-  runCoreGitlessPrerequisite(context);
+  runCoreAcceptancePrerequisite(context);
   executeCases(context);
 }
 
@@ -580,9 +600,9 @@ function main() {
   const context = nativeContext({ target: input["--target"], root, logs: input["--output"] });
   const family = JSON.parse(readFileSync(path.join(root, "ait-release-family.json")));
   const retainedSource = requiresRetainedSource(family.family?.version);
-  runCoreGitlessPrerequisite(context);
+  runCoreAcceptancePrerequisite(context);
   if (!retainedSource) {
-    process.stdout.write("Git-free prerequisite completed; selected earlier family retains its existing Windows init/run scope.\n"); return;
+    process.stdout.write("Core acceptance prerequisites completed; selected earlier family retains its existing Windows init/run scope.\n"); return;
   }
   executeCases(context);
 }
