@@ -7,6 +7,7 @@ stage_control=${repo_root}/ci/release_prepublish_stage.sh
 oci_control=${repo_root}/ci/release_prepublish_oci.sh
 promotion_control=${repo_root}/ci/release_candidate_promote.sh
 prepublish_workflow=${repo_root}/.github/workflows/ait-release-prepublish-clean-host.yml
+protected_workflow=${repo_root}/.github/workflows/ait-release-protected-promotion.yml
 publication_workflow=${repo_root}/.github/workflows/pypi-publish.yml
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/ait-release-prepublish-test.XXXXXX")
 
@@ -96,6 +97,7 @@ if grep -F 'needs: prepublish' "${publication_workflow}" >/dev/null; then
   exit 65
 fi
 require_direct_exact_artifact_downloads "${prepublish_workflow}"
+require_direct_exact_artifact_downloads "${protected_workflow}"
 require_direct_exact_artifact_downloads "${publication_workflow}"
 if grep -E '(^|[[:space:]])(gh release|npm publish|docker push)([[:space:]]|$)' \
   "${prepublish_workflow}" "${stage_control}" >/dev/null; then
@@ -209,6 +211,195 @@ status_sha=$(sha256_file "${status}")
 node "${verifier}" stage --root "${candidate}" \
   --config-sha256 "${config_sha}" --status-sha256 "${status_sha}" >/dev/null
 
+node --input-type=module - "${repo_root}" "${temporary_root}" "${candidate}" <<'DOWNLOAD_ACTION_TEST'
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
+import path from 'node:path';
+
+const [root, temporary, candidate] = process.argv.slice(2);
+const fixedPin = '018cc2cf5baa6db3ef3c5f8a56943fffe632ef53';
+const oldPin = 'd3f86a106a0bac45b974a628896c90dbdf5c8093';
+const bundleHashes = {
+  [fixedPin]: '080f0467d57952d7adb6b16a27b43c546a99609736bba5c799ff1d226007c06b',
+  [oldPin]: '02c2cf24c5b60ae4b3f8d71d3cc85e2e6433dbdf106a38fee7ec3f1c96e2d18e',
+};
+const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+for (const [name, downloads, exact] of [
+  ['ait-release-prepublish-clean-host.yml', 6, 4],
+  ['ait-release-protected-promotion.yml', 3, 3],
+  ['pypi-publish.yml', 3, 3],
+]) {
+  const source = readFileSync(path.join(root, '.github/workflows', name), 'utf8');
+  const steps = source.split(/^      - name: /m).filter(step => step.includes('uses: actions/download-artifact@'));
+  assert.equal(steps.length, downloads, `${name}: download step count`);
+  assert(steps.every(step => step.includes(`uses: actions/download-artifact@${fixedPin} # v6.0.0`)));
+  const byId = steps.filter(step => step.includes('artifact-ids:'));
+  assert.equal(byId.length, exact, `${name}: exact artifact step count`);
+  for (const step of byId) {
+    assert.match(step, /artifact-ids: \$\{\{ [^\n]+ \}\}/);
+    assert.match(step, /run-id: \$\{\{ [^\n]+ \}\}/);
+    assert(step.includes('repository: ${{ github.repository }}'));
+    assert(step.includes('github-token: ${{ github.token }}'));
+    assert(step.includes('merge-multiple: true'));
+    assert.match(step, /path: \S+/);
+  }
+}
+
+// Execute the unmodified, digest-pinned action bundles against a loopback API.
+const bundles = new Map(await Promise.all([oldPin, fixedPin].map(async pin => {
+  const response = await fetch(`https://raw.githubusercontent.com/actions/download-artifact/${pin}/dist/index.js`,
+    { signal: AbortSignal.timeout(60_000) });
+  assert(response.ok, `reviewed action bundle ${pin}: HTTP ${response.status}`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.equal(sha(bytes), bundleHashes[pin], `reviewed action bundle drifted: ${pin}`);
+  const file = path.join(temporary, `${pin}.cjs`);
+  writeFileSync(file, bytes);
+  return [pin, file];
+})));
+
+const files = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry =>
+  entry.isDirectory() ? files(path.join(directory, entry.name)) : [path.join(directory, entry.name)]);
+const entries = files(candidate).sort().map(file => [path.relative(candidate, file).split(path.sep).join('/'), readFileSync(file)]);
+const crcTable = Array.from({ length: 256 }, (_, byte) => {
+  let value = byte;
+  for (let bit = 0; bit < 8; bit++) value = (value >>> 1) ^ ((value & 1) ? 0xedb88320 : 0);
+  return value >>> 0;
+});
+const crc32 = bytes => {
+  let value = 0xffffffff;
+  for (const byte of bytes) value = (value >>> 8) ^ crcTable[(value ^ byte) & 0xff];
+  return (value ^ 0xffffffff) >>> 0;
+};
+const zip = records => {
+  const local = [], central = [];
+  let offset = 0;
+  for (const [name, bytes] of records) {
+    const filename = Buffer.from(name), crc = crc32(bytes), header = Buffer.alloc(30), index = Buffer.alloc(46);
+    header.writeUInt32LE(0x04034b50); header.writeUInt16LE(20, 4); header.writeUInt16LE(0x800, 6);
+    header.writeUInt16LE(0x21, 12); header.writeUInt32LE(crc, 14);
+    header.writeUInt32LE(bytes.length, 18); header.writeUInt32LE(bytes.length, 22); header.writeUInt16LE(filename.length, 26);
+    index.writeUInt32LE(0x02014b50); index.writeUInt16LE(20, 4); index.writeUInt16LE(20, 6);
+    index.writeUInt16LE(0x800, 8); index.writeUInt16LE(0x21, 14); index.writeUInt32LE(crc, 16);
+    index.writeUInt32LE(bytes.length, 20); index.writeUInt32LE(bytes.length, 24); index.writeUInt16LE(filename.length, 28);
+    index.writeUInt32LE(offset, 42);
+    local.push(header, filename, bytes); central.push(index, filename);
+    offset += header.length + filename.length + bytes.length;
+  }
+  const directory = Buffer.concat(central), end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50); end.writeUInt16LE(records.length, 8); end.writeUInt16LE(records.length, 10);
+  end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, directory, end]);
+};
+const validZip = zip(entries);
+const corruptZip = zip(entries.map(([name, bytes]) => [name,
+  name.endsWith('.deb') ? Buffer.concat([bytes, Buffer.from('tamper')]) : bytes]));
+const artifactId = 9001, runId = '4242', repository = 'fixture-owner/fixture-repo';
+const artifactName = 'ait-pre-tag-candidate-fixture', token = 'fixture-artifact-token';
+const state = { calls: [], payload: validZip };
+let base;
+const server = http.createServer((request, response) => {
+  const url = new URL(request.url, base);
+  const reply = (status, value) => {
+    const bytes = Buffer.from(JSON.stringify(value));
+    response.writeHead(status, { 'content-type': 'application/json', 'content-length': bytes.length }); response.end(bytes);
+  };
+  if (request.method !== 'GET') return reply(405, { message: 'fixture requires GET' });
+  if (url.pathname === '/blob/candidate.zip') {
+    state.calls.push({ kind: 'blob' });
+    response.writeHead(200, { 'content-type': 'application/zip', 'content-length': state.payload.length });
+    response.end(state.payload); return;
+  }
+  if (![`token ${token}`, `Bearer ${token}`].includes(request.headers.authorization)) {
+    state.calls.push({ kind: 'denied-token' }); return reply(401, { message: 'fixture token mismatch' });
+  }
+  if (url.pathname === `/repos/${repository}/actions/runs/${runId}/artifacts`) {
+    const page = Number(url.searchParams.get('page') ?? '1');
+    if (url.searchParams.get('per_page') !== '100') return reply(400, { message: 'fixture requires 100 artifacts per page' });
+    state.calls.push({ kind: 'list', page });
+    const artifacts = Array.from({ length: 101 }, (_, index) => ({
+      id: index === 100 ? artifactId : 1000 + index,
+      name: index === 100 ? artifactName : `previous-${index % 67}`,
+      size_in_bytes: state.payload.length, expired: false,
+      digest: `sha256:${sha(state.payload)}`,
+      created_at: new Date(Date.UTC(2026, 0, 1, 0, 0, 101 - index)).toISOString(),
+    }));
+    reply(200, { total_count: 101, artifacts: artifacts.slice((page - 1) * 100, page * 100) }); return;
+  }
+  if (url.pathname === `/repos/${repository}/actions/artifacts/${artifactId}/zip`) {
+    state.calls.push({ kind: 'download', id: artifactId });
+    response.writeHead(302, { location: `${base}/blob/candidate.zip` }); response.end(); return;
+  }
+  state.calls.push({ kind: 'denied-scope' }); reply(404, { message: 'fixture repository/run/artifact mismatch' });
+});
+server.listen(0, '127.0.0.1'); await once(server, 'listening');
+base = `http://127.0.0.1:${server.address().port}`;
+const action = async (label, pin, inputs = {}, payload = validZip) => {
+  state.calls = []; state.payload = payload;
+  const destination = path.join(temporary, `download-${label}`), output = path.join(temporary, `${label}.outputs`);
+  writeFileSync(output, '');
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith('INPUT_') || /^(HTTP|HTTPS|ALL)_PROXY$/i.test(key)) delete env[key];
+  for (const key of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_URL', 'NODE_OPTIONS']) delete env[key];
+  Object.assign(env, { GITHUB_API_URL: base, GITHUB_SERVER_URL: 'https://github.com', GITHUB_OUTPUT: output,
+    GITHUB_WORKSPACE: temporary, GITHUB_REPOSITORY: 'other/host-context', GITHUB_RUN_ID: '999999',
+    GITHUB_TOKEN: 'unused-default-token', GH_TOKEN: 'unused-default-token',
+    'INPUT_ARTIFACT-IDS': String(artifactId), 'INPUT_RUN-ID': runId, INPUT_REPOSITORY: repository,
+    'INPUT_GITHUB-TOKEN': token, INPUT_PATH: destination, 'INPUT_MERGE-MULTIPLE': 'true', ...inputs });
+  const child = spawn(process.execPath, [bundles.get(pin)], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '', stderr = '', timedOut = false;
+  child.stdout.on('data', data => { stdout += data; }); child.stderr.on('data', data => { stderr += data; });
+  const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, 45_000);
+  let status;
+  try { [status] = await once(child, 'close'); } finally { clearTimeout(timer); }
+  assert(!timedOut, `${label}: actual action timed out\n${stdout}\n${stderr}`);
+  return { status, stdout, stderr, destination, calls: [...state.calls] };
+};
+const stage = destination => spawnSync(process.execPath,
+  [path.join(root, 'ci/release_prepublish_verify.mjs'), 'stage', '--root', destination,
+    '--config-sha256', sha(readFileSync(path.join(candidate, 'ait-release.endpoints.authority.json'))),
+    '--status-sha256', sha(readFileSync(path.join(candidate, 'ait-release.prepublish-candidate.json')))], { encoding: 'utf8' });
+try {
+  const old = await action('old-page2', oldPin);
+  assert.notEqual(old.status, 0); assert.match(old.stdout + old.stderr, /None of the provided artifact IDs were found/);
+  assert.deepEqual(old.calls.filter(call => call.kind === 'list').map(call => call.page), [1]);
+  const fixed = await action('fixed-page2', fixedPin);
+  assert.equal(fixed.status, 0, fixed.stdout + fixed.stderr);
+  assert.deepEqual(fixed.calls.filter(call => call.kind === 'list').map(call => call.page), [1, 2]);
+  assert.deepEqual(fixed.calls.filter(call => call.kind === 'download').map(call => call.id), [artifactId]);
+  assert(fixed.calls.some(call => call.kind === 'blob'));
+  assert(existsSync(path.join(fixed.destination, 'ait-release.endpoints.authority.json')));
+  assert(!existsSync(path.join(fixed.destination, artifactName)));
+  assert.equal(stage(fixed.destination).status, 0);
+  for (const [label, inputs, rejection] of [
+    ['missing-id', { 'INPUT_ARTIFACT-IDS': '99999' }, 'list'],
+    ['wrong-run', { 'INPUT_RUN-ID': '4243' }, 'denied-scope'],
+    ['wrong-repository', { INPUT_REPOSITORY: 'other/repository' }, 'denied-scope'],
+    ['wrong-token', { 'INPUT_GITHUB-TOKEN': 'wrong-token' }, 'denied-token'],
+  ]) {
+    const result = await action(label, fixedPin, inputs);
+    assert.notEqual(result.status, 0, label); assert(result.calls.some(call => call.kind === rejection), label);
+    assert(!result.calls.some(call => call.kind === 'blob'), label);
+  }
+  const corrupt = await action('corrupt-content', fixedPin, {}, corruptZip);
+  assert.equal(corrupt.status, 0, corrupt.stdout + corrupt.stderr);
+  const corruptCheck = stage(corrupt.destination);
+  assert.notEqual(corruptCheck.status, 0); assert.match(corruptCheck.stderr, /digest|checksum/i);
+  const nested = await action('wrong-extraction-root', fixedPin,
+    { INPUT_PATH: path.join(temporary, 'download-wrong-extraction-root', 'unexpected-root') });
+  assert.equal(nested.status, 0, nested.stdout + nested.stderr);
+  assert(existsSync(path.join(nested.destination, 'unexpected-root', 'ait-release.endpoints.authority.json')));
+  assert.notEqual(stage(nested.destination).status, 0);
+  console.log('reviewed download action: old pin rejects page2; v6 retrieves exact index100 via pages1–2');
+  console.log('reviewed download action: exact ID/run/repository/token, content digest and extraction-root guards pass');
+} finally {
+  server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+}
+DOWNLOAD_ACTION_TEST
+
 unsafe_inventory=${temporary_root}/unsafe-inventory
 cp -R "${candidate}" "${unsafe_inventory}"
 {
@@ -277,6 +468,11 @@ aggregate_sha=$(sha256_file "${qualification}/ait-release.clean-host-status.json
 node "${verifier}" qualify --root "${qualification}" --candidate-root "${candidate}" \
   --candidate-artifact-digest "${artifact_digest}" \
   --aggregate-sha256 "${aggregate_sha}" >/dev/null
+
+expect_failure wrong-candidate-artifact-digest node "${verifier}" qualify \
+  --root "${qualification}" --candidate-root "${candidate}" \
+  --candidate-artifact-digest sha256:8888888888888888888888888888888888888888888888888888888888888888 \
+  --aggregate-sha256 "${aggregate_sha}"
 
 jq '.matrix.admitted_rows = 31' "${qualification}/ait-release.clean-host-status.json" \
   >"${qualification}/ait-release.clean-host-status.json.new"
