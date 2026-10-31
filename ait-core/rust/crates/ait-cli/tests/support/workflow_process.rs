@@ -617,3 +617,602 @@ impl Drop for Workers {
         }
     }
 }
+
+pub struct FinishContext<'a> {
+    pub task: &'a str,
+    pub root: &'a Path,
+    pub edit: &'a Path,
+    pub baseline: &'a Value,
+    pub checkpoint: &'a Value,
+    pub dirty: bool,
+}
+
+pub struct FinishIdentity {
+    snapshot: Value,
+    receipt: Value,
+}
+
+fn finish_fields(value: &Value, fields: &[(&str, Value)]) -> Result<(), String> {
+    for (field, expected) in fields {
+        if value.pointer(field) != Some(expected) {
+            return Err(format!(
+                "finish {field}: expected {expected}, got {:?}",
+                value.pointer(field)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn finish_common(
+    context: &FinishContext<'_>,
+    identity: &FinishIdentity,
+    value: &Value,
+    recovery: bool,
+) -> Result<(), String> {
+    finish_fields(
+        value,
+        &[
+            ("/task_id", json!(context.task)),
+            ("/task/task_id", json!(context.task)),
+            ("/task_status", json!("completed")),
+            ("/task/status", json!("completed")),
+            ("/apply_status", json!("done")),
+            (
+                "/execution_status",
+                json!(if recovery {
+                    "already_landed"
+                } else {
+                    "applied"
+                }),
+            ),
+            ("/mode", json!("local")),
+            ("/target_line", json!("main")),
+            ("/current_line", json!("main")),
+            ("/line_name", json!("main")),
+            ("/change", Value::Null),
+            ("/change_id", Value::Null),
+            ("/change_ref", Value::Null),
+            ("/change_status", Value::Null),
+            ("/landed_snapshot_id", identity.snapshot.clone()),
+            ("/local_finish", identity.receipt.clone()),
+            ("/task/local_finish", identity.receipt.clone()),
+            ("/local_finish/status", json!("succeeded")),
+            ("/local_finish/task_id", json!(context.task)),
+            ("/local_finish/target_line", json!("main")),
+            ("/local_finish/change_ref", Value::Null),
+            (
+                "/local_finish/landed_snapshot_id",
+                identity.snapshot.clone(),
+            ),
+            (
+                "/local_finish/pre_land_target_snapshot_id",
+                context.baseline.clone(),
+            ),
+            (
+                "/previous_target_head_snapshot_id",
+                context.baseline.clone(),
+            ),
+            ("/workspace_action", json!("restored")),
+            ("/repo_root_restore/status", json!("restored")),
+            ("/repo_root_restore/applied", json!(true)),
+            ("/repo_root_restore/workspace_root", json!(context.root)),
+            (
+                "/repo_root_restore/target_snapshot_id",
+                identity.snapshot.clone(),
+            ),
+            ("/repo_root_restore/dirty_outside_paths", json!([])),
+            ("/plan_checklist_closeout/status", json!("synced")),
+            ("/plan_markdown_materialization/status", json!("in_sync")),
+            ("/plan_markdown_materialization/drift", json!([])),
+            ("/task_land_contract/scope", json!("local")),
+            (
+                "/task_land_contract/version",
+                json!("task-land-plan-closeout/v1"),
+            ),
+            (
+                "/task_land_contract/recovery_policy",
+                json!("idempotent_phase_resume"),
+            ),
+        ],
+    )?;
+    if identity.receipt["land_ordinal"].as_u64().is_none() {
+        return Err("finish receipt has no valid ordinal".into());
+    }
+    if !recovery || value.get("post_finish_hooks").is_some() {
+        finish_fields(
+            value,
+            &[
+                ("/post_finish_hooks/status", json!("skipped")),
+                ("/post_finish_hooks/reason", json!("no_hooks_configured")),
+            ],
+        )?;
+    }
+    if recovery {
+        finish_fields(
+            value,
+            &[
+                ("/auto_snapshot", Value::Null),
+                ("/repo_root_restore/plan/write_count", json!(0)),
+                ("/repo_root_restore/plan/remove_count", json!(0)),
+            ],
+        )
+    } else if !context.dirty {
+        finish_fields(value, &[("/auto_snapshot", Value::Null)])?;
+        if identity.snapshot != *context.checkpoint {
+            return Err("clean finish changed the saved checkpoint Snapshot".into());
+        }
+        Ok(())
+    } else {
+        finish_fields(
+            value,
+            &[
+                ("/auto_snapshot/snapshot_id", identity.snapshot.clone()),
+                ("/auto_snapshot/task_id", json!(context.task)),
+                ("/auto_snapshot/change_id", Value::Null),
+                ("/auto_snapshot/newly_created", json!(true)),
+                (
+                    "/auto_snapshot/parent_snapshot_id",
+                    context.checkpoint.clone(),
+                ),
+            ],
+        )
+    }
+}
+
+fn finish_other_phases(value: &Value, allowed: &[&str]) -> Result<(), String> {
+    for (phase, component) in value.as_object().ok_or("finish is not an object")? {
+        if !allowed.contains(&phase.as_str())
+            && matches!(
+                component["status"].as_str(),
+                Some("failed" | "blocked" | "partial" | "pending" | "deferred")
+            )
+        {
+            return Err(format!("unrelated finish failure: {phase}"));
+        }
+    }
+    Ok(())
+}
+
+fn finish_windows_partial(
+    context: &FinishContext<'_>,
+    identity: &FinishIdentity,
+    value: &Value,
+) -> Result<(), String> {
+    finish_common(context, identity, value, false)?;
+    finish_fields(
+        value,
+        &[
+            ("/closeout_status", json!("partial")),
+            ("/bound_worktree_cleanup/status", json!("failed")),
+            ("/bound_worktree_cleanup/task_id", json!(context.task)),
+            ("/bound_line_closeout/status", json!("failed")),
+            (
+                "/bound_line_closeout/reason",
+                json!("feature_line_closeout_failed"),
+            ),
+            (
+                "/bound_line_closeout/error",
+                json!("Bound worktree cleanup failed before Line closeout."),
+            ),
+            ("/bound_line_closeout/task_id", json!(context.task)),
+            ("/bound_line_closeout/task_status", json!("completed")),
+            ("/main_seed_sync/status", json!("pending")),
+            (
+                "/main_seed_sync/reason",
+                json!("task_closeout_recovery_pending"),
+            ),
+            ("/main_seed_sync/line_name", json!("main")),
+            ("/automatic_reconciliation/status", json!("skipped")),
+            (
+                "/automatic_reconciliation/reason",
+                json!("task_closeout_recovery_pending"),
+            ),
+            (
+                "/closeout_recovery/code",
+                json!("resume_task_land_closeout"),
+            ),
+            (
+                "/closeout_recovery/command",
+                json!(format!("ait task finish {} --local", context.task)),
+            ),
+            ("/closeout_recovery/idempotent", json!(true)),
+        ],
+    )?;
+    if !value["bound_worktree_cleanup"]["error"]
+        .as_str()
+        .is_some_and(|error| error.ends_with("(os error 32)"))
+    {
+        return Err("finish cleanup is not exactly Windows sharing violation32".into());
+    }
+    finish_other_phases(
+        value,
+        &[
+            "bound_worktree_cleanup",
+            "bound_line_closeout",
+            "main_seed_sync",
+        ],
+    )
+}
+
+fn finish_complete(
+    context: &FinishContext<'_>,
+    identity: &FinishIdentity,
+    value: &Value,
+    recovery: bool,
+) -> Result<(), String> {
+    finish_common(context, identity, value, recovery)?;
+    finish_fields(
+        value,
+        &[
+            ("/closeout_status", json!("complete")),
+            ("/bound_worktree_cleanup/status", json!("removed")),
+            ("/bound_worktree_cleanup/task_id", json!(context.task)),
+            ("/bound_worktree_cleanup/worktree/removed", json!(true)),
+            ("/bound_worktree_cleanup/worktree/deleted_path", json!(true)),
+            ("/bound_worktree_cleanup/worktree/path", json!(context.edit)),
+            ("/bound_line_closeout/status", json!("archived")),
+            ("/bound_line_closeout/task_id", json!(context.task)),
+            ("/bound_line_closeout/task_status", json!("completed")),
+            ("/bound_line_closeout/target_line", json!("main")),
+            (
+                "/bound_line_closeout/expected_revision_snapshot_id",
+                identity.snapshot.clone(),
+            ),
+            ("/bound_line_closeout/local/line/status", json!("archived")),
+            (
+                "/bound_line_closeout/local/line/head_snapshot_id",
+                identity.snapshot.clone(),
+            ),
+            ("/automatic_reconciliation/status", json!("completed")),
+        ],
+    )?;
+    if !value.get("closeout_recovery").is_none_or(Value::is_null)
+        || value["main_seed_sync"]["status"].as_str().is_none()
+    {
+        return Err("finish still requires closeout recovery".into());
+    }
+    finish_other_phases(value, &[])
+}
+
+fn finish_identity(context: &FinishContext<'_>, value: &Value) -> Result<FinishIdentity, String> {
+    let snapshot = if context.dirty {
+        value["auto_snapshot"]["snapshot_id"].clone()
+    } else {
+        context.checkpoint.clone()
+    };
+    if !snapshot.as_str().is_some_and(|id| {
+        id.len() == 16
+            && id.starts_with("SNP-")
+            && id.as_bytes()[4..]
+                .iter()
+                .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(b))
+    }) {
+        return Err("finish did not select the exact Task Snapshot".into());
+    }
+    Ok(FinishIdentity {
+        snapshot,
+        receipt: value["local_finish"].clone(),
+    })
+}
+
+pub fn finish_initial(
+    context: &FinishContext<'_>,
+    value: &Value,
+    code: Option<i32>,
+    windows: bool,
+) -> Result<FinishIdentity, String> {
+    let identity = finish_identity(context, value)?;
+    match code {
+        Some(0) => finish_complete(context, &identity, value, false)?,
+        Some(2) if windows => finish_windows_partial(context, &identity, value)?,
+        _ => return Err(format!("unexpected first finish exit {code:?}")),
+    }
+    Ok(identity)
+}
+
+fn worker_finish_initial(
+    context: &FinishContext<'_>,
+    reply: &Value,
+    windows: bool,
+) -> Result<Option<(Value, FinishIdentity)>, String> {
+    let ok = reply["ok"]
+        .as_bool()
+        .ok_or("worker omitted success status")?;
+    let stdout = reply["stdout"].as_str().ok_or("worker omitted stdout")?;
+    let stderr = reply["stderr"].as_str().ok_or("worker omitted stderr")?;
+    if !ok && stdout.is_empty() && stderr.contains("ait worktree rebase --onto main") {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_str(stdout)
+        .map_err(|error| format!("Invalid worker finish JSON: {error}"))?;
+    let identity = finish_identity(context, &value)?;
+    if ok {
+        finish_complete(context, &identity, &value, false)?;
+    } else if windows && stderr.is_empty() {
+        finish_windows_partial(context, &identity, &value)?;
+    } else {
+        return Err("unrecognized non-successful worker finish".into());
+    }
+    Ok(Some((value, identity)))
+}
+
+/// Classify only after together() has collected the whole acknowledged batch.
+/// The existing worker envelope has no numeric CLI exit status.
+pub fn finish_reply(context: &FinishContext<'_>, reply: &Value) -> Option<(Value, FinishIdentity)> {
+    let command = cli_command(
+        context.edit,
+        &[
+            "task",
+            "finish",
+            context.task,
+            "--local",
+            "--json",
+            "--full",
+        ],
+        None,
+    );
+    let diagnostic = || {
+        format!(
+            "{}\nraw status: unavailable in worker envelope\nreply: {reply}",
+            command_identity(&command)
+        )
+    };
+    let result = worker_finish_initial(context, reply, cfg!(windows))
+        .unwrap_or_else(|error| panic!("{error}\n{}", diagnostic()));
+    if result.is_none() {
+        let task = cli_json(
+            context.root,
+            &["task", "show", context.task, "--local", "--json"],
+        );
+        let head = cli_json(context.root, &["line", "show", "main", "--json"]);
+        assert!(
+            task["task_id"] == context.task
+                && task["status"].as_str().is_some()
+                && task["status"] != "completed"
+                && task["local_finish"].is_null()
+                && head["head_snapshot_id"] != *context.baseline,
+            "stale rejection must precede apply: {task}\n{}",
+            diagnostic()
+        );
+    }
+    result
+}
+
+/// Resume only a strictly verified applied partial, once, from the root.
+/// Historical completed-receipt retries never enter this fresh-apply path.
+pub fn finish_closeout(
+    context: &FinishContext<'_>,
+    first: Value,
+    identity: &FinishIdentity,
+    search_path: Option<&Path>,
+) -> Value {
+    if first["closeout_status"] != "partial" {
+        return first;
+    }
+    let receipts = fs::read(context.root.join(".ait/binary-db/land.bin")).unwrap();
+    let count = parsed_cli(context.root, &["status", "--json", "--full"], search_path)
+        ["snapshot_count"]
+        .clone();
+    let (recovered, ()) = checked_cli_json(
+        context.root,
+        &[
+            "task",
+            "finish",
+            context.task,
+            "--local",
+            "--json",
+            "--full",
+        ],
+        search_path,
+        |output, value| {
+            finish_recovered(context, identity, value, output.status.code())?;
+            let after = fs::read(context.root.join(".ait/binary-db/land.bin"))
+                .map_err(|error| error.to_string())?;
+            let state = parsed_cli(context.root, &["status", "--json", "--full"], search_path);
+            finish_no_reapply(&receipts, &after, &count, &state["snapshot_count"])?;
+            if state["head_snapshot_id"] != identity.snapshot || context.edit.exists() {
+                return Err("root recovery changed target or left the worktree".into());
+            }
+            Ok(())
+        },
+    );
+    recovered
+}
+
+pub fn finish_from_edit(context: &FinishContext<'_>, args: &[&str]) -> Value {
+    let (first, identity) = checked_cli_json(context.edit, args, None, |output, value| {
+        finish_initial(context, value, output.status.code(), cfg!(windows))
+    });
+    finish_guard_controls(context, &identity, &first);
+    finish_closeout(context, first, &identity, None)
+}
+
+fn finish_no_reapply(
+    before: &[u8],
+    after: &[u8],
+    count: &Value,
+    recovered_count: &Value,
+) -> Result<(), String> {
+    if before != after || count.as_u64().is_none() || count != recovered_count {
+        Err("finish recovery repeated apply or created an extra Snapshot".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn finish_recovered(
+    context: &FinishContext<'_>,
+    identity: &FinishIdentity,
+    value: &Value,
+    code: Option<i32>,
+) -> Result<(), String> {
+    if code != Some(0) {
+        return Err(format!("root finish recovery failed with {code:?}"));
+    }
+    finish_complete(context, identity, value, true)
+}
+
+pub fn finish_guard_controls(
+    context: &FinishContext<'_>,
+    identity: &FinishIdentity,
+    first: &Value,
+) {
+    // Exercise response guards on every host; only a real Windows run can
+    // prove the actual partial-closeout/root-resume path below.
+    let mut partial = first.clone();
+    partial["closeout_status"] = json!("partial");
+    partial["bound_worktree_cleanup"] = json!({
+        "status":"failed", "task_id":context.task,
+        "error":"The process cannot access the file because it is being used by another process. (os error 32)"
+    });
+    partial["bound_line_closeout"] = json!({
+        "status":"failed", "reason":"feature_line_closeout_failed",
+        "error":"Bound worktree cleanup failed before Line closeout.",
+        "task_id":context.task, "task_status":"completed"
+    });
+    partial["main_seed_sync"] = json!({
+        "status":"pending", "reason":"task_closeout_recovery_pending", "line_name":"main"
+    });
+    partial["automatic_reconciliation"] = json!({
+        "status":"skipped", "reason":"task_closeout_recovery_pending"
+    });
+    partial["closeout_recovery"] = json!({
+        "code":"resume_task_land_closeout", "idempotent":true,
+        "command":format!("ait task finish {} --local", context.task)
+    });
+    finish_initial(context, &partial, Some(2), true).unwrap();
+    let worker =
+        |ok: bool, value: &Value| json!({"ok":ok, "stdout":value.to_string(), "stderr":""});
+    assert!(
+        worker_finish_initial(context, &worker(false, &partial), true)
+            .unwrap()
+            .is_some()
+    );
+    assert!(worker_finish_initial(context, &worker(false, &partial), false).is_err());
+    assert!(worker_finish_initial(context, &worker(true, &partial), true).is_err());
+    let stale = json!({"ok":false,"stdout":"","stderr":"Error: stale candidate; ait worktree rebase --onto main"});
+    assert!(worker_finish_initial(context, &stale, true)
+        .unwrap()
+        .is_none());
+    let mut unrelated_stderr = worker(false, &partial);
+    unrelated_stderr["stderr"] = json!("unrelated failure");
+    assert!(worker_finish_initial(context, &unrelated_stderr, true).is_err());
+    let mut false_stale = stale.clone();
+    false_stale["stdout"] = json!(partial.to_string());
+    assert!(worker_finish_initial(context, &false_stale, false).is_err());
+    false_stale["stdout"] = json!("unrelated output");
+    assert!(worker_finish_initial(context, &false_stale, true).is_err());
+    false_stale["stdout"] = json!("");
+    false_stale["stderr"] = json!("unrelated failure");
+    assert!(worker_finish_initial(context, &false_stale, true).is_err());
+    let mut wrong_selection = partial.clone();
+    wrong_selection["auto_snapshot"] = if context.dirty {
+        Value::Null
+    } else {
+        json!({"snapshot_id":context.checkpoint,"newly_created":true})
+    };
+    assert!(worker_finish_initial(context, &worker(false, &wrong_selection), true).is_err());
+    assert!(finish_initial(context, &partial, Some(2), false).is_err());
+    assert!(finish_initial(context, &partial, Some(1), true).is_err());
+    assert!(finish_initial(context, &partial, Some(0), true).is_err());
+    let common_drift = [
+        ("/task_id", json!("LT-9999")),
+        ("/landed_snapshot_id", json!("wrong-snapshot")),
+        (
+            "/local_finish/land_ordinal",
+            json!(identity.receipt["land_ordinal"].as_u64().unwrap() + 1),
+        ),
+        ("/task/local_finish/target_line", json!("other")),
+        ("/target_line", json!("other")),
+        ("/apply_status", json!("failed")),
+        ("/task_status", json!("active")),
+        ("/task/status", json!("active")),
+        ("/plan_checklist_closeout/status", json!("failed")),
+        ("/plan_markdown_materialization/status", json!("failed")),
+        ("/repo_root_restore/status", json!("failed")),
+    ];
+    for (field, replacement) in &common_drift {
+        let mut invalid = partial.clone();
+        *invalid.pointer_mut(field).unwrap() = replacement.clone();
+        assert!(
+            finish_windows_partial(context, identity, &invalid).is_err(),
+            "accepted {field}"
+        );
+    }
+    for (field, replacement) in [
+        (
+            "/bound_worktree_cleanup/error",
+            json!("sharing violation (os error 320)"),
+        ),
+        (
+            "/bound_worktree_cleanup/error",
+            json!("Permission denied (os error 13)"),
+        ),
+        ("/bound_line_closeout/reason", json!("unrelated")),
+        ("/main_seed_sync/status", json!("failed")),
+        ("/automatic_reconciliation/reason", json!("unrelated")),
+        ("/post_finish_hooks/status", json!("failed")),
+        (
+            "/closeout_recovery/command",
+            json!("ait task finish LT-9999 --local"),
+        ),
+        ("/closeout_recovery/idempotent", json!(false)),
+    ] {
+        let mut invalid = partial.clone();
+        *invalid.pointer_mut(field).unwrap() = replacement;
+        assert!(
+            finish_windows_partial(context, identity, &invalid).is_err(),
+            "accepted {field}"
+        );
+    }
+    let mut unrelated = partial.clone();
+    unrelated["other_mandatory_step"] = json!({"status":"failed"});
+    assert!(finish_windows_partial(context, identity, &unrelated).is_err());
+
+    let mut recovered = first.clone();
+    recovered["execution_status"] = json!("already_landed");
+    recovered["auto_snapshot"] = Value::Null;
+    recovered["closeout_status"] = json!("complete");
+    recovered["closeout_recovery"] = Value::Null;
+    recovered["bound_worktree_cleanup"] = json!({
+        "status":"removed", "task_id":context.task,
+        "worktree":{"removed":true, "deleted_path":true, "path":context.edit}
+    });
+    recovered["bound_line_closeout"] = json!({
+        "status":"archived", "task_id":context.task, "task_status":"completed",
+        "target_line":"main", "expected_revision_snapshot_id":identity.snapshot,
+        "local":{"line":{"status":"archived", "head_snapshot_id":identity.snapshot}}
+    });
+    recovered["main_seed_sync"] = json!({"status":"refreshed"});
+    recovered["automatic_reconciliation"] = json!({"status":"completed"});
+    recovered["repo_root_restore"]["plan"]["write_count"] = json!(0);
+    recovered["repo_root_restore"]["plan"]["remove_count"] = json!(0);
+    finish_recovered(context, identity, &recovered, Some(0)).unwrap();
+    assert!(finish_recovered(context, identity, &recovered, Some(2)).is_err());
+    for (field, replacement) in common_drift.iter().cloned().chain([
+        ("/execution_status", json!("applied")),
+        ("/auto_snapshot", json!({"newly_created":true})),
+        ("/closeout_status", json!("partial")),
+        ("/bound_worktree_cleanup/status", json!("failed")),
+        ("/bound_worktree_cleanup/worktree/removed", json!(false)),
+        (
+            "/bound_worktree_cleanup/worktree/path",
+            json!("other-worktree"),
+        ),
+        ("/bound_line_closeout/status", json!("active")),
+        ("/main_seed_sync/status", json!("pending")),
+        ("/repo_root_restore/plan/write_count", json!(1)),
+        ("/repo_root_restore/plan/remove_count", json!(1)),
+    ]) {
+        let mut invalid = recovered.clone();
+        *invalid.pointer_mut(field).unwrap() = replacement;
+        assert!(
+            finish_recovered(context, identity, &invalid, Some(0)).is_err(),
+            "accepted {field}"
+        );
+    }
+    assert!(finish_no_reapply(b"receipt", b"receipt", &json!(3), &json!(3)).is_ok());
+    assert!(finish_no_reapply(b"receipt", b"duplicate", &json!(3), &json!(3)).is_err());
+    assert!(finish_no_reapply(b"receipt", b"receipt", &json!(3), &json!(4)).is_err());
+}

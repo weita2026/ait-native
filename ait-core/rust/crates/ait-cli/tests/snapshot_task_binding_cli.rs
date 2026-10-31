@@ -1754,8 +1754,18 @@ fn old_receipt_retry_preserves_the_newer_target_and_files() {
     let first = parent.join("first");
     let task = quick_initial(&root, &first, "First complete Task");
     fs::write(first.join("code.rs"), "fn first() {}\n").unwrap();
-    json(
-        &first,
+    let baseline = workflow_process::cli_json(&root, &["line", "show", "main", "--json"])
+        ["head_snapshot_id"]
+        .clone();
+    let older = workflow_process::finish_from_edit(
+        &workflow_process::FinishContext {
+            task: &task,
+            root: &root,
+            edit: &first,
+            baseline: &baseline,
+            checkpoint: &baseline,
+            dirty: true,
+        },
         &[
             "task",
             "finish",
@@ -1764,13 +1774,24 @@ fn old_receipt_retry_preserves_the_newer_target_and_files() {
             "--message",
             "first",
             "--json",
+            "--full",
         ],
     );
     let second = parent.join("second");
     let next = quick_initial(&root, &second, "Second complete Task");
     fs::write(second.join("code.rs"), "fn first() {}\nfn second() {}\n").unwrap();
-    let newer = json(
-        &second,
+    let baseline = workflow_process::cli_json(&root, &["line", "show", "main", "--json"])
+        ["head_snapshot_id"]
+        .clone();
+    let newer = workflow_process::finish_from_edit(
+        &workflow_process::FinishContext {
+            task: &next,
+            root: &root,
+            edit: &second,
+            baseline: &baseline,
+            checkpoint: &baseline,
+            dirty: true,
+        },
         &[
             "task",
             "finish",
@@ -1782,10 +1803,20 @@ fn old_receipt_retry_preserves_the_newer_target_and_files() {
             "--full",
         ],
     );
+    assert!(!first.exists() && !second.exists());
+    let snapshot_count = json(&root, &["status", "--json", "--full"])["snapshot_count"].clone();
     let receipts = fs::read(root.join(".ait/binary-db/land.bin")).unwrap();
     let retry = json(
         &root,
         &["task", "finish", &task, "--local", "--json", "--full"],
+    );
+    assert_eq!(retry["execution_status"], "already_landed");
+    assert_eq!(retry["local_finish"], older["local_finish"]);
+    assert_eq!(retry["landed_snapshot_id"], older["landed_snapshot_id"]);
+    assert_ne!(older["landed_snapshot_id"], newer["landed_snapshot_id"]);
+    assert_eq!(
+        json(&root, &["status", "--json", "--full"])["snapshot_count"],
+        snapshot_count
     );
     assert_eq!(
         retry["repo_root_restore"]["reason"],

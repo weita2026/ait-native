@@ -100,11 +100,13 @@ for (const failure of [null, "missing", "duplicate-list", "wrong-list", "prefixe
     ["-p", "ait-cli", "--test", "workflow_recovery_cli", CORE_GITLESS_CASE, "--", "--exact", "--test-threads=1", "--nocapture", "--color", "never"]);
 }
 // Exercise both normal-Q versions and explicit QA through the real dispatch.
-// Every existing selector must run once; each failing position stops the group.
+// Every independent selector runs once after an ordinary failure. Fatal
+// execution conditions stop only the unexecuted remainder.
 for (const target of ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]) {
   for (const entry of ["q-prior", "q-current", "qa"]) {
     const scenarios = [null, "build", "missing-executable", "missing-runtime",
       ...installedCoreCases.map((_, index) => ({ kind: "command-failure", index })),
+      ...[4, 11].flatMap(index => ["spawn", "timeout", "budget", "listing-build"].map(kind => ({ kind, index }))),
       ...["missing", "duplicate-list", "prefixed-list", "wrong-list", "extra-list", "wrong-case", "ignored", "zero",
         "duplicate-output", "duplicate-summary", "extra-failed", "message-only"].map(kind => ({ kind, index: 11 }))];
     for (const failure of scenarios) {
@@ -141,6 +143,8 @@ for (const target of ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]) {
           calls.push({ index, selector, isList });
           const kind = failure?.index === index ? failure.kind : null;
           if (isList) {
+            if (kind === "listing-build") throw Object.assign(new Error("unit fixture harness build failed"),
+              { code: "ERR_NATIVE_COMMAND_EXIT", cause: { status: 101, pid: 37 } });
             if (kind === "missing") return listing([]);
             if (kind === "duplicate-list") return listing([selector, selector]);
             if (kind === "prefixed-list") return listing(["unreviewed::" + selector]);
@@ -148,7 +152,11 @@ for (const target of ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]) {
             if (kind === "extra-list") return listing([selector, "another_case"]);
             return listing([selector]);
           }
-          if (kind === "command-failure") throw new Error("selected command failed");
+          if (kind === "command-failure") throw Object.assign(new Error("selected command failed"),
+            { code: "ERR_NATIVE_COMMAND_EXIT", cause: { status: 101, pid: 37 } });
+          if (kind === "spawn" || kind === "timeout") throw Object.assign(new Error(`unit fixture ${kind} failure`),
+            { code: "ERR_NATIVE_COMMAND_FATAL", cause: { status: null, pid: kind === "timeout" ? 37 : 0 } });
+          if (kind === "budget") throw new Error("unit fixture execution budget exhausted");
           let output = "running 1 test\n" + passed([selector]).replace("0 measured", "0 measured; 5 filtered out;");
           if (kind === "wrong-case") output = output.replace(selector, "another_case");
           if (kind === "ignored") output = output.replace(" ... ok", " ... ignored");
@@ -177,7 +185,20 @@ for (const target of ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]) {
         source.slice(source.indexOf("function main("), source.indexOf("\nif (process.argv[1]")) +
         "\nthis.q = main; this.qa = runNativeWindowsQa;", context);
       const execute = () => entry === "qa" ? context.qa({ target, root: "/fixed", logs: "/fixed/logs" }) : context.q();
-      if (failure === null) execute(); else assert.throws(execute);
+      const fatal = typeof failure === "object" && failure !== null && ["spawn", "timeout", "budget", "listing-build"].includes(failure.kind);
+      if (failure === null) execute(); else assert.throws(execute, error => {
+        if (fatal || typeof failure === "string") {
+          assert.match(error.message, /Core acceptance interrupted; unreached/);
+          const remaining = typeof failure === "string" ? installedCoreCases :
+            installedCoreCases.slice(failure.index + (failure.kind === "timeout" ? 1 : 0));
+          assert(error.message.includes(`unreached (${remaining.length})`));
+          for (const [test, selector] of remaining) assert(error.message.includes(`${test}/${selector}`));
+        } else {
+          assert.match(error.message, /Core acceptance group failed \(1\/13 selectors\)/);
+          assert.match(error.message, /private Core worker inner CLI exit is unavailable/);
+        }
+        return true;
+      });
       assert.deepEqual(env, prior, "restore present and absent environment bindings even on failure");
       if (failure === null) {
         assert.deepEqual(builds, ["core-native-build", "server-native-build", "runner-native-build"]);
@@ -186,8 +207,15 @@ for (const target of ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]) {
       } else {
         assert.deepEqual(reached, []);
         if (typeof failure === "object") {
-          assert.equal(calls.at(-1).index, failure.index);
-          assert.equal(calls.filter(call => !call.isList).length, failure.index + (["missing", "duplicate-list", "prefixed-list", "wrong-list", "extra-list"].includes(failure.kind) ? 0 : 1));
+          if (fatal) {
+            assert.equal(calls.at(-1).index, failure.index);
+            assert.equal(calls.filter(call => !call.isList).length, failure.index + (failure.kind === "listing-build" ? 0 : 1));
+          } else {
+            const listingFailed = ["missing", "duplicate-list", "prefixed-list", "wrong-list", "extra-list"].includes(failure.kind);
+            assert.deepEqual(calls.filter(call => !call.isList).map(call => call.selector),
+              installedCoreCases.filter((_, index) => !listingFailed || index !== failure.index).map(row => row[1]));
+            assert.equal(calls.filter(call => call.isList).length, installedCoreCases.length);
+          }
         } else assert.equal(calls.length, 0);
       }
     }
@@ -397,18 +425,30 @@ try {
     "if(args.includes('--bin')){const file=path.join(args[args.indexOf('--target-dir')+1],args[args.indexOf('--target')+1],'debug',args[args.indexOf('--bin')+1]+'.exe');fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,'unit fixture executable');process.exit(0);}" +
     "const selector=args[args.indexOf('--')-1];" +
     "if(args.includes('--list'))fs.writeSync(1,selector+': test\\n');" +
-    `else if(selector===${JSON.stringify(installedCoreCases[1][1])}){fs.writeSync(1,${JSON.stringify(preflightStdout)});fs.writeSync(2,${JSON.stringify(preflightStderr)});process.exit(101);}else{` +
-    `fs.writeSync(1,${JSON.stringify(caseOutput)});` +
+    `else if(${JSON.stringify([installedCoreCases[1][1], installedCoreCases[3][1]])}.includes(selector)){` +
+    "fs.writeSync(1,'unit fixture original stdout start\\n'+'unit fixture stdout padding\\n'.repeat(8192)+'unit fixture stdout end\\n');" +
+    "fs.writeSync(2,'unit fixture initiating-cli failure status=17\\n'+'unit fixture stderr padding\\n'.repeat(8192)+'unit fixture stderr end\\n');process.exit(101);}else{" +
+    `fs.writeSync(1,${JSON.stringify(caseOutput)}.replaceAll(${JSON.stringify(CORE_GITLESS_CASE)},selector));` +
     "if(args.includes('--nocapture'))fs.writeSync(2,'uncaptured successful case diagnostic\\n'.repeat(8192)+'case diagnostic end\\n');}";
+  assert(Buffer.byteLength(cargoScript, "utf8") < 8 * 1024,
+    "generate large fixture streams inside the child; keep its actual -e argument portable");
+  function requireSimulatedLaunch(call) {
+    assert.equal(call.error, null, `simulated ${call.command} spawn.error: ${call.error}`);
+    assert.notEqual(call.status, null, `simulated ${call.command} has no child exit: ${JSON.stringify(call)}`);
+  }
   const context = vm.createContext({ ...fs, assert, path, Buffer, performance, spawn,
     installedCoreCases, requireExecutedCoreCase, selectNativeCase, CORE_GITLESS_CASE, runCoreGitlessCase,
     Date: class extends Date { static now() { return now; } },
     process: { platform: "win32", arch: "x64", env: process.env, stdout: process.stdout, pid: process.pid },
     spawnSync(command, args, options) {
-      calls.push({ command, timeout: options.timeout });
-      return command === "rustc" ? spawnSync(process.execPath, ["-e", "process.stdout.write('host: x86_64-pc-windows-msvc\\n')"], options)
+      const result = command === "rustc" ? spawnSync(process.execPath, ["-e", "process.stdout.write('host: x86_64-pc-windows-msvc\\n')"], options)
         : command === "cargo" ? spawnSync(process.execPath, ["-e", cargoScript, ...args], options)
         : spawnSync(command, args, options);
+      const call = { command, timeout: options.timeout, status: result.status, signal: result.signal, pid: result.pid,
+        error: result.error ? `${result.error.code ?? "unknown"}: ${result.error.message}` : null };
+      calls.push(call);
+      if (command === "rustc" || command === "cargo") requireSimulatedLaunch(call);
+      return result;
     },
   });
   vm.runInContext(contextSource + "\nthis.makeContext = nativeContext; this.preflight = runCoreAcceptancePrerequisite;", context);
@@ -426,30 +466,51 @@ try {
   assert(fs.readFileSync(path.join(logs, "core-gitless-lifecycle.stderr"), "utf8").includes(caseDiagnostic));
   assert(fs.readFileSync(path.join(logs, "core-gitless-lifecycle.argv"), "utf8").split("\n").includes("--nocapture"));
   // Run the complete production preflight through real child I/O. This unit
-  // Cargo fixture fails case2; its initiating bytes must survive untruncated.
+  // Cargo fixture fails cases2/4; its first bytes must survive the full group.
   const groupLogs = path.join(scratch, "group-logs");
   const group = context.makeContext({ target: "x86_64-pc-windows-msvc", root: scratch, logs: groupLogs });
   group.env.TEST_SERVER_CI_RAM_ROOT = scratch;
-  assert.throws(() => context.preflight(group), /core-acceptance-2 failed/);
+  const beforeGroup = calls.length;
+  assert.throws(() => context.preflight(group), /Core acceptance group failed \(2\/13 selectors\)/);
+  const groupCalls = calls.slice(beforeGroup);
+  assert.equal(groupCalls.filter(call => call.status === 101).length, 2, "retain both deliberate fixture exits");
+  assert(groupCalls.every(call => call.error === null && [0, 101].includes(call.status)));
   assert.equal(fs.readFileSync(path.join(groupLogs, "core-acceptance-2.stdout"), "utf8"), preflightStdout);
   assert(fs.readFileSync(path.join(groupLogs, "core-acceptance-2.stderr"), "utf8").includes(preflightStderr));
   assert(fs.readFileSync(path.join(groupLogs, "core-acceptance-2.argv"), "utf8").includes(installedCoreCases[1][1]));
-  assert(!fs.existsSync(path.join(groupLogs, "core-acceptance-3.argv")), "stop before the next case after the original failure");
+  for (const [index, [, selector]] of installedCoreCases.entries()) {
+    const label = index === 0 ? "core-gitless-lifecycle" : `core-acceptance-${index + 1}`;
+    assert(fs.readFileSync(path.join(groupLogs, label + ".argv"), "utf8").includes(selector));
+    if (index > 1 && index !== 3) requireExecutedCoreCase(fs.readFileSync(path.join(groupLogs, label + ".stdout"), "utf8"), selector);
+  }
+  assert.equal(fs.readdirSync(groupLogs).filter(file => file.endsWith(".argv") &&
+    (file === "core-gitless-lifecycle.argv" || /^core-acceptance-\d+\.argv$/.test(file))).length, installedCoreCases.length);
   const fullStdout = "original child stdout\n".repeat(8192) + "stdout end\n";
   const fullStderr = "original child stderr\n".repeat(8192) + "command=init status=17 stderr end\n";
   const failedScript = "const fs=require('node:fs');fs.writeSync(1,'original child stdout\\n'.repeat(8192)+'stdout end\\n');" +
     "fs.writeSync(2,'original child stderr\\n'.repeat(8192)+'command=init status=17 stderr end\\n');process.exit(17)";
   assert.throws(() => native.run("failed-child", process.execPath, ["-e", failedScript]), /failed-child failed/);
+  assert.equal(calls.at(-1).status, 17, `require the deliberate child exit: ${JSON.stringify(calls.at(-1))}`);
+  assert.equal(calls.at(-1).error, null);
   assert.equal(fs.readFileSync(path.join(logs, "failed-child.stdout"), "utf8"), fullStdout);
   assert(fs.readFileSync(path.join(logs, "failed-child.stderr"), "utf8").includes(fullStderr),
     "full failure streams and the final child identity/status must survive beyond an E-sized tail");
   assert.throws(() => native.run("unavailable-command", path.join(scratch, "absent-command"), []), /unavailable-command failed/);
+  assert.equal(calls.at(-1).status, null);
+  assert.match(calls.at(-1).error, /^ENOENT: /);
+  assert.throws(() => requireSimulatedLaunch(calls.at(-1)), /spawn\.error: ENOENT: .*spawnSync/,
+    "an actual spawn failure must remain diagnostic and cannot count as a deliberate case failure");
   assert.match(fs.readFileSync(path.join(logs, "unavailable-command.stderr"), "utf8"), /ENOENT/);
   const budget = calls[0].timeout;
-  assert(budget > 0 && budget <= 105 * 60 * 1000, "reserve time before the hosted job timeout to retain diagnostics");
+  assert.equal(budget, 90 * 60 * 1000, "keep the original shared budget and reserve hosted-job time for diagnostics");
   now = budget - 200;
   assert.throws(() => native.run("timed-out-child", process.execPath,
     ["-e", script("timed-out-child") + "setInterval(()=>{},1000)"]), /timed-out-child failed/);
+  assert.equal(calls.at(-1).status, null);
+  assert(calls.at(-1).pid > 0, "the deliberate timeout must follow an actual child launch");
+  assert.match(calls.at(-1).error, /^ETIMEDOUT: /);
+  assert.throws(() => requireSimulatedLaunch({ ...calls.at(-1), error: null }), /has no child exit/,
+    "a null status alone cannot count as the expected negative child exit");
   assert.equal(fs.readFileSync(path.join(logs, "timed-out-child.stdout"), "utf8"), stdout);
   assert.match(fs.readFileSync(path.join(logs, "timed-out-child.stderr"), "utf8"), /retained stderr before exit[\s\S]*ETIMEDOUT/);
   now = budget + 1;
@@ -606,9 +667,10 @@ if (process.env.NATIVE_CAPTURE_TEST_BINARY) {
   const logs = path.join(records, "logs");
   const hostStub = "process.stdout.write(" + JSON.stringify("host: x86_64-pc-windows-msvc\n") + ")";
   const wrapper = `import assert from 'node:assert/strict';import * as fs from 'node:fs';import path from 'node:path';import vm from 'node:vm';import {spawnSync} from 'node:child_process';
+import {installedCoreCases} from ${JSON.stringify(new URL("./release_core_installed_cases.mjs", import.meta.url).href)};
 const source=fs.readFileSync(${JSON.stringify(executor)},'utf8');
 const body=source.slice(source.indexOf('function nativeContext('),source.indexOf('function executeCases('));
-const ctx=vm.createContext({...fs,assert,path,Date,process:{platform:'win32',arch:'x64',env:process.env},spawnSync(command,args,options){return command==='rustc'?spawnSync(process.execPath,['-e',${JSON.stringify(hostStub)}],options):spawnSync(command,args,options)}});
+const ctx=vm.createContext({...fs,assert,path,Date,installedCoreCases,process:{platform:'win32',arch:'x64',env:process.env},spawnSync(command,args,options){return command==='rustc'?spawnSync(process.execPath,['-e',${JSON.stringify(hostStub)}],options):spawnSync(command,args,options)}});
 vm.runInContext(body+'\\nthis.makeContext=nativeContext;',ctx);
 const native=ctx.makeContext({target:'x86_64-pc-windows-msvc',root:${JSON.stringify(records)},logs:${JSON.stringify(logs)}});
 process.stdout.write(native.run('rust-live-marker',${JSON.stringify(binary)},${JSON.stringify([testName, "--exact", "--test-threads=1", "--color", "never"])}));`;

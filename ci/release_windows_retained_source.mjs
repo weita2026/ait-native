@@ -461,68 +461,81 @@ function startWindowsObservation({ label, logs, descriptor, env, budgetMs }) {
 }
 
 function nativeContext({ target, root, logs }) {
-  const arches = { "x86_64-pc-windows-msvc": "x64", "aarch64-pc-windows-msvc": "arm64" };
-  assert.equal(process.platform, "win32", "actual native Windows execution is required");
-  assert.equal(process.arch, arches[target], "Node host architecture must match the selected Windows lane");
-  assert(arches[target] && path.isAbsolute(root) && path.isAbsolute(logs));
-  assert(!existsSync(logs), "preserve the original attempt's logs"); mkdirSync(logs, { recursive: true });
-  const env = { ...process.env };
-  // Leave time for the existing always-upload step before the 120-minute job
-  // limit. Every command shares this budget; a new command never resets it.
-  const deadline = Date.now() + 90 * 60 * 1000;
-  function run(label, command, argv) {
-    writeFileSync(path.join(logs, label + ".argv"), [command, ...argv].join("\n") + "\n");
-    const stdoutFile = path.join(logs, label + ".stdout"), stderrFile = path.join(logs, label + ".stderr");
-    const lockCase = label === "core-workspace-lock-reentry";
-    const shortCase = lockCase || label === "core-windows-ci-fixture";
-    const observe = lockCase || /^core-fixture-local-finish-case-[12]$/.test(label);
-    const cleanupReserve = observe ? 30000 : 0;
-    const timeout = Math.min(deadline - Date.now() - cleanupReserve, shortCase ? 120000 : observe ? 10 * 60 * 1000 : Infinity);
-    if (timeout <= 0) {
-      writeFileSync(stdoutFile, "");
-      writeFileSync(stderrFile, "Native retained-source execution budget exhausted before command launch\n");
-      throw new Error(`${label}: native retained-source execution budget exhausted`);
+  try {
+    const arches = { "x86_64-pc-windows-msvc": "x64", "aarch64-pc-windows-msvc": "arm64" };
+    assert.equal(process.platform, "win32", "actual native Windows execution is required");
+    assert.equal(process.arch, arches[target], "Node host architecture must match the selected Windows lane");
+    assert(arches[target] && path.isAbsolute(root) && path.isAbsolute(logs));
+    assert(!existsSync(logs), "preserve the original attempt's logs"); mkdirSync(logs, { recursive: true });
+    const env = { ...process.env };
+    // Leave time for the existing always-upload step before the 120-minute job
+    // limit. Every command shares this budget; a new command never resets it.
+    const deadline = Date.now() + 90 * 60 * 1000;
+    function run(label, command, argv) {
+      writeFileSync(path.join(logs, label + ".argv"), [command, ...argv].join("\n") + "\n");
+      const stdoutFile = path.join(logs, label + ".stdout"), stderrFile = path.join(logs, label + ".stderr");
+      const lockCase = label === "core-workspace-lock-reentry";
+      const shortCase = lockCase || label === "core-windows-ci-fixture";
+      const observe = lockCase || /^core-fixture-local-finish-case-[12]$/.test(label);
+      const cleanupReserve = observe ? 30000 : 0;
+      const timeout = Math.min(deadline - Date.now() - cleanupReserve, shortCase ? 120000 : observe ? 10 * 60 * 1000 : Infinity);
+      if (timeout <= 0) {
+        writeFileSync(stdoutFile, "");
+        writeFileSync(stderrFile, "Native retained-source execution budget exhausted before command launch\n");
+        throw new Error(`${label}: native retained-source execution budget exhausted`);
+      }
+      const descriptors = [];
+      let result;
+      let stopObservation = () => {};
+      try {
+        descriptors.push(openSync(stdoutFile, "wx"));
+        descriptors.push(openSync(stderrFile, "wx"));
+        nativeCommandEvent(descriptors[1], "launch-requested", { label, parent_pid: process.pid, command, argv, timeout_ms: timeout });
+        if (observe) stopObservation = startWindowsObservation({ label, logs, descriptor: descriptors[1], env, budgetMs: timeout });
+        const remaining = Math.min(deadline - Date.now() - cleanupReserve, timeout);
+        if (remaining <= 0) throw new Error(`${label}: native retained-source execution budget exhausted before launch`);
+        const started = Date.now();
+        result = spawnSync(command, argv, { cwd: root, env, encoding: "utf8", timeout: remaining,
+          stdio: ["ignore", ...descriptors] });
+        nativeCommandEvent(descriptors[1], "command-returned", { label, pid: result.pid, status: result.status,
+          signal: result.signal, error: result.error ? String(result.error) : null, elapsed_ms: Date.now() - started });
+      } finally {
+        try { stopObservation(); } finally { for (const descriptor of descriptors) closeSync(descriptor); }
+      }
+      if (result.error) appendFileSync(stderrFile, "\n" + String(result.error) + "\n");
+      if (result.status !== 0 || result.error || result.signal) {
+        const failure = new Error(`${label} failed; outer command exit: ${result.status ?? "unavailable"}; original output: ${logs}`,
+          { cause: result });
+        failure.code = Number.isInteger(result.status) && !result.error && !result.signal
+          ? "ERR_NATIVE_COMMAND_EXIT" : "ERR_NATIVE_COMMAND_FATAL";
+        throw failure;
+      }
+      return readFileSync(stdoutFile, "utf8");
     }
-    const descriptors = [];
-    let result;
-    let stopObservation = () => {};
-    try {
-      descriptors.push(openSync(stdoutFile, "wx"));
-      descriptors.push(openSync(stderrFile, "wx"));
-      nativeCommandEvent(descriptors[1], "launch-requested", { label, parent_pid: process.pid, command, argv, timeout_ms: timeout });
-      if (observe) stopObservation = startWindowsObservation({ label, logs, descriptor: descriptors[1], env, budgetMs: timeout });
-      const remaining = Math.min(deadline - Date.now() - cleanupReserve, timeout);
-      assert(remaining > 0, `${label}: native retained-source execution budget exhausted before launch`);
-      const started = Date.now();
-      result = spawnSync(command, argv, { cwd: root, env, encoding: "utf8", timeout: remaining,
-        stdio: ["ignore", ...descriptors] });
-      nativeCommandEvent(descriptors[1], "command-returned", { label, pid: result.pid, status: result.status,
-        signal: result.signal, error: result.error ? String(result.error) : null, elapsed_ms: Date.now() - started });
-    } finally {
-      try { stopObservation(); } finally { for (const descriptor of descriptors) closeSync(descriptor); }
-    }
-    if (result.error) appendFileSync(stderrFile, "\n" + String(result.error) + "\n");
-    assert.equal(result.status, 0, `${label} failed; original output: ${logs}`);
-    return readFileSync(stdoutFile, "utf8");
+    const rust = run("native-rust-host", "rustc", ["-vV"]);
+    assert.equal(/^host: (.+)$/m.exec(rust)?.[1].trim(), target, "cross-compilation is not native evidence");
+    const targetDir = logs + "-cargo-target";
+    env.CARGO_BUILD_BUILD_DIR = logs + "-cargo-build";
+    const cargo = (label, manifest, flags) => run(label, "cargo", ["test", "--locked", "--manifest-path", manifest,
+      "--target", target, "--target-dir", targetDir, ...flags]);
+    return { target, root, env, run, targetDir, cargo };
+  } catch (error) {
+    throw new Error(`${error.message}; all ${installedCoreCases.length} Core acceptance selectors unreached during host/context setup`,
+      { cause: error });
   }
-  const rust = run("native-rust-host", "rustc", ["-vV"]);
-  assert.equal(/^host: (.+)$/m.exec(rust)?.[1].trim(), target, "cross-compilation is not native evidence");
-  const targetDir = logs + "-cargo-target";
-  env.CARGO_BUILD_BUILD_DIR = logs + "-cargo-build";
-  const cargo = (label, manifest, flags) => run(label, "cargo", ["test", "--locked", "--manifest-path", manifest,
-    "--target", target, "--target-dir", targetDir, ...flags]);
-  return { target, root, env, run, targetDir, cargo };
 }
 
 function runCoreAcceptancePrerequisite({ target, root, env, run, targetDir, cargo }) {
   const coreManifest = path.join(root, "ait-core/rust/Cargo.toml");
   const ciRoot = env.TEST_SERVER_CI_RAM_ROOT;
-  assert(ciRoot && path.isAbsolute(ciRoot) && statSync(ciRoot).isDirectory(),
-    "native Windows CI runtime root TEST_SERVER_CI_RAM_ROOT is unavailable; qualification remains HOLD");
   const keys = ["AIT_TEST_CLI_BIN", "TEST_REVIEWED_SERVER_BIN", "TEST_NATIVE_RUNNER_BIN", "TEST_SERVER_CI_RAM_ROOT"];
   const prior = keys.map(key => env[key]);
   const pairedKeys = keys.slice(1);
+  const failures = [];
+  let unreachedIndex = 0;
   try {
+    assert(ciRoot && path.isAbsolute(ciRoot) && statSync(ciRoot).isDirectory(),
+      "native Windows CI runtime root TEST_SERVER_CI_RAM_ROOT is unavailable; qualification remains HOLD");
     for (const key of keys) delete env[key];
     for (const [label, manifest, pkg, bin] of [
       ["core-native-build", coreManifest, "ait-cli", "ait-cli"],
@@ -535,25 +548,53 @@ function runCoreAcceptancePrerequisite({ target, root, env, run, targetDir, carg
       "matching current native QA executable is unavailable; qualification remains HOLD");
     env.AIT_TEST_CLI_BIN = binaries[0];
     for (const [index, [test, selector, mode]] of installedCoreCases.entries()) {
+      unreachedIndex = index;
       for (const key of pairedKeys) delete env[key];
       if (mode === "paired") Object.assign(env, { TEST_REVIEWED_SERVER_BIN: binaries[1],
         TEST_NATIVE_RUNNER_BIN: binaries[2], TEST_SERVER_CI_RAM_ROOT: ciRoot });
-      let stdout;
-      if (selector === CORE_GITLESS_CASE && test === "workflow_recovery_cli") {
-        stdout = runCoreGitlessCase(cargo, coreManifest);
-      } else {
-        const label = `core-acceptance-${index + 1}`;
-        const flags = ["-p", "ait-cli", "--test", test, selector, "--", "--exact",
-          ...(mode === "paired" ? ["--ignored"] : [])];
-        const listing = cargo(`${label}-case-list`, coreManifest, [...flags, "--list"]);
-        assert.equal(selectNativeCase(listing, selector), selector, "require the exact Core acceptance identity");
-        assert.equal((listing.match(/: test\r?$/gm) ?? []).length, 1, "Core acceptance listing must contain exactly one case");
-        stdout = cargo(label, coreManifest, [...flags, "--test-threads=1", "--nocapture", "--color", "never"]);
+      let outputReady = false;
+      const caseCargo = (label, manifest, flags) => {
+        outputReady = false;
+        const executing = !flags.includes("--list");
+        try {
+          const stdout = cargo(label, manifest, flags);
+          outputReady = true;
+          if (executing) unreachedIndex = index + 1;
+          return stdout;
+        } catch (error) {
+          // Listing compiles the harness. Its failed build/setup cannot count
+          // as an ordinary completed selector invocation.
+          if (executing && error.code === "ERR_NATIVE_COMMAND_EXIT") outputReady = true;
+          if (executing && (error.code === "ERR_NATIVE_COMMAND_EXIT" || error.cause?.pid > 0)) unreachedIndex = index + 1;
+          throw error;
+        }
+      };
+      try {
+        let stdout;
+        if (selector === CORE_GITLESS_CASE && test === "workflow_recovery_cli") {
+          stdout = runCoreGitlessCase(caseCargo, coreManifest);
+        } else {
+          const label = `core-acceptance-${index + 1}`;
+          const flags = ["-p", "ait-cli", "--test", test, selector, "--", "--exact",
+            ...(mode === "paired" ? ["--ignored"] : [])];
+          const listing = caseCargo(`${label}-case-list`, coreManifest, [...flags, "--list"]);
+          assert.equal(selectNativeCase(listing, selector), selector, "require the exact Core acceptance identity");
+          assert.equal((listing.match(/: test\r?$/gm) ?? []).length, 1, "Core acceptance listing must contain exactly one case");
+          stdout = caseCargo(label, coreManifest, [...flags, "--test-threads=1", "--nocapture", "--color", "never"]);
+        }
+        requireExecutedCoreCase(stdout, selector);
+        assert.equal((stdout.match(/^test .+ \.\.\. (?:ok|FAILED|ignored)\r?$/gm) ?? []).length, 1,
+          "Core acceptance case must execute exactly once");
+      } catch (error) {
+        if (!outputReady) throw error;
+        failures.push(`${test}/${selector}: ${error.message}`);
       }
-      requireExecutedCoreCase(stdout, selector);
-      assert.equal((stdout.match(/^test .+ \.\.\. (?:ok|FAILED|ignored)\r?$/gm) ?? []).length, 1,
-        "Core acceptance case must execute exactly once");
+      unreachedIndex = index + 1;
     }
+  } catch (error) {
+    const unreached = installedCoreCases.slice(unreachedIndex).map(([test, selector]) => `${test}/${selector}`);
+    throw new Error(`${error.message}\nCore acceptance interrupted; unreached (${unreached.length}): ${unreached.join(", ") || "none"}` +
+      (failures.length ? `\nEarlier selector failures (${failures.length}):\n${failures.join("\n")}` : ""), { cause: error });
   }
   finally {
     for (const [index, key] of keys.entries()) {
@@ -561,6 +602,8 @@ function runCoreAcceptancePrerequisite({ target, root, env, run, targetDir, carg
       else env[key] = prior[index];
     }
   }
+  if (failures.length) throw new Error(`Core acceptance group failed (${failures.length}/${installedCoreCases.length} selectors):\n` +
+    failures.join("\n") + "\nOuter Cargo exits remain in the original diagnostics; private Core worker inner CLI exit is unavailable.");
 }
 
 function executeCases({ root, cargo }) {
