@@ -23,6 +23,7 @@ export const WINDOWS_OWNER_CASES = [
   "windows_empty_cleanup_is_atomic_and_preserves_inserted_files_and_active_handles",
 ];
 export const CORE_CASE = "reviewed_routed_server_restart_reprepares_the_original_sealed_candidate";
+export const CORE_GITLESS_CASE = "native_lifecycle_preserves_content_history_and_cleanup_without_git";
 export const CORE_EDIT_ROOT_PREFIX = "task_worktree_layout::tests::explicit_task_edit_root_";
 export const CORE_CLEANUP_PREFIX = "primitives::worktree::cleanup::tests::directory_link_cleanup_";
 export const FIXTURE_LOCAL_FINISH_PREFIX = "fixture_local_finish_";
@@ -188,6 +189,25 @@ export function runCoreWindowsConfigCases(cargo, manifest) {
     assert(/^test result: ok\. 1 passed; 0 failed; 0 ignored;/m.test(stdout),
       `Windows config case must execute once with zero ignored: ${name}`);
   }
+}
+
+export function runCoreGitlessCase(cargo, manifest) {
+  const flags = ["-p", "ait-cli", "--test", "workflow_recovery_cli"];
+  const listing = cargo("core-gitless-case-list", manifest,
+    [...flags, CORE_GITLESS_CASE, "--", "--exact", "--list"]);
+  assert.equal(selectNativeCase(listing, CORE_GITLESS_CASE), CORE_GITLESS_CASE,
+    "require the exact reviewed Git-free lifecycle identity");
+  assert.equal((listing.match(/: test\r?$/gm) ?? []).length, 1,
+    "Git-free lifecycle listing must contain exactly one case");
+  const stdout = cargo("core-gitless-lifecycle", manifest,
+    [...flags, CORE_GITLESS_CASE, "--", "--exact", "--test-threads=1", "--color", "never"]);
+  requirePassedCase(stdout, CORE_GITLESS_CASE);
+  assert.equal((stdout.match(/^test .+ \.\.\. (?:ok|FAILED|ignored)\r?$/gm) ?? []).length, 1,
+    "Git-free lifecycle case must execute exactly once");
+  assert.equal((stdout.match(/^test result:/gm) ?? []).length, 1,
+    "Git-free lifecycle case needs one complete summary");
+  assert(/^test result: ok\. 1 passed; 0 failed; 0 ignored;/m.test(stdout),
+    "Git-free lifecycle case must execute once with zero ignored");
 }
 
 function nativeCommandEvent(descriptor, event, detail) {
@@ -492,6 +512,22 @@ function nativeContext({ target, root, logs }) {
   return { target, root, env, run, targetDir, cargo };
 }
 
+function runCoreGitlessPrerequisite({ target, root, env, run, targetDir, cargo }) {
+  const coreManifest = path.join(root, "ait-core/rust/Cargo.toml");
+  run("core-native-build", "cargo", ["build", "--locked", "--manifest-path", coreManifest,
+    "-p", "ait-cli", "--bin", "ait-cli", "--target", target, "--target-dir", targetDir]);
+  const coreCli = path.join(targetDir, target, "debug/ait-cli.exe");
+  assert(path.isAbsolute(coreCli) && statSync(coreCli).isFile(),
+    "matching current Core QA executable is unavailable; qualification remains HOLD");
+  const priorCli = env.AIT_TEST_CLI_BIN;
+  env.AIT_TEST_CLI_BIN = coreCli;
+  try { runCoreGitlessCase(cargo, coreManifest); }
+  finally {
+    if (priorCli === undefined) delete env.AIT_TEST_CLI_BIN;
+    else env.AIT_TEST_CLI_BIN = priorCli;
+  }
+}
+
 function executeCases({ target, root, env, run, targetDir, cargo }) {
   const serverManifest = path.join(root, "ait-server/rust/Cargo.toml");
   const coreManifest = path.join(root, "ait-core/rust/Cargo.toml");
@@ -518,7 +554,6 @@ function executeCases({ target, root, env, run, targetDir, cargo }) {
   assert(ciRoot && path.isAbsolute(ciRoot) && statSync(ciRoot).isDirectory(),
     "native Windows CI runtime root TEST_SERVER_CI_RAM_ROOT is unavailable; qualification remains HOLD");
   for (const [label, manifest, pkg, bin] of [
-    ["core-native-build", coreManifest, "ait-cli", "ait-cli"],
     ["server-native-build", serverManifest, "ait-server", "ait-server"],
     ["runner-native-build", path.join(root, "ait-runner/Cargo.toml"), "ait-runner", "ait-runner"],
   ]) run(label, "cargo", ["build", "--locked", "--manifest-path", manifest, "-p", pkg, "--bin", bin,
@@ -533,7 +568,9 @@ function executeCases({ target, root, env, run, targetDir, cargo }) {
 // Explicit non-release QA runs the same guarded native cases without changing
 // family versions or producing the release qualification carrier.
 export function runNativeWindowsQa(input) {
-  executeCases(nativeContext(input));
+  const context = nativeContext(input);
+  runCoreGitlessPrerequisite(context);
+  executeCases(context);
 }
 
 function main() {
@@ -542,8 +579,10 @@ function main() {
   const root = input["--source-root"];
   const context = nativeContext({ target: input["--target"], root, logs: input["--output"] });
   const family = JSON.parse(readFileSync(path.join(root, "ait-release-family.json")));
-  if (!requiresRetainedSource(family.family?.version)) {
-    process.stdout.write("Selected earlier family retains its existing Windows init/run scope.\n"); return;
+  const retainedSource = requiresRetainedSource(family.family?.version);
+  runCoreGitlessPrerequisite(context);
+  if (!retainedSource) {
+    process.stdout.write("Git-free prerequisite completed; selected earlier family retains its existing Windows init/run scope.\n"); return;
   }
   executeCases(context);
 }

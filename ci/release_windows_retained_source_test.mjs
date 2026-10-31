@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
-import { requiresRetainedSource, selectNativeCase, requirePassedCase, runNativeWindowsQa, selectCoreEditRootCases, runCoreEditRootCases, CORE_EDIT_ROOT_PREFIX, CORE_CLEANUP_PREFIX, FIXTURE_LOCAL_FINISH_PREFIX, CORE_WORKSPACE_LOCK_CASE, CORE_WORKSPACE_LOCK_PREFIX, runCoreWorkspaceLockCases, CORE_WINDOWS_CI_FIXTURE_CASE, runCoreWindowsCiFixtureCase, CORE_WINDOWS_CONFIG_CASES, runCoreWindowsConfigCases, selectNativePrefixCases, runCoreCloseoutPrerequisites, SERVER_CASES, CORE_CASE } from "./release_windows_retained_source.mjs";
+import { requiresRetainedSource, selectNativeCase, requirePassedCase, runNativeWindowsQa, selectCoreEditRootCases, runCoreEditRootCases, CORE_EDIT_ROOT_PREFIX, CORE_CLEANUP_PREFIX, FIXTURE_LOCAL_FINISH_PREFIX, CORE_WORKSPACE_LOCK_CASE, CORE_WORKSPACE_LOCK_PREFIX, runCoreWorkspaceLockCases, CORE_WINDOWS_CI_FIXTURE_CASE, runCoreWindowsCiFixtureCase, CORE_WINDOWS_CONFIG_CASES, runCoreWindowsConfigCases, CORE_GITLESS_CASE, runCoreGitlessCase, selectNativePrefixCases, runCoreCloseoutPrerequisites, SERVER_CASES, CORE_CASE } from "./release_windows_retained_source.mjs";
 // The workflow imports this module from inline Node with the target as argv[1].
 // That argument is not a script path and must not trigger CLI entry detection.
 const imported = spawnSync(process.execPath, ["--input-type=module", "-e",
@@ -64,6 +64,87 @@ const passed = names => names.map(name => `test ${name} ... ok`).join("\r\n") +
   `\r\ntest result: ok. ${names.length} passed; 0 failed; 0 ignored; 0 measured\r\n`;
 assert.equal(CORE_WINDOWS_CONFIG_CASES.length, 4);
 const configManifest = "/fixed/ait-core/rust/Cargo.toml";
+for (const failure of [null, "missing", "duplicate-list", "wrong-list", "prefixed-list", "extra-list",
+  "wrong-case", "ignored", "zero", "partial", "missing-summary", "duplicate-summary", "duplicate-output", "extra-output", "command-failure"]) {
+  const calls = [];
+  const execute = () => runCoreGitlessCase((label, manifest, flags) => {
+    calls.push({ label, manifest, flags });
+    if (label.endsWith("-case-list")) {
+      if (failure === "missing") return listing([]);
+      if (failure === "duplicate-list") return listing([CORE_GITLESS_CASE, CORE_GITLESS_CASE]);
+      if (failure === "wrong-list") return listing(["another_case"]);
+      if (failure === "prefixed-list") return listing(["unreviewed::" + CORE_GITLESS_CASE]);
+      if (failure === "extra-list") return listing([CORE_GITLESS_CASE, "another_case"]);
+      return listing([CORE_GITLESS_CASE]);
+    }
+    if (failure === "command-failure") throw new Error("Git-free command failed");
+    let output = passed([CORE_GITLESS_CASE]);
+    if (failure === "wrong-case") output = passed(["another_case"]);
+    if (failure === "ignored") output = output.replace(" ... ok", " ... ignored");
+    if (failure === "zero") output = "test result: ok. 0 passed; 0 failed; 0 ignored;\n";
+    if (failure === "partial") output = output.replace("1 passed; 0 failed; 0 ignored;", "1 passed; 0 failed; 1 ignored;");
+    if (failure === "missing-summary") output = `test ${CORE_GITLESS_CASE} ... ok\n`;
+    if (failure === "duplicate-summary") output += "test result: ok. 1 passed; 0 failed; 0 ignored;\n";
+    if (failure === "duplicate-output") output += `test ${CORE_GITLESS_CASE} ... ok\n`;
+    if (failure === "extra-output") output += "test another_case ... ok\n";
+    return output;
+  }, configManifest);
+  if (failure === null) execute(); else assert.throws(execute);
+  assert.equal(calls.length, ["missing", "duplicate-list", "wrong-list", "prefixed-list", "extra-list"].includes(failure) ? 1 : 2);
+  assert.equal(calls[0].manifest, configManifest);
+  assert.deepEqual(calls[0].flags, ["-p", "ait-cli", "--test", "workflow_recovery_cli", CORE_GITLESS_CASE, "--", "--exact", "--list"]);
+  if (calls.length === 2) assert.deepEqual(calls[1].flags,
+    ["-p", "ait-cli", "--test", "workflow_recovery_cli", CORE_GITLESS_CASE, "--", "--exact", "--test-threads=1", "--color", "never"]);
+}
+// Exercise the actual release path: build/select the current native QA CLI,
+// stop on the Git-free case, and never reach later cases after a failure.
+for (const target of ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]) {
+  for (const entry of ["q-prior", "q-current", "qa"]) for (const failure of [null, "build", "missing-executable", "case"]) {
+    const source = fs.readFileSync(new URL("./release_windows_retained_source.mjs", import.meta.url), "utf8");
+    const reached = [], env = { AIT_TEST_CLI_BIN: "/ambient/wrong-architecture/ait.exe" };
+    const targetDir = "/fixed/current-qa-target", executable = path.join(targetDir, target, "debug/ait-cli.exe");
+    const native = { target, root: "/fixed", env, targetDir,
+      run(label, command, args) {
+        reached.push(label); assert.equal(command, "cargo");
+        assert.deepEqual(Array.from(args), ["build", "--locked", "--manifest-path", configManifest,
+          "-p", "ait-cli", "--bin", "ait-cli", "--target", target, "--target-dir", targetDir]);
+        if (failure === "build") throw new Error("Core QA build failed");
+      },
+      cargo(label) {
+        assert.equal(env.AIT_TEST_CLI_BIN, executable); reached.push(label);
+        return label.endsWith("-case-list") ? listing([CORE_GITLESS_CASE]) : passed([failure === "case" ? "another_case" : CORE_GITLESS_CASE]);
+      },
+    };
+    const context = vm.createContext({ assert, path, requiresRetainedSource,
+      process: { argv: ["node", "helper", "--target", target, "--source-root", "/fixed", "--output", "/fixed/logs"],
+        stdout: { write(text) { assert.match(text, /Git-free prerequisite completed/); reached.push("prior-scope"); } } },
+      nativeContext(input) {
+        assert.equal(input.target, target); assert.equal(input.root, "/fixed"); assert.equal(input.logs, "/fixed/logs");
+        return native;
+      },
+      readFileSync(file) {
+        assert.notEqual(entry, "qa"); assert.equal(file, path.join("/fixed", "ait-release-family.json"));
+        return JSON.stringify({ family: { version: entry === "q-prior" ? "1.1.4" : "1.2.0" } });
+      },
+      statSync(file) { assert.equal(file, executable); return { isFile: () => failure !== "missing-executable" }; },
+      runCoreGitlessCase(cargo, manifest) {
+        assert.equal(env.AIT_TEST_CLI_BIN, executable); reached.push("gitless"); runCoreGitlessCase(cargo, manifest);
+      },
+      executeCases() { reached.push("later"); throw new Error("stop before later cases"); },
+    });
+    vm.runInContext(source.slice(source.indexOf("function runCoreGitlessPrerequisite("), source.indexOf("function executeCases(")) +
+      source.slice(source.indexOf("export function runNativeWindowsQa("), source.indexOf("function main(")).replace("export function", "function") +
+      source.slice(source.indexOf("function main("), source.indexOf("\nif (process.argv[1]")) +
+      "\nthis.q = main; this.qa = runNativeWindowsQa;", context);
+    const execute = () => entry === "qa" ? context.qa({ target, root: "/fixed", logs: "/fixed/logs" }) : context.q();
+    if (failure === null && entry === "q-prior") execute();
+    else assert.throws(execute, failure === "build" ? /Core QA build failed/ : failure === "missing-executable" ? /QA executable is unavailable/
+      : failure === "case" ? /did not execute and pass/ : /stop before later cases/);
+    assert.equal(env.AIT_TEST_CLI_BIN, "/ambient/wrong-architecture/ait.exe");
+    assert.deepEqual(reached, ["core-native-build", ...(["build", "missing-executable"].includes(failure) ? [] :
+      ["gitless", "core-gitless-case-list", "core-gitless-lifecycle", ...(failure === "case" ? [] : [entry === "q-prior" ? "prior-scope" : "later"])])]);
+  }
+}
 for (const failure of [null, "missing", "duplicate-list", "wrong-list", "wrong-case", "ignored", "zero", "duplicate-output", "duplicate-summary", "command-failure"]) {
   const calls = [];
   const execute = () => runCoreWindowsConfigCases((label, manifest, flags) => {
@@ -253,9 +334,14 @@ try {
     `if(fs.readFileSync(${JSON.stringify(path.join(directory, label + ".stdout"))},'utf8')!==${JSON.stringify(stdout)})throw Error('stdout was not retained while running');` +
     `if(!fs.readFileSync(${JSON.stringify(path.join(directory, label + ".stderr"))},'utf8').includes(${JSON.stringify(stderr)}))throw Error('stderr was not retained while running');`;
   assert.equal(native.run("live-output", process.execPath, ["-e", script("live-output")]), stdout);
-  assert.throws(() => native.run("failed-child", process.execPath, ["-e", script("failed-child") + "process.exit(17)"]), /failed-child failed/);
-  assert.equal(fs.readFileSync(path.join(logs, "failed-child.stdout"), "utf8"), stdout);
-  assert(fs.readFileSync(path.join(logs, "failed-child.stderr"), "utf8").includes(stderr));
+  const fullStdout = "original child stdout\n".repeat(8192) + "stdout end\n";
+  const fullStderr = "original child stderr\n".repeat(8192) + "command=init status=17 stderr end\n";
+  const failedScript = "const fs=require('node:fs');fs.writeSync(1,'original child stdout\\n'.repeat(8192)+'stdout end\\n');" +
+    "fs.writeSync(2,'original child stderr\\n'.repeat(8192)+'command=init status=17 stderr end\\n');process.exit(17)";
+  assert.throws(() => native.run("failed-child", process.execPath, ["-e", failedScript]), /failed-child failed/);
+  assert.equal(fs.readFileSync(path.join(logs, "failed-child.stdout"), "utf8"), fullStdout);
+  assert(fs.readFileSync(path.join(logs, "failed-child.stderr"), "utf8").includes(fullStderr),
+    "full failure streams and the final child identity/status must survive beyond an E-sized tail");
   assert.throws(() => native.run("unavailable-command", path.join(scratch, "absent-command"), []), /unavailable-command failed/);
   assert.match(fs.readFileSync(path.join(logs, "unavailable-command.stderr"), "utf8"), /ENOENT/);
   const budget = calls[0].timeout;

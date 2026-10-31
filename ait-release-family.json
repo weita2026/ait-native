@@ -2,9 +2,9 @@
   "schema": "ait.release.family/v3",
   "family": {
     "name": "ait-native",
-    "version": "1.2.0",
+    "version": "1.1.4",
     "channel": "stable",
-    "tag": "v1.2.0"
+    "tag": "v1.1.4"
   },
   "targets": [
     "aarch64-apple-darwin",
@@ -77,11 +77,11 @@
     {
       "id": "ait",
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-0C8BE295218E",
+      "source_snapshot": "SNP-F4BD27456C3B",
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.2.0",
+      "version": "1.1.4",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -103,7 +103,7 @@
       "ecosystem": "native",
       "license": "AGPL-3.0-only",
       "version_scheme": "family",
-      "version": "1.2.0",
+      "version": "1.1.4",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -125,7 +125,7 @@
       "ecosystem": "native",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.2.0",
+      "version": "1.1.4",
       "artifacts": [
         {
           "kind": "native-executable",
@@ -143,11 +143,11 @@
     {
       "id": "ait-python",
       "source_repository": "ait-python",
-      "source_snapshot": "SNP-A29A8DB0A3C8",
+      "source_snapshot": "SNP-6AE3B5307CB9",
       "ecosystem": "python",
       "license": "Apache-2.0",
       "version_scheme": "pep440",
-      "version": "1.2.0",
+      "version": "1.1.4",
       "artifacts": [
         {
           "kind": "python-wheel",
@@ -165,11 +165,11 @@
     {
       "id": "ait-node",
       "source_repository": "ait-node",
-      "source_snapshot": "SNP-E24684FCD122",
+      "source_snapshot": "SNP-117243508F0A",
       "ecosystem": "node",
       "license": "Apache-2.0",
       "version_scheme": "family",
-      "version": "1.2.0",
+      "version": "1.1.4",
       "artifacts": [
         {
           "kind": "npm-napi-envelope",

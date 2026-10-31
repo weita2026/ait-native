@@ -99,7 +99,7 @@ export function validateContract(contract) {
   if (
     contract.schema !== "ait.node.napi-platform-packages/v2" ||
     contract.top_level_package !== "@wa120/ait-native" ||
-    contract.family_version !== "1.2.0" ||
+    contract.family_version !== "1.1.4" ||
     !Array.isArray(contract.payloads) ||
     contract.payloads.length !== 6
   ) {
@@ -123,7 +123,7 @@ export function validateContract(contract) {
       payload.package !== expectedPackage ||
       payload.version !== contract.family_version ||
       payload.binding_repository !== "ait-core" ||
-      payload.binding_snapshot !== "SNP-0C8BE295218E" ||
+      payload.binding_snapshot !== "SNP-F4BD27456C3B" ||
       payload.license !== "Apache-2.0" ||
       payload.addon !== "native/ait_napi.node"
     ) {

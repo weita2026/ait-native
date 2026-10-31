@@ -80,7 +80,24 @@ pub fn gitless_worker(test: &str) -> bool {
             println!("\n{GIT_SENTINEL}");
             true
         }
-        Some("failure") => panic!("{GITLESS_FAILURE}"),
+        Some("stdout-failure") => {
+            println!("{GITLESS_FAILURE}");
+            std::io::stdout().flush().unwrap();
+            std::process::exit(23);
+        }
+        Some("failure") => {
+            let root = PathBuf::from(std::env::var_os(GITLESS_ROOT).unwrap());
+            let output = diagnostic_output(gitless_command(
+                test,
+                "stdout-failure",
+                &root,
+                &root.join("empty-path"),
+            ));
+            assert_eq!(output.status.code(), Some(23));
+            assert!(output.stderr.is_empty());
+            parsed(&output);
+            panic!("non-successful command was accepted");
+        }
         Some("parent") => {
             let root = PathBuf::from(std::env::var_os(GITLESS_ROOT).unwrap());
             let empty = root.join("empty-path");
@@ -137,11 +154,30 @@ pub fn gitless_worker(test: &str) -> bool {
             let failure = bounded_output(gitless_command(test, "failure", &root, &empty));
             let propagated = gitless_result(&failure, GITLESS_COMPLETE).unwrap_err();
             assert!(propagated.contains(GITLESS_FAILURE), "{propagated}");
+            for expected in [
+                format!("executable: {:?}", std::env::current_exe().unwrap()),
+                format!(
+                    "argv: {:?}",
+                    ["--exact", test, "--nocapture", "--test-threads=1"]
+                ),
+                format!("cwd: {:?}", Some(root.as_path())),
+                "raw status:".to_string(),
+                "exit code: Some(23)".to_string(),
+                "stdout (".to_string(),
+                "stderr (0 bytes):".to_string(),
+                "CLI command returned non-success".to_string(),
+            ] {
+                assert!(
+                    propagated.contains(&expected),
+                    "missing {expected:?}: {propagated}"
+                );
+            }
             let isolated = bounded_output_with_limit(
                 gitless_command(test, "isolated", &root, &empty),
                 PEER_LIMIT * 2,
             );
-            gitless_result(&isolated, GITLESS_COMPLETE).unwrap();
+            gitless_result(&isolated, GITLESS_COMPLETE)
+                .unwrap_or_else(|failure| panic!("{failure}"));
             println!("\n{GITLESS_PARENT_COMPLETE}");
             true
         }
@@ -158,7 +194,8 @@ pub fn gitless_worker(test: &str) -> bool {
                 gitless_command(test, "parent", &root, &present),
                 PEER_LIMIT * 4,
             );
-            gitless_result(&output, GITLESS_PARENT_COMPLETE).unwrap();
+            gitless_result(&output, GITLESS_PARENT_COMPLETE)
+                .unwrap_or_else(|failure| panic!("{failure}"));
             // Nested harness summaries stay captured: installed-case accounting
             // must still report exactly one execution of the existing selector.
             eprintln!("Git-free worker verified NotFound, lifecycle and isolation controls");
@@ -188,14 +225,14 @@ impl Fixture {
         if let Some(path) = &search_path {
             fs::create_dir(path).unwrap();
         }
-        parsed(&cli(&root, &["init", "--json"], search_path.as_deref()));
+        parsed_cli(&root, &["init", "--json"], search_path.as_deref());
         let path = root.join(".ait/config.json");
         let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         // Keep managed worktrees and seed caches beside the disposable fixture,
         // rather than using a host's automatically detected RAM volume.
         config["task_worktree"] = json!({"ephemeral_root": base.join("managed")});
         fs::write(path, serde_json::to_vec(&config).unwrap()).unwrap();
-        parsed(&cli(
+        parsed_cli(
             &root,
             &[
                 "config",
@@ -205,7 +242,7 @@ impl Fixture {
                 "--json",
             ],
             search_path.as_deref(),
-        ));
+        );
         Self {
             temp,
             root,
@@ -218,11 +255,19 @@ impl Fixture {
     }
 
     pub fn json(&self, root: &Path, args: &[&str]) -> Value {
-        parsed(&cli(root, args, self.search_path.as_deref()))
+        parsed_cli(root, args, self.search_path.as_deref())
     }
 }
 
 pub fn cli(root: &Path, args: &[&str], search_path: Option<&Path>) -> Output {
+    bounded_output(cli_command(root, args, search_path))
+}
+
+fn parsed_cli(root: &Path, args: &[&str], search_path: Option<&Path>) -> Value {
+    parsed(&diagnostic_output(cli_command(root, args, search_path)))
+}
+
+fn cli_command(root: &Path, args: &[&str], search_path: Option<&Path>) -> Command {
     let binary = cli_binary::selected(env!("CARGO_BIN_EXE_ait-cli"));
     assert!(binary.is_absolute(), "selected CLI must remain absolute");
     #[cfg(windows)]
@@ -238,7 +283,31 @@ pub fn cli(root: &Path, args: &[&str], search_path: Option<&Path>) -> Output {
     if let Some(path) = search_path {
         command.env("PATH", path);
     }
-    bounded_output(command)
+    command
+}
+
+fn diagnostic_output(command: Command) -> Output {
+    let identity = format!(
+        "executable: {:?}\nargv: {:?}\ncwd: {:?}",
+        command.get_program(),
+        command.get_args().collect::<Vec<_>>(),
+        command.get_current_dir(),
+    );
+    let output = bounded_output(command);
+    if !output.status.success() {
+        // Keep both original streams. Identity follows them so tail-based
+        // reporters still identify a failed command with a large JSON stdout.
+        eprintln!(
+            "Workflow CLI failure\nstdout ({} bytes):\n{}\nstderr ({} bytes):\n{}\n{identity}\nraw status: {:?}\nexit code: {:?}",
+            output.stdout.len(),
+            String::from_utf8_lossy(&output.stdout),
+            output.stderr.len(),
+            String::from_utf8_lossy(&output.stderr),
+            output.status,
+            output.status.code(),
+        );
+    }
+    output
 }
 
 fn bounded_output(command: Command) -> Output {
@@ -286,14 +355,14 @@ fn bounded_output_with_limit(mut command: Command, limit: Duration) -> Output {
 pub fn parsed(output: &Output) -> Value {
     assert!(
         output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        "CLI command returned non-success: {:?}",
+        output.status,
     );
-    serde_json::from_slice(&output.stdout).unwrap()
+    serde_json::from_slice(&output.stdout).expect("Successful CLI output was not valid JSON")
 }
 
 pub fn cli_json(root: &Path, args: &[&str]) -> Value {
-    parsed(&cli(root, args, None))
+    parsed_cli(root, args, None)
 }
 
 pub fn request(root: &Path, args: &[&str]) -> Value {
