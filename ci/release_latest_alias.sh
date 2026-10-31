@@ -183,7 +183,7 @@ if ! jq -e --slurpfile config "${endpoint_config}" '
   .release.source_commit == $c.release.source_commit and
   (.release.endpoint_config_sha256 | test("^[0-9a-f]{64}$")) and
   .prepublication.status == "qualified" and
-  .prepublication.clean_host_rows == 32 and
+  .prepublication.clean_host_rows == (if $c.release.version == "1.2.0" and $c.release.channel == "stable" and $c.release.tag == "v1.2.0" then 24 else 32 end) and
   (.prepublication.candidate_artifact_digest | test("^sha256:[0-9a-f]{64}$")) and
   (.prepublication.aggregate_artifact_digest | test("^sha256:[0-9a-f]{64}$")) and
   (.prepublication.aggregate_status_sha256 | test("^[0-9a-f]{64}$")) and

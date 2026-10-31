@@ -1,51 +1,51 @@
 {
   "schema": "ait.release.monorepo-source/v1",
   "public_source_identity": "weita2026/ait-native",
-  "coordinator_snapshot": "SNP-777BCA769D7E",
-  "coordinator_manifest_hash": "777bca769d7e9cef62a32d5d26d87ba4b44f58bda2f962125531fa9de187d5e4",
-  "coordinator_created_at": "1793298968",
-  "family_version": "1.2.0",
-  "family_tag": "v1.2.0",
-  "family_manifest_sha256": "a85037138ab7dfa85451c828b9beaca068747f7723ff56587681b55ee016e27d",
-  "product_document_sha256": "e047c0522714efd4bb03ebcbc84c3598d6876b37689597b855b4d090c23eb2d2",
+  "coordinator_snapshot": "SNP-0C8BE295218E",
+  "coordinator_manifest_hash": "0c8be295218e333dfd316cd67e11a121fecf936136f6cdfcd1db8c3ab64643ae",
+  "coordinator_created_at": "1793392555",
+  "family_version": "1.1.4",
+  "family_tag": "v1.1.4",
+  "family_manifest_sha256": "34d1f1783c3f5cd5b7eed9095a0cfe7962572fd41eae9c5bb034ab0729c781ff",
+  "product_document_sha256": "18a08414157eda327539faf8ac8fc8bd3b9825ecc37df7b48459ebc325119cf7",
   "content_digest_contract": "size-sha256-path/v1; excludes ait-monorepo-source.json",
-  "content_sha256": "e5a8f8150e7c30b4c49fc1cd997dd8dabe4a302ff4dc33193078ca47fe085c17",
+  "content_sha256": "0ed452ee4f132e0dc17527e1cd7f07c81319733e84fae9adf069417454466bd5",
   "subtrees": [
     {
       "source_repository": "ait-core",
-      "source_snapshot": "SNP-777BCA769D7E",
-      "source_manifest_hash": "777bca769d7e9cef62a32d5d26d87ba4b44f58bda2f962125531fa9de187d5e4",
-      "source_snapshot_created_at": "1793298968",
+      "source_snapshot": "SNP-0C8BE295218E",
+      "source_manifest_hash": "0c8be295218e333dfd316cd67e11a121fecf936136f6cdfcd1db8c3ab64643ae",
+      "source_snapshot_created_at": "1793392555",
       "path": "ait-core",
       "license": "Apache-2.0",
       "components": [
         "ait"
       ],
       "transforms": [],
-      "source_cache_evidence_sha256": "606607e82a299ce48a85debb59a8f9a4029fcfb60788c2b55f7ef6da88458ae5",
-      "source_content_sha256": "8424ef8e68a6a200ee49f599f9b103025b66f2ca363a71e801a01aada490572e",
-      "exported_content_sha256": "8424ef8e68a6a200ee49f599f9b103025b66f2ca363a71e801a01aada490572e"
+      "source_cache_evidence_sha256": "db2f3a6b239c0483bc36ed247817cb6c145f38420fef30a10d98cbc46c061282",
+      "source_content_sha256": "307e6e97b3d09ef0fac87f03fe1b343c0e380e00c48cc2614d1100a7a719a157",
+      "exported_content_sha256": "307e6e97b3d09ef0fac87f03fe1b343c0e380e00c48cc2614d1100a7a719a157"
     },
     {
       "source_repository": "ait-node",
-      "source_snapshot": "SNP-99D5E5AD0857",
-      "source_manifest_hash": "99d5e5ad0857f3bdfffde3696dfd48d934eeedb74a35ebdaf8e3d693bebd9785",
-      "source_snapshot_created_at": "1793301480",
+      "source_snapshot": "SNP-E24684FCD122",
+      "source_manifest_hash": "e24684fcd12219b8637882317b88c99ed9ee5966cc599cb04d5921219aac4887",
+      "source_snapshot_created_at": "1793395304",
       "path": "ait-node",
       "license": "Apache-2.0",
       "components": [
         "ait-node"
       ],
       "transforms": [],
-      "source_cache_evidence_sha256": "8d1dbf26eebf2d064961557c37a262583c3d32bab62ba910d9c79cacfe6cbe99",
-      "source_content_sha256": "db56aa77058270f353a6d1fbb2f61500f2a4cef9f0f8135f9bdbe103e2440b8b",
-      "exported_content_sha256": "db56aa77058270f353a6d1fbb2f61500f2a4cef9f0f8135f9bdbe103e2440b8b"
+      "source_cache_evidence_sha256": "0936a2f2b2305a85bc97ecc78604739c5c892a8b3f8e32e0b71ca91efa00e7b0",
+      "source_content_sha256": "4f91ff8e967481e8c61b31f8b5997e9b6c345d56e37c5c0eaab197d9d2c1d742",
+      "exported_content_sha256": "4f91ff8e967481e8c61b31f8b5997e9b6c345d56e37c5c0eaab197d9d2c1d742"
     },
     {
       "source_repository": "ait-python",
-      "source_snapshot": "SNP-A6979C7F8B98",
-      "source_manifest_hash": "a6979c7f8b985cd1907b96b7c5d5af54f4bdebe690339549b618ab9464ca1d4d",
-      "source_snapshot_created_at": "1793301206",
+      "source_snapshot": "SNP-A29A8DB0A3C8",
+      "source_manifest_hash": "a29a8db0a3c84b6399c45ac63387bd02e101225f765d8685242d48d83de31773",
+      "source_snapshot_created_at": "1793394994",
       "path": "ait-python",
       "license": "Apache-2.0",
       "components": [
@@ -54,9 +54,9 @@
       "transforms": [
         "python-core-path/v1"
       ],
-      "source_cache_evidence_sha256": "a9f3bff74af38c15768ffdcfaca48dcfdff376a7e0f73a54cab7e98f126eea1f",
-      "source_content_sha256": "5d7cee539e59aa0ff70c5dcccdcd70d3a54534aa50d3e8c08cf3b84a1371852d",
-      "exported_content_sha256": "de06a80bd078eff485d87533f034bd5c1d8546dca226bf22ab3b5d88a24882b1"
+      "source_cache_evidence_sha256": "62f1a5a5e78a35924c3a026cd32c436ccc4d61548de2f18c953c7460e8aa603b",
+      "source_content_sha256": "b06c79b79f1293d19f834fb85f1587007b62e3a92d6fbf1dc8b25a5a199f5fb4",
+      "exported_content_sha256": "07487be97e05744cdeaa392de38b0137ce2842b21f932a0e5ea54a3b65673c96"
     },
     {
       "source_repository": "ait-runner",
@@ -72,8 +72,8 @@
         "runner-core-path/v1"
       ],
       "source_cache_evidence_sha256": "510ba144b434024802f838fab6f8bb1c0eeeba1b64062147aae1baa83a19d9b3",
-      "source_content_sha256": "35124bbd2d3e54c2e4dedda64b19cd2506b8d96aa9c8158d99fa29a5ca6d5aed",
-      "exported_content_sha256": "6e7272f8ee23c718b5cefd7f3933cc4649e3d7cf716dc26b572f7501eafd0e16"
+      "source_content_sha256": "35d41513e9df77b53200e7c0461cf9089012f0069c51f9549b2392b89d98e981",
+      "exported_content_sha256": "895f6b70eae10746f53bf28b79ffbd0f42940746e236e0b645ced8397c773a87"
     },
     {
       "source_repository": "ait-server",
@@ -87,8 +87,8 @@
       ],
       "transforms": [],
       "source_cache_evidence_sha256": "da79c347037f1d7451cf0d872f36d517e720786e521c638a6862c373197c3b1f",
-      "source_content_sha256": "96da17ab7926608afd1028d0e755ef24815696df19b5afa88d992d3c9a874761",
-      "exported_content_sha256": "96da17ab7926608afd1028d0e755ef24815696df19b5afa88d992d3c9a874761"
+      "source_content_sha256": "700e285ff5c179b4bbe983062db068a571a860990c341354c8af30a3291b0357",
+      "exported_content_sha256": "700e285ff5c179b4bbe983062db068a571a860990c341354c8af30a3291b0357"
     }
   ],
   "excluded_operational_roots": [

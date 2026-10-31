@@ -227,4 +227,27 @@ if grep -F "${inventory_message}" "${temporary_root}/exact.stderr" >/dev/null; t
   fail 'the exact contract dossier was rejected by the inventory gate'
 fi
 
+node --input-type=module - "${promotion}" <<'PROTECTED_COUNT_TEST'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+const source = readFileSync(process.argv[2], 'utf8');
+const filter = source.match(/--argjson packages "\$\{packages\}" '([\s\S]*?)\n  ' >"\$\{evidence_output\}"/)[1];
+for (const [version, channel, tag, expected] of [
+  ['1.2.0', 'stable', 'v1.2.0', 24], ['1.2.1', 'stable', 'v1.2.1', 32],
+  ['1.1.4', 'stable', 'v1.1.4', 32], ['1.2.0', 'rc', 'v1.2.0', 32],
+  ['1.2.0', 'stable', 'v1.2.1', 32], ['1.2.0', '', 'v1.2.0', 32],
+]) {
+  const values = { version, channel, tag };
+  const args = ['-n'];
+  for (const name of new Set([...filter.matchAll(/\$([a-zA-Z_][a-zA-Z_0-9]*)/g)].map(match => match[1]))) {
+    if (name === 'packages') args.push('--argjson', name, '[]');
+    else args.push('--arg', name, values[name] ?? 'fixture');
+  }
+  const result = spawnSync('jq', [...args, filter], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).pre_tag_qualification.clean_host_rows, expected);
+}
+PROTECTED_COUNT_TEST
+
 printf 'release protected promotion contract: pass\n'

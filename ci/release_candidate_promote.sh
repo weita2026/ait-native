@@ -75,6 +75,7 @@ jq -e --slurpfile endpoint "${endpoint_config}" '
   exit 65
 }
 jq -e --slurpfile endpoint "${endpoint_config}" '
+  (if $endpoint[0].release.version == "1.2.0" and $endpoint[0].release.channel == "stable" and $endpoint[0].release.tag == "v1.2.0" then 24 else 32 end) as $required_rows |
   .contract == "ait.release.clean-host.aggregate/v1" and
   .status == "qualified" and
   .release.id == $endpoint[0].release.id and
@@ -83,8 +84,8 @@ jq -e --slurpfile endpoint "${endpoint_config}" '
   .release.verification_stage == "pre_tag" and
   .release.candidate_artifact_digest ==
     $endpoint[0].pre_tag_qualification.candidate_artifact_digest and
-  .matrix.expected_rows == 32 and .matrix.admitted_rows == 32 and
-  .matrix.evidence_files == 32 and .failures == [] and
+  .matrix.expected_rows == $required_rows and .matrix.admitted_rows == $required_rows and
+  .matrix.evidence_files == $required_rows and .failures == [] and
   .promotion.allowed == true
 ' "${aggregate_status}" >/dev/null || {
   printf 'pre-tag aggregate does not authorize this exact endpoint payload\n' >&2
@@ -122,7 +123,7 @@ jq -e --slurpfile endpoint "${endpoint_config}" '
     aggregate_artifact_id: ($endpoint[0].pre_tag_qualification.aggregate_artifact_id | tostring),
     aggregate_artifact_digest: $endpoint[0].pre_tag_qualification.aggregate_artifact_digest,
     aggregate_status_sha256: $endpoint[0].pre_tag_qualification.aggregate_status_sha256,
-    clean_host_rows: 32,
+    clean_host_rows: (if $endpoint[0].release.version == "1.2.0" and $endpoint[0].release.channel == "stable" and $endpoint[0].release.tag == "v1.2.0" then 24 else 32 end),
     tag_state_at_closeout: "absent"
   } and
   .authorization.required == true and .authorization.granted == true and
@@ -196,7 +197,7 @@ jq -S -n \
         candidate_artifact_digest: $candidate_artifact_digest,
         aggregate_artifact_digest: $aggregate_artifact_digest,
         aggregate_status_sha256: $aggregate_status_sha256,
-        clean_host_rows: 32,
+        clean_host_rows: (if $config[0].release.version == "1.2.0" and $config[0].release.channel == "stable" and $config[0].release.tag == "v1.2.0" then 24 else 32 end),
         payload_rebuilt: false
       },
       checks: {

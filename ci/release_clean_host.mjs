@@ -2,13 +2,16 @@
 
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { installedCoreCases } from "./release_core_installed_cases.mjs";
 import { languageRepository } from "./release_language_repositories.mjs";
 
@@ -16,6 +19,16 @@ const MATRIX_CONTRACT = "ait.release.clean-host.matrix/v1";
 const PHASE_CONTRACT = "ait.release.clean-host.phase/v1";
 const ROW_CONTRACT = "ait.release.clean-host.row/v1";
 const AGGREGATE_CONTRACT = "ait.release.clean-host.aggregate/v1";
+const MAC_RUNTIME_DEFERRED_REVISION =
+  "distribution-target-120-24-mac-runtime-deferred-2026-10-31.1";
+
+function macRuntimeDeferred(release) {
+  return release?.version === "1.2.0" && release.channel === "stable" && release.tag === "v1.2.0";
+}
+
+export function requiredCleanHostRows(release) {
+  return macRuntimeDeferred(release) ? 24 : 32;
+}
 
 const PLATFORM_AUTHORITY = [
   {
@@ -506,13 +519,10 @@ function requiredChecks(row, phase, version) {
   return checks.sort();
 }
 
-function buildMatrix(family, platforms) {
-  const familyContract = validateFamily(family);
-  const { version } = familyContract;
-  validatePlatformManifest(platforms, version);
+function matrixRows(distributions, platforms, version) {
   const rows = [];
-  for (const authority of familyContract.distributions) {
-    for (const platform of PLATFORM_AUTHORITY.filter((candidate) =>
+  for (const authority of distributions) {
+    for (const platform of platforms.filter((candidate) =>
       authority.targetOs.includes(candidate.os),
     )) {
       rows.push({
@@ -544,10 +554,28 @@ function buildMatrix(family, platforms) {
       });
     }
   }
+  return rows;
+}
+
+function buildMatrix(family, platforms) {
+  const familyContract = validateFamily(family);
+  const { version } = familyContract;
+  validatePlatformManifest(platforms, version);
+  const fullRows = matrixRows(familyContract.distributions, PLATFORM_AUTHORITY, version);
+  if (fullRows.length !== familyContract.rowCount) {
+    fail("full family distribution inventory drifted");
+  }
+  const deferred = macRuntimeDeferred(family.family);
+  if (deferred && familyContract.matrixRevision !== "distribution-target-120-32-2026-10-24.1") {
+    fail("Mac runtime deferral requires the exact 1.2.0 family distribution authority");
+  }
+  const runtimePlatforms = PLATFORM_AUTHORITY.filter(platform => !deferred || platform.os !== "macos");
+  const rows = fullRows.filter(row => !deferred || row.os !== "macos");
+  const rowCount = requiredCleanHostRows(family.family);
   const ids = rows.map((row) => row.id);
   if (
-    rows.length !== familyContract.rowCount ||
-    new Set(ids).size !== familyContract.rowCount
+    rows.length !== rowCount ||
+    new Set(ids).size !== rowCount
   ) {
     fail("clean-host row inventory does not match its exact unique-row contract");
   }
@@ -571,7 +599,7 @@ function buildMatrix(family, platforms) {
         .reduce(
           (count, authority) =>
             count +
-            PLATFORM_AUTHORITY.filter((platform) =>
+            runtimePlatforms.filter((platform) =>
               authority.targetOs.includes(platform.os),
             ).length,
           0,
@@ -584,7 +612,7 @@ function buildMatrix(family, platforms) {
   return {
     contract: MATRIX_CONTRACT,
     schema_version: 1,
-    matrix_revision: familyContract.matrixRevision,
+    matrix_revision: deferred ? MAC_RUNTIME_DEFERRED_REVISION : familyContract.matrixRevision,
     release: {
       version,
       channel: family.family.channel,
@@ -632,19 +660,25 @@ function validateConfigAndStatus(config, status) {
   return expectedStage === "pre_tag" ? "pre_tag" : "prepublication";
 }
 
-function validateMatrix(matrix, config) {
-  const contract = MATRIX_AUTHORITIES[matrix.matrix_revision];
+export function validateMatrix(matrix, config) {
+  const deferred = macRuntimeDeferred(config.release);
+  const contract = MATRIX_AUTHORITIES[deferred && matrix.matrix_revision === MAC_RUNTIME_DEFERRED_REVISION
+    ? "distribution-target-120-32-2026-10-24.1" : matrix.matrix_revision];
+  const rowCount = requiredCleanHostRows(config.release);
+  const expectedRows = contract && matrixRows(contract.distributions,
+    PLATFORM_AUTHORITY.filter(platform => !deferred || platform.os !== "macos"), config.release.version);
   if (
     matrix.contract !== MATRIX_CONTRACT ||
     matrix.schema_version !== 1 ||
     !contract ||
+    (deferred && matrix.matrix_revision !== MAC_RUNTIME_DEFERRED_REVISION) ||
     matrix.release?.version !== config.release.version ||
     matrix.release?.channel !== config.release.channel ||
     matrix.release?.tag !== config.release.tag ||
-    matrix.row_count !== contract.rowCount ||
+    matrix.row_count !== rowCount ||
     !Array.isArray(matrix.rows) ||
-    matrix.rows.length !== contract.rowCount ||
-    new Set(matrix.rows.map((row) => row.id)).size !== contract.rowCount
+    matrix.rows.length !== rowCount ||
+    !sameJson(matrix.rows, expectedRows)
   ) {
     fail("clean-host matrix does not bind the endpoint release");
   }
@@ -990,9 +1024,11 @@ function main() {
   usage(`unsupported clean-host command: ${command}`);
 }
 
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`${error.message}\n`);
-  process.exit(error.exitCode ?? 70);
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    main();
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(error.exitCode ?? 70);
+  }
 }

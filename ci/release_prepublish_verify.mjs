@@ -8,6 +8,7 @@ import {
   realpathSync,
 } from "node:fs";
 import path from "node:path";
+import { requiredCleanHostRows } from "./release_clean_host.mjs";
 
 function fail(message, code = 65) {
   const error = new Error(message);
@@ -262,19 +263,25 @@ function verifyQualification(root, candidateRoot, artifactDigest, aggregateSha) 
   }
   const aggregate = readJson(aggregateFile, "prepublish aggregate status");
   const status = readJson(candidateStatus, "prepublish candidate status");
+  const config = readJson(path.join(candidateRoot, "ait-release.endpoints.authority.json"), "candidate authority");
+  const requiredRows = requiredCleanHostRows(config.release);
   const expectedVerificationStage =
     status.qualification_stage === "pre_tag" ? "pre_tag" : "prepublication";
   if (
     aggregate.contract !== "ait.release.clean-host.aggregate/v1" ||
     aggregate.status !== "qualified" ||
+    ["id", "version", "channel", "tag", "source_commit"].some(key =>
+      aggregate.release?.[key] !== config.release?.[key]) ||
+    ["id", "version", "tag", "source_commit"].some(key =>
+      status.release?.[key] !== config.release?.[key]) ||
     aggregate.release?.verification_stage !== expectedVerificationStage ||
     aggregate.release?.candidate_artifact_digest !== artifactDigest ||
     aggregate.release?.candidate_stage_receipt_sha256 !==
       status.candidate?.stage_receipt_sha256 ||
     aggregate.release?.operator_status_sha256 !== sha256File(candidateStatus) ||
-    aggregate.matrix?.expected_rows !== 32 ||
-    aggregate.matrix?.admitted_rows !== 32 ||
-    aggregate.matrix?.evidence_files !== 32 ||
+    aggregate.matrix?.expected_rows !== requiredRows ||
+    aggregate.matrix?.admitted_rows !== requiredRows ||
+    aggregate.matrix?.evidence_files !== requiredRows ||
     !Array.isArray(aggregate.failures) ||
     aggregate.failures.length !== 0 ||
     !same(aggregate.promotion, {
@@ -286,8 +293,8 @@ function verifyQualification(root, candidateRoot, artifactDigest, aggregateSha) 
     fail("prepublish aggregate is not an exact complete qualification");
   }
   const rows = inventory(path.join(root, "rows"));
-  if (rows.length !== 32 || rows.some((name) => !name.endsWith(".json"))) {
-    fail("prepublish qualification does not retain exactly 32 row records");
+  if (rows.length !== requiredRows || rows.some((name) => !name.endsWith(".json"))) {
+    fail(`prepublish qualification does not retain exactly ${requiredRows} row records`);
   }
   return aggregate;
 }

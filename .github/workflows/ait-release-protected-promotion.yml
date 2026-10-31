@@ -323,13 +323,15 @@ jobs:
               .tag_authority.required_state == "absent"
             ' pre-tag-candidate/ait-release.endpoints.authority.json >/dev/null
           jq -e --arg release_id '${{ inputs.release_id }}' \
-            --arg source_commit '${{ inputs.source_commit }}' '
+            --arg source_commit '${{ inputs.source_commit }}' \
+            --slurpfile authority pre-tag-candidate/ait-release.endpoints.authority.json '
+            (if $authority[0].release.version == "1.2.0" and $authority[0].release.channel == "stable" and $authority[0].release.tag == "v1.2.0" then 24 else 32 end) as $required_rows |
             .status == "qualified" and
             .release.id == $release_id and
             .release.source_commit == $source_commit and
             .release.verification_stage == "pre_tag" and
-            .matrix.expected_rows == 32 and .matrix.admitted_rows == 32 and
-            .matrix.evidence_files == 32 and .failures == []
+            .matrix.expected_rows == $required_rows and .matrix.admitted_rows == $required_rows and
+            .matrix.evidence_files == $required_rows and .failures == []
           ' pre-tag-aggregate/ait-release.clean-host-status.json >/dev/null
 
       - name: Read the selected public tag anonymously

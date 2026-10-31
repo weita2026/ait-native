@@ -19,6 +19,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateMatrix } from "./release_clean_host.mjs";
 import { runInstalledCoreCases } from "./release_core_installed_cases.mjs";
 import { languageRepository, languageRepositoryNames, runLanguageRepository, seedLanguageRepository, verifyLanguageRepository } from "./release_language_repositories.mjs";
 
@@ -84,11 +85,6 @@ export function verifyManualUpgradeDisposition(priorOrigin, candidateOrigin, pri
   }
   return { scope: "side_by_side_manual_origins", prior_origin: priorOrigin, candidate_origin: candidateOrigin, retained_legacy_files: priorFiles };
 }
-const MATRIX_ROW_COUNTS = {
-  "distribution-target-120-32-2026-10-24.1": 32,
-  "distribution-target-32-2026-08-17.2": 32,
-  "distribution-target-runner-bundle-32-2026-08-26.1": 32,
-};
 
 function usage(message) {
   if (message) {
@@ -404,16 +400,7 @@ function githubRunner(row) {
 }
 
 function validateInputs(options, matrix, config, status) {
-  const expectedRows = MATRIX_ROW_COUNTS[matrix.matrix_revision];
-  if (
-    matrix.contract !== MATRIX_CONTRACT ||
-    !expectedRows ||
-    matrix.row_count !== expectedRows ||
-    !Array.isArray(matrix.rows) ||
-    matrix.rows.length !== expectedRows
-  ) {
-    fail("phase matrix is not an admitted exact-row authority");
-  }
+  validateMatrix(matrix, config);
   const row = matrix.rows.find((candidate) => candidate.id === options["row-id"]);
   if (!row) {
     fail("phase row is absent from the clean-host matrix");

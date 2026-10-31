@@ -256,17 +256,18 @@ done
 cp "${status}" "${qualification}/ait-release.prepublish-candidate.json"
 artifact_digest=sha256:9999999999999999999999999999999999999999999999999999999999999999
 jq -S -n \
+  --slurpfile candidate_config "${config}" \
   --arg artifact_digest "${artifact_digest}" \
   --arg status_sha "${status_sha}" \
   --arg receipt_sha "$(sha256_file "${receipt}")" '{
   contract: "ait.release.clean-host.aggregate/v1",
   status: "qualified",
-  release: {
+  release: ($candidate_config[0].release + {
     verification_stage: "prepublication",
     candidate_artifact_digest: $artifact_digest,
     candidate_stage_receipt_sha256: $receipt_sha,
     operator_status_sha256: $status_sha
-  },
+  }),
   matrix: {expected_rows: 32, admitted_rows: 32, evidence_files: 32},
   failures: [],
   promotion: {allowed: true, retry_same_candidate: false, terminal_for_release: false}
@@ -287,5 +288,57 @@ expect_failure incomplete-qualification node "${verifier}" qualify \
   --root "${qualification}" --candidate-root "${candidate}" \
   --candidate-artifact-digest "${artifact_digest}" \
   --aggregate-sha256 "${aggregate_sha}"
+
+node --input-type=module - "${repo_root}" "${temporary_root}" "${candidate}" <<'SCOPED_QUALIFICATION_TEST'
+import assert from 'node:assert/strict';
+import { cpSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+const [root, temporary, original] = process.argv.slice(2);
+const candidate = path.join(temporary, 'candidate-120'); cpSync(original, candidate, { recursive: true });
+const read = file => JSON.parse(readFileSync(file, 'utf8'));
+const json = (file, value) => writeFileSync(file, JSON.stringify(value));
+const sha = file => createHash('sha256').update(readFileSync(file)).digest('hex');
+const list = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry => entry.isDirectory()
+  ? list(path.join(directory, entry.name)) : [path.join(directory, entry.name)]);
+const inventory = directory => writeFileSync(path.join(directory, 'SHA256SUMS'), list(directory)
+  .filter(file => path.basename(file) !== 'SHA256SUMS').sort()
+  .map(file => `${sha(file)}  ${path.relative(directory, file)}\n`).join(''));
+const configFile = path.join(candidate, 'ait-release.endpoints.authority.json');
+const statusFile = path.join(candidate, 'ait-release.prepublish-candidate.json');
+const config = read(configFile), status = read(statusFile);
+Object.assign(config.release, { version: '1.2.0', python_version: '1.2.0', channel: 'stable', tag: 'v1.2.0' });
+Object.assign(status.release, { version: '1.2.0', tag: 'v1.2.0' });
+json(configFile, config); json(statusFile, status);
+const aggregate = path.join(temporary, 'qualification-120'); mkdirSync(path.join(aggregate, 'rows'), { recursive: true });
+for (let index = 0; index < 24; index++) json(path.join(aggregate, 'rows', `${index}.json`), { row: index });
+const aggregateFile = path.join(aggregate, 'ait-release.clean-host-status.json');
+const proof = {
+  contract: 'ait.release.clean-host.aggregate/v1', status: 'qualified',
+  release: { ...config.release, verification_stage: 'prepublication',
+    candidate_artifact_digest: 'sha256:' + '9'.repeat(64),
+    candidate_stage_receipt_sha256: status.candidate.stage_receipt_sha256, operator_status_sha256: sha(statusFile) },
+  matrix: { expected_rows: 24, admitted_rows: 24, evidence_files: 24 }, failures: [],
+  promotion: { allowed: true, retry_same_candidate: false, terminal_for_release: false },
+};
+cpSync(statusFile, path.join(aggregate, 'ait-release.prepublish-candidate.json'));
+const verify = (value, pass) => {
+  json(aggregateFile, value); inventory(aggregate);
+  const result = spawnSync(process.execPath, [path.join(root, 'ci/release_prepublish_verify.mjs'), 'qualify',
+    '--root', aggregate, '--candidate-root', candidate, '--candidate-artifact-digest', proof.release.candidate_artifact_digest,
+    '--aggregate-sha256', sha(aggregateFile)], { encoding: 'utf8' });
+  assert.equal(result.status === 0, pass, result.stderr);
+};
+verify(proof, true);
+verify({ ...proof, matrix: { expected_rows: 32, admitted_rows: 32, evidence_files: 32 } }, false);
+verify({ ...proof, release: { ...proof.release, channel: 'rc' } }, false);
+verify({ ...proof, release: { ...proof.release, operator_status_sha256: '0'.repeat(64) } }, false);
+verify({ ...proof, failures: ['failed-row'] }, false);
+for (const changed of [{ channel: 'rc' }, { version: '1.2.1', tag: 'v1.2.1' }, { tag: 'v1.2.1' }]) {
+  json(configFile, { ...config, release: { ...config.release, ...changed } });
+  verify(proof, false);
+}
+SCOPED_QUALIFICATION_TEST
 
 printf 'release prepublish contract: pass\n'

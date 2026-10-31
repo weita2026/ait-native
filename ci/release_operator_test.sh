@@ -778,8 +778,10 @@ jq -S -n \
     release: {
       id: $release_id,
       version: "1.2.3-rc.5",
+      tag: "v1.2.3-rc.5",
       source_commit: $source_commit,
       verification_stage: "pre_tag",
+      channel: "rc",
       candidate_artifact_digest: $artifact_digest,
       candidate_stage_receipt_sha256: $stage_sha,
       operator_status_sha256: $status_sha
@@ -1164,5 +1166,115 @@ jq -e '
   .terminal_for_release == false and
   .next_action == "promote_mutable_aliases"
 ' "${status_output}" >/dev/null
+
+# Exercise the scoped count through the actual existing commands, using only
+# isolated fixture records and a fresh local Git authority.
+node --input-type=module - "${repo_root}" "${temporary_root}" <<'SCOPED_OPERATOR_TEST'
+import assert from 'node:assert/strict';
+import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+const [root, temporary] = process.argv.slice(2);
+const scope = path.join(temporary, 'stable-120'); mkdirSync(scope);
+const read = file => JSON.parse(readFileSync(file, 'utf8'));
+const run = (command, args, expected = 0) => {
+  const result = spawnSync(command, args, { encoding: 'utf8' });
+  if (expected === 0) assert.equal(result.status, 0, result.stderr);
+  else assert.notEqual(result.status, 0, 'expected rejection');
+  return result.stdout.trim();
+};
+const json = (file, value) => {
+  const encoded = spawnSync('jq', ['-S', '.'], { input: JSON.stringify(value), encoding: 'utf8' });
+  assert.equal(encoded.status, 0, encoded.stderr); writeFileSync(file, encoded.stdout);
+};
+const sha = file => createHash('sha256').update(readFileSync(file)).digest('hex');
+const files = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry =>
+  entry.isDirectory() ? files(path.join(directory, entry.name)) : [path.join(directory, entry.name)]);
+const inventory = (directory, name) => writeFileSync(path.join(directory, name), files(directory)
+  .filter(file => path.basename(file) !== name).sort().map(file => `${sha(file)}  ${path.relative(directory, file)}\n`).join(''));
+const operator = path.join(root, 'ci/release_operator.sh');
+const source = path.join(scope, 'source'); mkdirSync(source);
+run('git', ['-C', source, 'init', '-q']);
+run('git', ['-C', source, 'config', 'user.name', 'scoped fixture']);
+run('git', ['-C', source, 'config', 'user.email', 'fixture@localhost']);
+run('git', ['-C', source, 'commit', '-q', '--allow-empty', '-m', 'isolated release authority']);
+const commit = run('git', ['-C', source, 'rev-parse', 'HEAD']);
+const release = value => ({ ...value, version: '1.2.0', python_version: '1.2.0', channel: 'stable', tag: 'v1.2.0', source_commit: commit });
+const receipts = read(path.join(temporary, 'receipts.json'));
+receipts.release = release(receipts.release);
+const authority = receipts.candidate_authority.record;
+authority.release = release(authority.release);
+authority.prior_release = { version: '1.1.4', python_version: '1.1.4' };
+const defaults = read(path.join(root, 'release/endpoint-publication.defaults.json'));
+authority.endpoints = {
+  github: { ...defaults.endpoints.github, prerelease: false }, pypi: defaults.endpoints.pypi,
+  npm: { ...defaults.endpoints.npm, dist_tag: 'latest' },
+  homebrew: { ...authority.endpoints.homebrew, formula_path: defaults.endpoints.homebrew.formula_paths.stable },
+  apt: { ...authority.endpoints.apt, suite: defaults.endpoints.apt.suites.stable },
+  winget: { identity: defaults.endpoints.winget.identity, ...defaults.endpoints.winget.routes.stable },
+  oci: { ...defaults.endpoints.oci, immutable_tag: '1.2.0', moving_tag: 'latest' },
+};
+const candidate = path.join(scope, 'candidate'), aggregate = path.join(scope, 'aggregate');
+cpSync(path.join(temporary, 'pre-tag-candidate'), candidate, { recursive: true });
+cpSync(path.join(temporary, 'pre-tag-aggregate'), aggregate, { recursive: true });
+const configFile = path.join(candidate, 'ait-release.endpoints.authority.json'); json(configFile, authority);
+receipts.candidate_authority.sha256 = sha(configFile);
+const receiptsFile = path.join(scope, 'receipts.json'); json(receiptsFile, receipts);
+const stageFile = path.join(candidate, 'ait-release.prepublish-stage.json'), stage = read(stageFile);
+stage.release = { id: authority.release.id, version: '1.2.0', tag: 'v1.2.0', source_commit: commit };
+stage.authority.endpoint_config_sha256 = sha(configFile);
+for (const component of Object.values(stage.oci)) for (const row of Object.values(component)) row.reference = row.reference.replace('1.2.3-rc.5', '1.2.0');
+json(stageFile, stage);
+const statusFile = path.join(candidate, 'ait-release.prepublish-candidate.json'), status = read(statusFile);
+status.release = stage.release; status.candidate.stage_receipt_sha256 = sha(stageFile); status.candidate.oci = stage.oci;
+json(statusFile, status); inventory(candidate, 'PREPUBLISH_SHA256SUMS');
+const aggregateFile = path.join(aggregate, 'ait-release.clean-host-status.json'), result = read(aggregateFile);
+result.release = { ...result.release, ...authority.release, operator_status_sha256: sha(statusFile), candidate_stage_receipt_sha256: sha(stageFile) };
+result.matrix = { ...result.matrix, expected_rows: 24, admitted_rows: 24, evidence_files: 24 };
+for (const name of readdirSync(path.join(aggregate, 'rows')).sort().slice(24)) rmSync(path.join(aggregate, 'rows', name));
+json(aggregateFile, result); cpSync(statusFile, path.join(aggregate, 'ait-release.prepublish-candidate.json')); inventory(aggregate, 'SHA256SUMS');
+const bindingFile = path.join(scope, 'candidate.json');
+const bindArgs = ['bind-candidate', '--source-root', source, '--receipts', receiptsFile,
+  '--run-record', path.join(temporary, 'candidate-run.json'), '--candidate-artifact-record', path.join(temporary, 'candidate-artifact.json'),
+  '--candidate-root', candidate, '--aggregate-artifact-record', path.join(temporary, 'aggregate-artifact.json'), '--aggregate-root', aggregate];
+run(operator, [...bindArgs, '--output', bindingFile]);
+assert.equal(read(bindingFile).qualification.clean_host_rows, 24);
+const failedRun = path.join(scope, 'failed-run.json'); json(failedRun, { ...read(path.join(temporary, 'candidate-run.json')), conclusion: 'failure' });
+const failedArgs = [...bindArgs]; failedArgs[failedArgs.indexOf('--run-record') + 1] = failedRun;
+run(operator, [...failedArgs, '--output', path.join(scope, 'rejected-failed-e.json')], 1);
+run('git', ['-C', source, 'tag', '-a', 'v1.2.0', '-m', 'isolated fixture tag']);
+const tagFile = path.join(scope, 'tag.json');
+run(operator, ['authorize', '--source-root', source, '--candidate', bindingFile, '--output', tagFile]);
+assert.equal(read(tagFile).qualification.clean_host_rows, 24);
+const protectedFile = path.join(scope, 'protected.json'), protectedRecord = read(path.join(temporary, 'protected-evidence.json'));
+Object.assign(protectedRecord, { version: '1.2.0', channel: 'stable', tag: 'v1.2.0' });
+protectedRecord.public_source.git_commit = commit;
+protectedRecord.authorization.protected_environment = 'stable-promotion';
+protectedRecord.pre_tag_qualification = { ...read(bindingFile).qualification };
+for (const key of ['workflow_run_id', 'workflow_run_attempt', 'candidate_artifact_id', 'aggregate_artifact_id'])
+  protectedRecord.pre_tag_qualification[key] = String(protectedRecord.pre_tag_qualification[key]);
+json(protectedFile, protectedRecord);
+const endpointFile = path.join(scope, 'endpoints.json');
+run(operator, ['bind-authorization', '--receipts', tagFile, '--run-record', path.join(temporary, 'protected-run.json'),
+  '--artifact-record', path.join(temporary, 'protected-artifact.json'), '--protected-evidence', protectedFile, '--output', endpointFile]);
+run(operator, ['validate-config', '--config', endpointFile]);
+assert.equal(read(endpointFile).pre_tag_qualification.clean_host_rows, 24);
+assert.equal(read(endpointFile).endpoints.npm.packages.length, 7);
+const payloadSha = sha(path.join(candidate, 'assets/fixture.bin'));
+run(path.join(root, 'ci/release_candidate_promote.sh'), [endpointFile, protectedFile, aggregate, candidate]);
+assert.equal(read(path.join(candidate, 'ait-release.endpoint-publication.json')).pre_tag_qualification.clean_host_rows, 24);
+assert.equal(sha(path.join(candidate, 'assets/fixture.bin')), payloadSha);
+const evidence = path.join(scope, 'evidence'); cpSync(path.join(temporary, 'endpoint-evidence'), evidence, { recursive: true });
+const readbackFile = path.join(evidence, 'ait-release.endpoint-readback.json'), readback = read(readbackFile);
+readback.release = { ...readback.release, version: '1.2.0', python_version: '1.2.0', channel: 'stable', tag: 'v1.2.0', source_commit: commit, endpoint_config_sha256: sha(endpointFile) };
+readback.endpoints.winget = 'community_manifest_assets_published_submission_required';
+readback.endpoints.oci.immutable_tag = '1.2.0'; readback.endpoints.oci.moving_tag = 'latest';
+readback.prepublication.clean_host_rows = 24; json(readbackFile, readback);
+const published = path.join(scope, 'published.json');
+run(operator, ['status', '--config', endpointFile, '--run-record', path.join(temporary, 'endpoint-run.json'),
+  '--artifact-record', path.join(temporary, 'endpoint-artifact.json'), '--evidence-root', evidence, '--output', published]);
+assert.equal(read(published).prepublication.clean_host_rows, 24);
+SCOPED_OPERATOR_TEST
 
 printf 'release operator contract: pass\n'

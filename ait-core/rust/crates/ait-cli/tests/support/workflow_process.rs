@@ -15,6 +15,162 @@ use tempfile::TempDir;
 const COMMAND_LIMIT: Duration = Duration::from_secs(30);
 const PEER_LIMIT: Duration = Duration::from_secs(60);
 const WORKER_ADDRESS: &str = "AIT_WORKFLOW_ACCEPTANCE_ADDRESS";
+const GITLESS_STAGE: &str = "AIT_WORKFLOW_GITLESS_STAGE";
+const GITLESS_ROOT: &str = "AIT_WORKFLOW_GITLESS_ROOT";
+const GITLESS_COMPLETE: &str = "isolated Git NotFound and native lifecycle completed";
+const GITLESS_PARENT_COMPLETE: &str = "Git-present parent and isolation controls completed";
+const GIT_SENTINEL: &str = "Git-present negative control executed";
+const GITLESS_FAILURE: &str = "intentional isolation worker failure";
+
+fn reject_git_beside_cli(binary: &Path) -> Result<(), String> {
+    let git = binary
+        .parent()
+        .expect("absolute CLI directory")
+        .join("git.exe");
+    match fs::symlink_metadata(&git) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Cannot exclude Git at {}: {error}", git.display())),
+        Ok(_) => Err(format!(
+            "Git beside selected CLI cannot be excluded: {}",
+            git.display()
+        )),
+    }
+}
+
+fn gitless_command(test: &str, stage: &str, root: &Path, path: &Path) -> Command {
+    let harness = std::env::current_exe().unwrap();
+    assert!(harness.is_absolute());
+    let mut command = Command::new(harness);
+    command
+        .args(["--exact", test, "--nocapture", "--test-threads=1"])
+        .env(GITLESS_STAGE, stage)
+        .env(GITLESS_ROOT, root)
+        .env("PATH", path)
+        .current_dir(root);
+    command
+}
+
+fn gitless_result(output: &Output, marker: &str) -> Result<(), String> {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() || stdout.lines().filter(|line| *line == marker).count() != 1 {
+        return Err(format!(
+            "Isolation worker {:?}\n{stdout}\n{stderr}",
+            output.status
+        ));
+    }
+    Ok(())
+}
+
+/// Run the existing case with an isolated *parent* PATH, without changing the
+/// shared test runner. Windows still searches the parent's PATH after a child
+/// PATH override. A copied harness is Git only in negative controls; the real
+/// lifecycle must observe NotFound and uses the original selected CLI.
+pub fn gitless_worker(test: &str) -> bool {
+    let stage = std::env::var(GITLESS_STAGE).ok();
+    match stage.as_deref() {
+        Some("isolated") => {
+            let root = PathBuf::from(std::env::var_os(GITLESS_ROOT).unwrap());
+            let empty = root.join("empty-path");
+            assert_eq!(std::env::var_os("PATH").as_deref(), Some(empty.as_os_str()));
+            assert_eq!(fs::read_dir(empty).unwrap().count(), 0);
+            false
+        }
+        Some("sentinel") => {
+            println!("\n{GIT_SENTINEL}");
+            true
+        }
+        Some("failure") => panic!("{GITLESS_FAILURE}"),
+        Some("parent") => {
+            let root = PathBuf::from(std::env::var_os(GITLESS_ROOT).unwrap());
+            let empty = root.join("empty-path");
+            let present = root.join("git-present");
+            assert_eq!(
+                std::env::var_os("PATH").as_deref(),
+                Some(present.as_os_str())
+            );
+            let probe = |path: &Path| {
+                Command::new("git")
+                    .args(["--exact", test, "--nocapture", "--test-threads=1"])
+                    .env(GITLESS_STAGE, "sentinel")
+                    .env("PATH", path)
+                    .current_dir(&root)
+                    .output()
+            };
+            gitless_result(&probe(&present).unwrap(), GIT_SENTINEL).unwrap();
+            // Exercise the original Windows lookup trap with a known executable.
+            let child_path_only = probe(&empty);
+            #[cfg(windows)]
+            gitless_result(&child_path_only.unwrap(), GIT_SENTINEL).unwrap();
+            #[cfg(not(windows))]
+            assert_eq!(
+                child_path_only.unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+
+            let blocked = root.join("blocked-cli");
+            fs::create_dir(&blocked).unwrap();
+            fs::copy(
+                present.join(if cfg!(windows) { "git.exe" } else { "git" }),
+                blocked.join("git.exe"),
+            )
+            .unwrap();
+            let rejected = reject_git_beside_cli(&blocked.join("ait-cli.exe")).unwrap_err();
+            assert!(rejected.contains("Git beside selected CLI"), "{rejected}");
+            #[cfg(windows)]
+            {
+                // Only this negative control selects a copy. The real lifecycle
+                // below retains the original installed CLI and must see NotFound.
+                let blocked_cli = blocked.join("ait-cli.exe");
+                fs::copy(
+                    cli_binary::selected(env!("CARGO_BIN_EXE_ait-cli")),
+                    &blocked_cli,
+                )
+                .unwrap();
+                let mut command = gitless_command(test, "isolated", &root, &empty);
+                command.env("AIT_TEST_CLI_BIN", &blocked_cli);
+                let output = bounded_output(command);
+                let rejected = gitless_result(&output, GITLESS_COMPLETE).unwrap_err();
+                assert!(rejected.contains("Git beside selected CLI"), "{rejected}");
+            }
+
+            let failure = bounded_output(gitless_command(test, "failure", &root, &empty));
+            let propagated = gitless_result(&failure, GITLESS_COMPLETE).unwrap_err();
+            assert!(propagated.contains(GITLESS_FAILURE), "{propagated}");
+            let isolated = bounded_output_with_limit(
+                gitless_command(test, "isolated", &root, &empty),
+                PEER_LIMIT * 2,
+            );
+            gitless_result(&isolated, GITLESS_COMPLETE).unwrap();
+            println!("\n{GITLESS_PARENT_COMPLETE}");
+            true
+        }
+        None => {
+            let temp = TempDir::new().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let empty = root.join("empty-path");
+            let present = root.join("git-present");
+            fs::create_dir(&empty).unwrap();
+            fs::create_dir(&present).unwrap();
+            let git = present.join(if cfg!(windows) { "git.exe" } else { "git" });
+            fs::copy(std::env::current_exe().unwrap(), git).unwrap();
+            let output = bounded_output_with_limit(
+                gitless_command(test, "parent", &root, &present),
+                PEER_LIMIT * 4,
+            );
+            gitless_result(&output, GITLESS_PARENT_COMPLETE).unwrap();
+            // Nested harness summaries stay captured: installed-case accounting
+            // must still report exactly one execution of the existing selector.
+            eprintln!("Git-free worker verified NotFound, lifecycle and isolation controls");
+            true
+        }
+        Some(other) => panic!("Unknown private Git-free worker stage: {other}"),
+    }
+}
+
+pub fn gitless_worker_complete() {
+    println!("\n{GITLESS_COMPLETE}");
+}
 
 pub struct Fixture {
     pub temp: TempDir,
@@ -67,7 +223,14 @@ impl Fixture {
 }
 
 pub fn cli(root: &Path, args: &[&str], search_path: Option<&Path>) -> Output {
-    let mut command = Command::new(cli_binary::selected(env!("CARGO_BIN_EXE_ait-cli")));
+    let binary = cli_binary::selected(env!("CARGO_BIN_EXE_ait-cli"));
+    assert!(binary.is_absolute(), "selected CLI must remain absolute");
+    #[cfg(windows)]
+    if search_path.is_some() {
+        // The worker probe cannot certify this different executable directory.
+        reject_git_beside_cli(&binary).unwrap();
+    }
+    let mut command = Command::new(binary);
     command
         .env("CODEX_HOME", native_home::path())
         .current_dir(root)
@@ -78,7 +241,11 @@ pub fn cli(root: &Path, args: &[&str], search_path: Option<&Path>) -> Output {
     bounded_output(command)
 }
 
-fn bounded_output(mut command: Command) -> Output {
+fn bounded_output(command: Command) -> Output {
+    bounded_output_with_limit(command, COMMAND_LIMIT)
+}
+
+fn bounded_output_with_limit(mut command: Command, limit: Duration) -> Output {
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -96,7 +263,7 @@ fn bounded_output(mut command: Command) -> Output {
         stderr.read_to_end(&mut bytes).unwrap();
         bytes
     });
-    let deadline = Instant::now() + COMMAND_LIMIT;
+    let deadline = Instant::now() + limit;
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
@@ -104,7 +271,7 @@ fn bounded_output(mut command: Command) -> Output {
         if Instant::now() >= deadline {
             child.kill().unwrap();
             child.wait().unwrap();
-            panic!("native command exceeded {COMMAND_LIMIT:?}: {command:?}");
+            panic!("native command exceeded {limit:?}: {command:?}");
         }
         // Poll completion; coordination uses acknowledged socket barriers.
         thread::sleep(Duration::from_millis(10));

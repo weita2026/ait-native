@@ -1854,7 +1854,7 @@ case "${mode}" in
             candidate_artifact_digest: $candidate_artifact_digest,
             aggregate_artifact_digest: $aggregate_artifact_digest,
             aggregate_status_sha256: $aggregate_status_sha256,
-            clean_host_rows: 32
+            clean_host_rows: (if $version == "1.2.0" and $channel == "stable" and $tag == "v1.2.0" then 24 else 32 end)
           },
           mutation: {
             artifact_rebuild: false,

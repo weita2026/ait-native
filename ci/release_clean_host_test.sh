@@ -979,6 +979,8 @@ assert(preparation.header.includes('id: seed_observer_source'));
 assert(diagnostic.header.includes("steps.seed_observer_source.outcome == 'success'"));
 assert(diagnostic.header.includes('AIT_SEED_OBSERVATION_CONFIG_SHA: ${{ inputs.candidate_authority_sha256 }}'));
 assert(diagnostic.header.includes('AIT_SEED_OBSERVATION_STATUS_SHA: ${{ needs.stage.outputs.candidate_status_sha256 }}'));
+assert(!diagnostic.header.includes('steps.python.outputs'));
+assert(install.includes("id: python\n        if: matrix.channel == 'pypi'"));
 requireLiteralObservationRun('x'.repeat(21000));
 assert.throws(() => requireLiteralObservationRun('x'.repeat(21001)), /21000/);
 assert.throws(() => requireLiteralObservationRun(preparation.run + diagnostic.run), /21000/);
@@ -1110,7 +1112,6 @@ assert(!js.includes('mkdtempSync') && !js.includes('chmodSync') && !js.includes(
 console.log('Same-context observation guards reject changed authority, unsafe closeout, wrong branch and unavailable capture; ordinary enforcement preserved');
 // Execute the complete inline orchestration with controlled child/filesystem
 // boundaries. This proves ordering and result preservation, not hosted capture.
-let discoveryParser;
 function runtime(options = {}) {
   const p = phase(), bytes = Buffer.from('landed fixture\n');
   const files = [{ path: 'first-land.txt', sha256: createHash('sha256').update(bytes).digest('hex'), mode: '0o644' }];
@@ -1127,9 +1128,10 @@ function runtime(options = {}) {
   const status = { candidate: { stage_receipt_sha256: 'c'.repeat(64) } };
   const env = { RUNNER_TEMP: '/runner/temp', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1', GITHUB_JOB: 'install',
     ImageVersion: 'current', ImageOS: 'macos15', RUNNER_NAME: 'same-vm', AIT_SEED_OBSERVATION_ROW: 'github-arm',
-    AIT_CLEAN_HOST_PYTHON: '/runner/python/bin/python3', PATH: '/usr/bin:/bin', HOME: '/Users/runner', TMPDIR: '/runner/temp',
+    AIT_CLEAN_HOST_PYTHON: '', PATH: '/usr/bin:/bin', HOME: '/Users/runner', TMPDIR: '/runner/temp',
     UNRELATED_SECRET: 'must not enter discovery logs',
     AIT_CLEAN_HOST_CANDIDATE_ARTIFACT_DIGEST: 'sha256:' + 'd'.repeat(64) };
+  if (options.unsetPython) delete env.AIT_CLEAN_HOST_PYTHON;
   p.row.id = 'github-arm'; p.row.runner = 'macos-15';
   p.release = { ...authority.release, verification_stage: 'pre_tag',
     endpoint_config_sha256: createHash('sha256').update(JSON.stringify(authority)).digest('hex'),
@@ -1172,14 +1174,15 @@ function runtime(options = {}) {
         result.stdout = observer && options.discoveryMismatch ? '<plist><dict/></plist>' : '<plist>controlled writable ram image</plist>';
         if (options.discoveryFailure) { result.status = 1; result.stderr = 'controlled hdiutil failure'; }
       }
-      if (command === env.AIT_CLEAN_HOST_PYTHON) {
-        assert.equal(args[0], '-c');
-        assert(args[1].includes('plistlib.loads'));
-        discoveryParser = args[1];
+      if (command === '/usr/bin/plutil') {
+        assert.deepEqual(Array.from(args), ['-extract', 'images', 'json', '-expect', 'array', '-o', '-', '-']);
+        assert(!settings.env.AIT_CLEAN_HOST_PYTHON, 'GitHub observer has no PyPI runtime setup');
         result.stdout = JSON.stringify(settings.input.includes('writable ram image') ? [
           { 'image-path': options.nonRam ? '/tmp/disk.dmg' : 'ram://123456', writeable: !options.readonlyRam,
-            'mount-points': [options.wrongMount ? '/Volumes/other' : '/Volumes/AIT_RAM'] }] : []);
+            'system-entities': [{ 'mount-point': options.wrongMount ? '/Volumes/other' : '/Volumes/AIT_RAM' }] }] : []);
         if (options.invalidPlist) { result.status = 1; result.stdout = ''; result.stderr = 'controlled XML parse failure'; }
+        if (options.missingParser) { result.status = null; result.stdout = ''; result.error = new Error('spawnSync /usr/bin/plutil ENOENT'); }
+        if (options.invalidParserJson) result.stdout = '{invalid JSON';
       }
       if (command === '/sbin/mount') result.stdout = options.noRam ? '' : '/dev/disk9 on /Volumes/AIT_RAM (apfs, local)\n';
       if (command === '/usr/sbin/lsof') {
@@ -1230,33 +1233,91 @@ function runtime(options = {}) {
       assert(!JSON.stringify(log).includes(env.UNRELATED_SECRET));
       assert.equal(log.resolved.stdout, '/usr/bin/hdiutil\n');
       assert.equal(log.info_plist.exit, options.discoveryFailure ? 1 : 0);
+      assert(log.info_plist.stdout, 'raw discovery output must survive parser unavailability');
+      assert.equal(log.parse.command, '/usr/bin/plutil');
+      if (options.missingParser) assert.match(log.parse.error, /plutil ENOENT/);
+      if (options.invalidParserJson) assert(log.parse.error);
     }
     const attemptIndex = calls.findIndex(call => call.command === cli && call.args[1] === 'finish');
     if (attemptIndex >= 0) assert(calls.indexOf(discoveryCalls[1]) < attemptIndex);
   }
   return { attempts: attempts.length, exitCode: proc.exitCode ?? 0 };
 }
-for (const options of [{}, { success: true }]) assert.deepEqual(runtime(options), { attempts: 1, exitCode: 0 });
+for (const options of [{}, { unsetPython: true }, { success: true }]) assert.deepEqual(runtime(options), { attempts: 1, exitCode: 0 });
 for (const options of [{ wrongCandidate: true }, { noRam: true }, { dirty: true }, { writer: true }, { compileFailure: true },
   { discoveryMismatch: true }, { discoveryFailure: true }, { invalidPlist: true }, { readonlyRam: true },
-  { nonRam: true }, { wrongMount: true }]) {
+  { nonRam: true }, { wrongMount: true }, { missingParser: true }, { invalidParserJson: true }]) {
   assert.deepEqual(runtime(options), { attempts: 0, exitCode: 1 });
 }
 assert.deepEqual(runtime({ noCapture: true }), { attempts: 1, exitCode: 1 });
 assert.deepEqual(runtime({ childUnavailable: true }), { attempts: 1, exitCode: 1 });
-// Execute the exact embedded parser with real plist XML, including the field
-// spelling Core consumes. Mocked orchestration alone would miss parser errors.
+// Execute the embedded discovery function with real Mac system executables.
+// No PyPI setup, parser mock or AIT command participates in these tool checks.
 const xml = '<plist version="1.0"><dict><key>images</key><array><dict>' +
   '<key>image-path</key><string>ram://123456</string><key>writeable</key><true/>' +
   '<key>system-entities</key><array><dict><key>mount-point</key><string>/Volumes/AIT_RAM</string>' +
   '</dict></array></dict></array></dict></plist>';
-for (const [input, writable] of [[xml, true], [xml.replace('<true/>', '<false/>'), false]]) {
-  const parsed = spawnSync('python3', ['-c', discoveryParser], { input, encoding: 'utf8' });
-  assert.equal(parsed.status, 0, parsed.stderr);
-  assert.deepEqual(JSON.parse(parsed.stdout), [{ 'image-path': 'ram://123456', writeable: writable,
-    'mount-points': ['/Volumes/AIT_RAM'] }]);
+if (process.platform === 'darwin') {
+  const start = js.indexOf('function discovery('), end = js.indexOf('\ntry {', start);
+  assert(start >= 0 && end > start);
+  const discoverySource = js.slice(start, end);
+  function realDiscovery(input, options = {}) {
+    const logs = [], executed = [];
+    const env = { ...process.env, AIT_CLEAN_HOST_PYTHON: '', UNRELATED_SECRET: 'exclude actual-tool secret' };
+    if (options.unsetPython) delete env.AIT_CLEAN_HOST_PYTHON;
+    delete env.DYLD_INSERT_LIBRARIES; delete env.CORE_SEED_RENAME_LOG;
+    const context = vm.createContext({
+      spawnSync(command, args, settings) {
+        assert(!settings.env.AIT_CLEAN_HOST_PYTHON);
+        executed.push(command);
+        const argv = Array.from(args);
+        if (command === options.missingTool) return spawnSync('/nonexistent/ait-observer-required-tool', argv, settings);
+        if (command === 'hdiutil' && input !== undefined) return { status: options.failedDiscovery ? 1 : 0,
+          stdout: input, stderr: options.failedDiscovery ? 'controlled discovery failure' : '' };
+        return spawnSync(command, argv, settings);
+      },
+      log(name, text) { logs.push(JSON.parse(text)); },
+    });
+    vm.runInContext(discoverySource + '\nthis.check = discovery;', context);
+    const available = context.check('actual-tool-flow', env);
+    assert.equal(logs.length, 1);
+    const value = logs[0];
+    assert(!JSON.stringify(value).includes(env.UNRELATED_SECRET));
+    assert.deepEqual(executed, ['/usr/bin/which', 'hdiutil', '/usr/bin/plutil']);
+    if (input !== undefined && options.missingTool !== 'hdiutil') assert.equal(value.info_plist.stdout, input);
+    return { available, value };
+  }
+  for (const unsetPython of [false, true]) {
+    const actual = realDiscovery(undefined, { unsetPython });
+    assert.equal(actual.value.info_plist.exit, 0, JSON.stringify(actual.value));
+    assert.equal(actual.value.parse.exit, 0);
+    console.log('Actual Mac discovery optional Python=' + (unsetPython ? 'unset' : 'empty') +
+      '; writable target RAM observed=' + actual.available);
+    const fixture = realDiscovery(xml, { unsetPython });
+    assert.equal(fixture.available, true, JSON.stringify(fixture.value));
+    assert.deepEqual(fixture.value.fields, [{ 'image-path': 'ram://123456', writeable: true,
+      'mount-points': ['/Volumes/AIT_RAM'] }]);
+  }
+  for (const input of ['', 'invalid XML', '<plist><dict/></plist>',
+    '<plist><dict><key>images</key><array/></dict></plist>',
+    '<plist><dict><key>images</key><dict/></dict></plist>',
+    xml.replace('<true/>', '<false/>'), xml.replace('<key>writeable</key><true/>', ''),
+    xml.replace('<key>image-path</key><string>ram://123456</string>', ''),
+    xml.replace('<key>mount-point</key><string>/Volumes/AIT_RAM</string>', ''),
+    xml.replace('ram://123456', '/tmp/ordinary.dmg')]) {
+    assert.equal(realDiscovery(input).available, false);
+  }
+  assert.equal(realDiscovery(xml, { failedDiscovery: true }).available, false);
+  for (const missingTool of ['/usr/bin/which', 'hdiutil', '/usr/bin/plutil']) {
+    const missing = realDiscovery(xml, { missingTool });
+    assert.equal(missing.available, false);
+    const error = missingTool === '/usr/bin/plutil' ? missing.value.parse :
+      missingTool === 'hdiutil' ? missing.value.info_plist : missing.value.resolved;
+    assert.match(error.error, /ENOENT/);
+    if (missingTool === '/usr/bin/plutil') assert.equal(missing.value.info_plist.stdout, xml);
+  }
+  console.log('Actual Mac hdiutil/plutil flow passed with empty/unset optional Python; raw failed/malformed/missing-tool diagnostics retained');
 }
-assert.notEqual(spawnSync('python3', ['-c', discoveryParser], { input: 'invalid XML', encoding: 'utf8' }).status, 0);
 console.log('Inline observation orchestration: matching parent discovery probes, single guarded CLI attempt, unsafe inputs refused and original failure bytes preserved');
 MAC_SEED_OBSERVATION_TEST
 test "$(grep -c 'name: Activate preinstalled Linux Homebrew' "${workflow}")" = 3
@@ -1269,7 +1330,7 @@ test "$(grep -Fc 'Split-Path -Parent $gitBash | Out-File -FilePath $env:GITHUB_P
   "${workflow}")" = 3
 test "$(grep -c '^        id: python$' "${workflow}")" = 2
 test "$(grep -Fc 'AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}' \
-  "${workflow}")" = 3
+  "${workflow}")" = 2
 python_command_source=$(sed -n '/^function pythonCommand() {$/,/^}$/p' "${phase_runner}")
 grep -F 'process.env.AIT_CLEAN_HOST_PYTHON' <<<"${python_command_source}" >/dev/null
 grep -F 'requireExecutableFile(configured, "configured clean-host Python")' \
@@ -1315,7 +1376,10 @@ active_matrix_revision=$(jq -er '
     select(.role == "product" and
       (.channel == "homebrew" or .channel == "apt" or .channel == "winget")) |
     (.components | index("ait-runner") != null)] |
-  if all and ([$family.components[].id] | index("ait-agent") == null and index("ait-agent-worker") == null) then "distribution-target-120-32-2026-10-24.1"
+  if all and ([$family.components[].id] | index("ait-agent") == null and index("ait-agent-worker") == null) then
+    if $family.family == ($family.family + {version: "1.2.0", channel: "stable", tag: "v1.2.0"})
+    then "distribution-target-120-24-mac-runtime-deferred-2026-10-31.1"
+    else "distribution-target-120-32-2026-10-24.1" end
   elif all then "distribution-target-runner-bundle-32-2026-08-26.1"
   elif any then error("active native product bundles are inconsistent")
   else "distribution-target-32-2026-08-17.2"
@@ -1327,32 +1391,33 @@ node "${tool}" matrix \
   --family "${active_family}" \
   --platforms "${active_platforms}" \
   --output "${matrix}" >/dev/null
-jq -e --arg matrix_revision "${active_matrix_revision}" '
+required_rows=$(jq -r 'if .family.version == "1.2.0" and .family.channel == "stable" and .family.tag == "v1.2.0" then 24 else 32 end' "${active_family}")
+jq -e --arg matrix_revision "${active_matrix_revision}" --argjson required_rows "${required_rows}" '
   .contract == "ait.release.clean-host.matrix/v1" and
   .matrix_revision == $matrix_revision and
-  .row_count == 32 and (.rows | length) == 32 and
-  ([.rows[].id] | unique | length) == 32 and
+  .row_count == $required_rows and (.rows | length) == $required_rows and
+  ([.rows[].id] | unique | length) == $required_rows and
   .counts == {
     "apt:product": 2,
     "apt:standalone": 2,
-    "github:product": 6,
-    "homebrew:product": 4,
-    "npm:product": 6,
+    "github:product": (if $required_rows == 24 then 4 else 6 end),
+    "homebrew:product": (if $required_rows == 24 then 2 else 4 end),
+    "npm:product": (if $required_rows == 24 then 4 else 6 end),
     "oci:standalone": 4,
-    "pypi:product": 6,
+    "pypi:product": (if $required_rows == 24 then 4 else 6 end),
     "winget:product": 2
   } and
   ([.rows[].runner] | unique | sort) == ([
-    "macos-15", "macos-15-intel", "ubuntu-22.04",
+    (if $required_rows == 24 then empty else "macos-15", "macos-15-intel" end), "ubuntu-22.04",
     "ubuntu-22.04-arm", "windows-11-arm", "windows-2025"
   ] | sort)
 ' "${matrix}" >/dev/null
 
 if [[ "${family_version}" == 1.2.* ]]; then
-  jq -e '
+  jq -e --argjson targets "$((required_rows == 24 ? 4 : 6))" '
     ([.rows[] | select(.channel == "github" and .lifecycle == "product" and
       ((.required_checks.install | index("language_repositories")) != null and
-       (.required_checks.install | index("installed_core_cases")) != null))] | length) == 6 and
+       (.required_checks.install | index("installed_core_cases")) != null))] | length) == $targets and
     ([.rows[] | select(.channel != "github" or .lifecycle != "product") |
       select((.required_checks.install | index("language_repositories") != null) or
              (.required_checks.install | index("installed_core_cases") != null))] | length) == 0
@@ -1451,6 +1516,71 @@ jq -e '
     select(.channel == "apt" and .role == "standalone") |
     .components] == [["ait-runner"], ["ait-runner"]])
 ' "${runner_bundle_matrix}" >/dev/null
+
+node --input-type=module - "${repo_root}" "${temporary_root}" "${active_family}" <<'RUNTIME_SCOPE_TEST'
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
+const [root, temporary, familyFile] = process.argv.slice(2);
+const { validateMatrix, requiredCleanHostRows } = await import(pathToFileURL(path.join(root, 'ci/release_clean_host.mjs')));
+const read = file => JSON.parse(readFileSync(file, 'utf8'));
+const family = read(familyFile), platforms = read(path.join(root, 'ci/native_bootstrap_matrix.json'));
+assert.equal(platforms.targets.length, 6);
+assert.equal(platforms.targets.filter(row => row.os === 'macos').length, 2);
+for (const channel of ['github', 'pypi', 'npm', 'homebrew']) {
+  const distribution = family.distributions.find(row => row.channel === channel && row.role === 'product');
+  for (const target of ['aarch64-apple-darwin', 'x86_64-apple-darwin']) assert(distribution.targets.includes(target));
+}
+const workflow = readFileSync(path.join(root, '.github/workflows/ait-release-prepublish-clean-host.yml'), 'utf8');
+const probeFilter = workflow.split('\n').find(line => line.includes('jq -c --slurpfile matrix')).match(/'([^']+)'/)[1];
+let index = 0;
+for (const release of [
+  { version: '1.2.0', channel: 'stable', tag: 'v1.2.0' },
+  { version: '1.2.0', channel: 'rc', tag: 'v1.2.0' },
+  { version: '1.2.0-rc.1', channel: 'rc', tag: 'v1.2.0-rc.1' },
+  { version: '1.2.1', channel: 'stable', tag: 'v1.2.1' },
+]) {
+  const scoped = release.version === '1.2.0' && release.channel === 'stable';
+  const expected = scoped ? 24 : 32;
+  assert.equal(requiredCleanHostRows(release), expected);
+  const source = structuredClone(family); Object.assign(source.family, release);
+  const platformFile = path.join(temporary, `scope-${index}.platforms.json`);
+  const sourceFile = path.join(temporary, `scope-${index}.family.json`);
+  const matrixFile = path.join(temporary, `scope-${index++}.matrix.json`);
+  writeFileSync(sourceFile, JSON.stringify(source));
+  writeFileSync(platformFile, JSON.stringify({ ...platforms, version: release.version }));
+  const generated = spawnSync(process.execPath, [path.join(root, 'ci/release_clean_host.mjs'), 'matrix',
+    '--family', sourceFile, '--platforms', platformFile, '--output', matrixFile], { encoding: 'utf8' });
+  assert.equal(generated.status, 0, generated.stderr);
+  const matrix = read(matrixFile);
+  assert.equal(matrix.row_count, expected);
+  validateMatrix(matrix, { release });
+  const probe = spawnSync('jq', ['-c', '--slurpfile', 'matrix', matrixFile, probeFilter, platformFile], { encoding: 'utf8' });
+  assert.equal(probe.status, 0, probe.stderr);
+  const targets = JSON.parse(probe.stdout).include;
+  assert.equal(targets.length, scoped ? 4 : 6);
+  assert.equal(targets.some(row => row.os === 'macos'), !scoped);
+  if (!scoped) continue;
+  for (const mutate of [
+    value => { value.rows.pop(); },
+    value => { value.rows[0] = value.rows[1]; },
+    value => { value.rows[0].id = 'substituted-row'; },
+    value => { value.rows[0].required_checks.install.pop(); },
+    value => { value.rows[0].target = 'aarch64-apple-darwin'; },
+    value => { value.release.tag = 'v1.2.1'; },
+  ]) {
+    const invalid = structuredClone(matrix); mutate(invalid);
+    assert.throws(() => validateMatrix(invalid, { release }));
+  }
+  for (const changed of [{ ...release, version: '1.2.1' }, { ...release, channel: 'rc' },
+    { ...release, tag: 'v1.2.1' }, { version: '1.2.0', tag: 'v1.2.0' }]) {
+    assert.equal(requiredCleanHostRows(changed), 32);
+    assert.throws(() => validateMatrix(matrix, { release: changed }));
+  }
+}
+RUNTIME_SCOPE_TEST
 
 config=${temporary_root}/config.json
 status=${temporary_root}/status.json
@@ -1615,16 +1745,16 @@ node "${tool}" aggregate \
   --status "${status}" \
   --evidence-root "${evidence_root}" \
   --output-root "${aggregate}" >/dev/null
-jq -e --arg matrix_revision "${active_matrix_revision}" '
+jq -e --arg matrix_revision "${active_matrix_revision}" --argjson required_rows "${required_rows}" '
   .contract == "ait.release.clean-host.aggregate/v1" and
   .status == "qualified" and
-  .matrix == {admitted_rows: 32, evidence_files: 32, expected_rows: 32,
+  .matrix == {admitted_rows: $required_rows, evidence_files: $required_rows, expected_rows: $required_rows,
     revision: $matrix_revision} and
   .failures == [] and
   .promotion == {allowed: true, retry_same_candidate: false, terminal_for_release: false}
 ' "${aggregate}/ait-release.clean-host-status.json" >/dev/null
-test "$(wc -l <"${aggregate}/SHA256SUMS" | tr -d '[:space:]')" = 33
-test "$(find "${aggregate}/rows" -type f -name '*.json' | wc -l | tr -d '[:space:]')" = 32
+test "$(wc -l <"${aggregate}/SHA256SUMS" | tr -d '[:space:]')" = "$((required_rows + 1))"
+test "$(find "${aggregate}/rows" -type f -name '*.json' | wc -l | tr -d '[:space:]')" = "${required_rows}"
 
 missing_root=${temporary_root}/missing-rows
 cp -R "${evidence_root}" "${missing_root}"

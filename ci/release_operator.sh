@@ -268,7 +268,7 @@ validate_endpoint_config() {
     (.pre_tag_qualification.aggregate_artifact_id | type == "number" and . > 0 and floor == .) and
     (.pre_tag_qualification.aggregate_artifact_digest | test("^sha256:[0-9a-f]{64}$")) and
     (.pre_tag_qualification.aggregate_status_sha256 | test("^[0-9a-f]{64}$")) and
-    .pre_tag_qualification.clean_host_rows == 32 and
+    .pre_tag_qualification.clean_host_rows == (if .release.version == "1.2.0" and .release.channel == "stable" and .release.tag == "v1.2.0" then 24 else 32 end) and
     .pre_tag_qualification.tag_state_at_closeout == "absent" and
     (.protected_authorization.workflow_run_id | type == "number" and . > 0 and floor == .) and
     (.protected_authorization.workflow_run_attempt | type == "number" and . > 0 and floor == .) and
@@ -1461,12 +1461,13 @@ case "${mode}" in
         --root "${aggregate_root}" --candidate-root "${candidate_root}" \
         --candidate-artifact-digest "${candidate_artifact_digest}" \
         --aggregate-sha256 "${aggregate_status_sha}" >/dev/null
-    jq -e --arg release_id "${release_id}" '
+    jq -e --arg release_id "${release_id}" --slurpfile authority "${candidate_authority}" '
+      (if $authority[0].release.version == "1.2.0" and $authority[0].release.channel == "stable" and $authority[0].release.tag == "v1.2.0" then 24 else 32 end) as $required_rows |
       .contract == "ait.release.clean-host.aggregate/v1" and
       .status == "qualified" and .release.id == $release_id and
       .release.verification_stage == "pre_tag" and
-      .matrix.expected_rows == 32 and .matrix.admitted_rows == 32 and
-      .matrix.evidence_files == 32 and .failures == [] and
+      .matrix.expected_rows == $required_rows and .matrix.admitted_rows == $required_rows and
+      .matrix.evidence_files == $required_rows and .failures == [] and
       .promotion.allowed == true
     ' "${aggregate_status}" >/dev/null ||
       fail 65 'clean-host aggregate is not a complete pre-tag qualification'
@@ -1511,7 +1512,7 @@ case "${mode}" in
             aggregate_artifact_id: $aggregate_artifact_id,
             aggregate_artifact_digest: $aggregate_artifact_digest,
             aggregate_status_sha256: $aggregate_status_sha,
-            clean_host_rows: 32,
+            clean_host_rows: (if $r.release.version == "1.2.0" and $r.release.channel == "stable" and $r.release.tag == "v1.2.0" then 24 else 32 end),
             tag_state_at_closeout: "absent"
           },
           tag: {created: false, verified: false},
@@ -1552,7 +1553,7 @@ case "${mode}" in
       .contract == "ait.release.operator.pre-tag-candidate-binding/v1" and
       .status == "ready_for_immutable_tag" and
       (.release.id | test("^REL-FAM-[0-9A-F]{16}$")) and
-      .qualification.clean_host_rows == 32 and
+      .qualification.clean_host_rows == (if .release.version == "1.2.0" and .release.channel == "stable" and .release.tag == "v1.2.0" then 24 else 32 end) and
       .qualification.tag_state_at_closeout == "absent" and
       .tag == {created: false, verified: false} and
       ([.mutation[]] | all(. == false))
@@ -1693,7 +1694,7 @@ case "${mode}" in
       .status == "ready_for_protected_authorization" and
       (.release.id | test("^REL-FAM-[0-9A-F]{16}$")) and
       .tag == {created: true, verified: true, annotated: true} and
-      .qualification.clean_host_rows == 32 and
+      .qualification.clean_host_rows == (if .release.version == "1.2.0" and .release.channel == "stable" and .release.tag == "v1.2.0" then 24 else 32 end) and
       .qualification.tag_state_at_closeout == "absent" and
       ([.mutation[]] | all(. == false))
     ' "${receipts}" >/dev/null || fail 65 'receipt binding is not ready for protected authorization'
@@ -1762,7 +1763,7 @@ case "${mode}" in
           aggregate_artifact_id: ($r.qualification.aggregate_artifact_id | tostring),
           aggregate_artifact_digest: $r.qualification.aggregate_artifact_digest,
           aggregate_status_sha256: $r.qualification.aggregate_status_sha256,
-          clean_host_rows: 32,
+          clean_host_rows: (if $r.release.version == "1.2.0" and $r.release.channel == "stable" and $r.release.tag == "v1.2.0" then 24 else 32 end),
           tag_state_at_closeout: "absent"
         } and
         .authorization.required == true and .authorization.granted == true and
@@ -1977,7 +1978,7 @@ case "${mode}" in
       (.prepublication.candidate_artifact_digest | test("^sha256:[0-9a-f]{64}$")) and
       (.prepublication.aggregate_artifact_digest | test("^sha256:[0-9a-f]{64}$")) and
       (.prepublication.aggregate_status_sha256 | test("^[0-9a-f]{64}$")) and
-      .prepublication.clean_host_rows == 32 and
+      .prepublication.clean_host_rows == (if $c.release.version == "1.2.0" and $c.release.channel == "stable" and $c.release.tag == "v1.2.0" then 24 else 32 end) and
       .mutation.artifact_rebuild == false and
       .mutation.component_rebuild == false and
       .mutation.registry_write == true and

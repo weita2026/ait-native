@@ -214,7 +214,7 @@ jobs:
           {
             printf 'rows=%s\n' "$(jq -c '{include: .rows}' "${matrix}")"
             printf 'platforms=%s\n' \
-              "$(jq -c '{include: .targets}' control/ci/native_bootstrap_matrix.json)"
+              "$(jq -c --slurpfile matrix "${matrix}" '{include: [.targets[] | select(.target as $target | any($matrix[0].rows[]; .target == $target))]}' control/ci/native_bootstrap_matrix.json)"
             echo "matrix_sha256=$(sha256sum "${matrix}" | awk '{print $1}')"
           } >>"${GITHUB_OUTPUT}"
           node control/ci/release_prepublish_verify.mjs stage \
@@ -543,7 +543,6 @@ jobs:
           AIT_CLEAN_HOST_CANDIDATE_ROOT: ${{ github.workspace }}/candidate
           AIT_CLEAN_HOST_SOURCE_ROOT: ${{ github.workspace }}/source
           AIT_CLEAN_HOST_RUNNER_LABEL: ${{ matrix.runner }}
-          AIT_CLEAN_HOST_PYTHON: ${{ steps.python.outputs.python-path }}
           AIT_SEED_OBSERVATION_ROW: ${{ matrix.id }}
           AIT_SEED_OBSERVATION_CONFIG_SHA: ${{ inputs.candidate_authority_sha256 }}
           AIT_SEED_OBSERVATION_STATUS_SHA: ${{ needs.stage.outputs.candidate_status_sha256 }}
@@ -753,15 +752,19 @@ jobs:
             const options = { cwd, env, encoding: 'utf8', timeout: 120000, maxBuffer: 16 * 1024 * 1024 };
             const resolved = spawnSync('/usr/bin/which', ['hdiutil'], options);
             const info = spawnSync('hdiutil', ['info', '-plist'], options);
-            const parsed = spawnSync(env.AIT_CLEAN_HOST_PYTHON, ['-c',
-              'import json,plistlib,sys; p=plistlib.loads(sys.stdin.buffer.read()); print(json.dumps([{ "image-path":i.get("image-path"), "writeable":i.get("writeable"), "mount-points":[e.get("mount-point") for e in i.get("system-entities",[])] } for i in p.get("images",[])]))'],
+            const parsed = spawnSync('/usr/bin/plutil', ['-extract', 'images', 'json', '-expect', 'array', '-o', '-', '-'],
               { ...options, input: info.stdout ?? '' });
-            const fields = parsed.status === 0 ? JSON.parse(parsed.stdout) : [];
+            let fields = [];
+            try {
+              if (parsed.status === 0) fields = JSON.parse(parsed.stdout).map(i => ({
+                'image-path': i?.['image-path'] ?? null, writeable: i?.writeable ?? null,
+                'mount-points': Array.isArray(i?.['system-entities']) ? i['system-entities'].map(e => e?.['mount-point'] ?? null) : [] }));
+            } catch (error) { parsed.error = error; }
             const result = value => ({ pid: value.pid, exit: value.status, signal: value.signal,
               stdout: value.stdout ?? '', stderr: value.stderr ?? '', error: value.error?.message ?? null });
             log(name, JSON.stringify({ scope: 'parent probe only; original fault-time and actual CLI-child environment unrecorded',
               launcher_env: Object.fromEntries(['PATH', 'HOME', 'TMPDIR', 'DYLD_INSERT_LIBRARIES', 'CORE_SEED_RENAME_LOG'].map(k => [k, env[k] ?? null])),
-              resolved: result(resolved), info_plist: result(info), parse: result(parsed), fields }) + '\n');
+              resolved: result(resolved), info_plist: result(info), parse: { command: '/usr/bin/plutil', ...result(parsed) }, fields }) + '\n');
             return resolved.status === 0 && !resolved.error && info.status === 0 && !info.error && parsed.status === 0 && !parsed.error &&
               fields.some(i => typeof i['image-path'] === 'string' && i['image-path'].startsWith('ram://') &&
                 i.writeable === true && i['mount-points'].includes('/Volumes/AIT_RAM'));

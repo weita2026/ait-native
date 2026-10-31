@@ -24,6 +24,14 @@ channel, Web/security and post-publication obligations remain. Earlier version
 exceptions and results retain only their explicit historical scope; see the
 [disposition table](release_sop.md#disposition-of-earlier-release-standards).
 
+For the selected stable `1.2.0` / `v1.2.0` run only, the
+[Mac runtime exception](release_sop.md#owner-exception-repeated-mac-runtime-tests--2026-10-31)
+requires 24 non-Mac runtime rows and four probe targets, while retaining all
+six build, package and publication targets. It overrides this run's six-target
+runtime/32-row requirements. Historical failures and local evidence keep their
+original scope; this exception does not establish Mac hosted/final-artifact
+success or change the public 1.1.4/unreleased 1.2.0 boundary.
+
 For this 1.2.0 run, the owner explicitly deferred Personal-only protocol,
 current/legacy compatibility and UI acceptance; see the
 [current scope](release_sop.md#owner-deferred-personal-scope--2026-10-24).

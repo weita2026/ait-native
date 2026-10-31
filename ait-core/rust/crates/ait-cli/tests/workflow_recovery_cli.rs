@@ -384,6 +384,11 @@ fn independent_authors_finish_after_rebase_with_all_changes_preserved() {
 #[test]
 fn native_lifecycle_preserves_content_history_and_cleanup_without_git() {
     use workflow_process::Fixture;
+    if workflow_process::gitless_worker(
+        "native_lifecycle_preserves_content_history_and_cleanup_without_git",
+    ) {
+        return;
+    }
     let fixture = Fixture::new(true);
     let root = &fixture.root;
     let path = fixture.search_path.as_ref().unwrap();
@@ -500,6 +505,7 @@ fn native_lifecycle_preserves_content_history_and_cleanup_without_git() {
         fixture.json(root, &["line", "show", "main", "--json"])["head_snapshot_id"],
         finished["landed_snapshot_id"]
     );
+    workflow_process::gitless_worker_complete();
 }
 
 #[test]
