@@ -200,7 +200,7 @@ export function runCoreGitlessCase(cargo, manifest) {
   assert.equal((listing.match(/: test\r?$/gm) ?? []).length, 1,
     "Git-free lifecycle listing must contain exactly one case");
   const stdout = cargo("core-gitless-lifecycle", manifest,
-    [...flags, CORE_GITLESS_CASE, "--", "--exact", "--test-threads=1", "--color", "never"]);
+    [...flags, CORE_GITLESS_CASE, "--", "--exact", "--test-threads=1", "--nocapture", "--color", "never"]);
   requirePassedCase(stdout, CORE_GITLESS_CASE);
   assert.equal((stdout.match(/^test .+ \.\.\. (?:ok|FAILED|ignored)\r?$/gm) ?? []).length, 1,
     "Git-free lifecycle case must execute exactly once");

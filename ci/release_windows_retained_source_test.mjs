@@ -65,7 +65,7 @@ const passed = names => names.map(name => `test ${name} ... ok`).join("\r\n") +
 assert.equal(CORE_WINDOWS_CONFIG_CASES.length, 4);
 const configManifest = "/fixed/ait-core/rust/Cargo.toml";
 for (const failure of [null, "missing", "duplicate-list", "wrong-list", "prefixed-list", "extra-list",
-  "wrong-case", "ignored", "zero", "partial", "missing-summary", "duplicate-summary", "duplicate-output", "extra-output", "command-failure"]) {
+  "wrong-case", "ignored", "zero", "partial", "missing-summary", "duplicate-summary", "duplicate-output", "extra-output", "message-only", "failed-case", "command-failure"]) {
   const calls = [];
   const execute = () => runCoreGitlessCase((label, manifest, flags) => {
     calls.push({ label, manifest, flags });
@@ -78,7 +78,7 @@ for (const failure of [null, "missing", "duplicate-list", "wrong-list", "prefixe
       return listing([CORE_GITLESS_CASE]);
     }
     if (failure === "command-failure") throw new Error("Git-free command failed");
-    let output = passed([CORE_GITLESS_CASE]);
+    let output = "ordinary case output\r\nrecovery diagnostic (test fixture)\r\n" + passed([CORE_GITLESS_CASE]);
     if (failure === "wrong-case") output = passed(["another_case"]);
     if (failure === "ignored") output = output.replace(" ... ok", " ... ignored");
     if (failure === "zero") output = "test result: ok. 0 passed; 0 failed; 0 ignored;\n";
@@ -87,6 +87,8 @@ for (const failure of [null, "missing", "duplicate-list", "wrong-list", "prefixe
     if (failure === "duplicate-summary") output += "test result: ok. 1 passed; 0 failed; 0 ignored;\n";
     if (failure === "duplicate-output") output += `test ${CORE_GITLESS_CASE} ... ok\n`;
     if (failure === "extra-output") output += "test another_case ... ok\n";
+    if (failure === "message-only") output = "recovery diagnostic (test fixture)\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n";
+    if (failure === "failed-case") output = `test ${CORE_GITLESS_CASE} ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored;\n`;
     return output;
   }, configManifest);
   if (failure === null) execute(); else assert.throws(execute);
@@ -94,7 +96,7 @@ for (const failure of [null, "missing", "duplicate-list", "wrong-list", "prefixe
   assert.equal(calls[0].manifest, configManifest);
   assert.deepEqual(calls[0].flags, ["-p", "ait-cli", "--test", "workflow_recovery_cli", CORE_GITLESS_CASE, "--", "--exact", "--list"]);
   if (calls.length === 2) assert.deepEqual(calls[1].flags,
-    ["-p", "ait-cli", "--test", "workflow_recovery_cli", CORE_GITLESS_CASE, "--", "--exact", "--test-threads=1", "--color", "never"]);
+    ["-p", "ait-cli", "--test", "workflow_recovery_cli", CORE_GITLESS_CASE, "--", "--exact", "--test-threads=1", "--nocapture", "--color", "never"]);
 }
 // Exercise the actual release path: build/select the current native QA CLI,
 // stop on the Git-free case, and never reach later cases after a failure.
@@ -317,12 +319,19 @@ try {
   const contextSource = source.slice(source.indexOf("function nativeCommandEvent("), source.indexOf("function executeCases("));
   let now = 0;
   const calls = [];
+  const caseOutput = "ordinary case output\n" + passed([CORE_GITLESS_CASE]);
+  const caseDiagnostic = "uncaptured successful case diagnostic\n".repeat(8192) + "case diagnostic end\n";
+  const cargoScript = "const fs=require('node:fs');const args=process.argv.slice(1);" +
+    `if(args.includes('--list'))fs.writeSync(1,${JSON.stringify(listing([CORE_GITLESS_CASE]))});else{` +
+    `fs.writeSync(1,${JSON.stringify(caseOutput)});` +
+    "if(args.includes('--nocapture'))fs.writeSync(2,'uncaptured successful case diagnostic\\n'.repeat(8192)+'case diagnostic end\\n');}";
   const context = vm.createContext({ ...fs, assert, path, Buffer, performance, spawn,
     Date: class extends Date { static now() { return now; } },
     process: { platform: "win32", arch: "x64", env: process.env, stdout: process.stdout, pid: process.pid },
     spawnSync(command, args, options) {
       calls.push({ command, timeout: options.timeout });
       return command === "rustc" ? spawnSync(process.execPath, ["-e", "process.stdout.write('host: x86_64-pc-windows-msvc\\n')"], options)
+        : command === "cargo" ? spawnSync(process.execPath, ["-e", cargoScript, ...args], options)
         : spawnSync(command, args, options);
     },
   });
@@ -334,6 +343,12 @@ try {
     `if(fs.readFileSync(${JSON.stringify(path.join(directory, label + ".stdout"))},'utf8')!==${JSON.stringify(stdout)})throw Error('stdout was not retained while running');` +
     `if(!fs.readFileSync(${JSON.stringify(path.join(directory, label + ".stderr"))},'utf8').includes(${JSON.stringify(stderr)}))throw Error('stderr was not retained while running');`;
   assert.equal(native.run("live-output", process.execPath, ["-e", script("live-output")]), stdout);
+  // This simulated Cargo child emits its diagnostic only with --nocapture.
+  // The production invocation must retain it and still require a passing case.
+  runCoreGitlessCase(native.cargo, configManifest);
+  assert.equal(fs.readFileSync(path.join(logs, "core-gitless-lifecycle.stdout"), "utf8"), caseOutput);
+  assert(fs.readFileSync(path.join(logs, "core-gitless-lifecycle.stderr"), "utf8").includes(caseDiagnostic));
+  assert(fs.readFileSync(path.join(logs, "core-gitless-lifecycle.argv"), "utf8").split("\n").includes("--nocapture"));
   const fullStdout = "original child stdout\n".repeat(8192) + "stdout end\n";
   const fullStderr = "original child stderr\n".repeat(8192) + "command=init status=17 stderr end\n";
   const failedScript = "const fs=require('node:fs');fs.writeSync(1,'original child stdout\\n'.repeat(8192)+'stdout end\\n');" +

@@ -100,7 +100,7 @@ try {
     $marker = Get-Content -LiteralPath $externalMarker -Raw | ConvertFrom-Json
     if (
         $marker.name -ne "ait-core" -or
-        $marker.snapshot -ne "SNP-F4BD27456C3B"
+        $marker.snapshot -ne "SNP-3AB041C9ADC5"
     ) {
         throw "ait-core external marker identity drift"
     }

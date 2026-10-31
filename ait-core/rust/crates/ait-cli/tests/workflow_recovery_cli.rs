@@ -7,6 +7,7 @@ mod native_home;
 mod workflow_process;
 
 use ait_core::json_support::{JsonCodec, JsonValue};
+use serde_json::{json as fixture_json, Value as FixtureValue};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -381,6 +382,499 @@ fn independent_authors_finish_after_rebase_with_all_changes_preserved() {
     );
 }
 
+struct GitlessFinishContext<'a> {
+    task: &'a str,
+    root: &'a Path,
+    edit: &'a Path,
+    baseline: &'a FixtureValue,
+    checkpoint: &'a FixtureValue,
+}
+
+struct GitlessFinishIdentity {
+    snapshot: FixtureValue,
+    receipt: FixtureValue,
+}
+
+fn finish_fields(value: &FixtureValue, fields: &[(&str, FixtureValue)]) -> Result<(), String> {
+    for (field, expected) in fields {
+        if value.pointer(field) != Some(expected) {
+            return Err(format!(
+                "finish {field}: expected {expected}, got {:?}",
+                value.pointer(field)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn finish_common(
+    context: &GitlessFinishContext<'_>,
+    identity: &GitlessFinishIdentity,
+    value: &FixtureValue,
+    recovery: bool,
+) -> Result<(), String> {
+    finish_fields(
+        value,
+        &[
+            ("/task_id", fixture_json!(context.task)),
+            ("/task/task_id", fixture_json!(context.task)),
+            ("/task_status", fixture_json!("completed")),
+            ("/task/status", fixture_json!("completed")),
+            ("/apply_status", fixture_json!("done")),
+            (
+                "/execution_status",
+                fixture_json!(if recovery {
+                    "already_landed"
+                } else {
+                    "applied"
+                }),
+            ),
+            ("/mode", fixture_json!("local")),
+            ("/target_line", fixture_json!("main")),
+            ("/current_line", fixture_json!("main")),
+            ("/line_name", fixture_json!("main")),
+            ("/change", FixtureValue::Null),
+            ("/change_id", FixtureValue::Null),
+            ("/change_ref", FixtureValue::Null),
+            ("/change_status", FixtureValue::Null),
+            ("/landed_snapshot_id", identity.snapshot.clone()),
+            ("/local_finish", identity.receipt.clone()),
+            ("/task/local_finish", identity.receipt.clone()),
+            ("/local_finish/status", fixture_json!("succeeded")),
+            ("/local_finish/task_id", fixture_json!(context.task)),
+            ("/local_finish/target_line", fixture_json!("main")),
+            ("/local_finish/change_ref", FixtureValue::Null),
+            (
+                "/local_finish/landed_snapshot_id",
+                identity.snapshot.clone(),
+            ),
+            (
+                "/local_finish/pre_land_target_snapshot_id",
+                context.baseline.clone(),
+            ),
+            (
+                "/previous_target_head_snapshot_id",
+                context.baseline.clone(),
+            ),
+            ("/workspace_action", fixture_json!("restored")),
+            ("/repo_root_restore/status", fixture_json!("restored")),
+            ("/repo_root_restore/applied", fixture_json!(true)),
+            (
+                "/repo_root_restore/workspace_root",
+                fixture_json!(context.root),
+            ),
+            (
+                "/repo_root_restore/target_snapshot_id",
+                identity.snapshot.clone(),
+            ),
+            ("/repo_root_restore/dirty_outside_paths", fixture_json!([])),
+            ("/plan_checklist_closeout/status", fixture_json!("synced")),
+            (
+                "/plan_markdown_materialization/status",
+                fixture_json!("in_sync"),
+            ),
+            ("/plan_markdown_materialization/drift", fixture_json!([])),
+            ("/task_land_contract/scope", fixture_json!("local")),
+            (
+                "/task_land_contract/version",
+                fixture_json!("task-land-plan-closeout/v1"),
+            ),
+            (
+                "/task_land_contract/recovery_policy",
+                fixture_json!("idempotent_phase_resume"),
+            ),
+        ],
+    )?;
+    if identity.receipt["land_ordinal"].as_u64().is_none() {
+        return Err("finish receipt has no valid ordinal".into());
+    }
+    if !recovery || value.get("post_finish_hooks").is_some() {
+        finish_fields(
+            value,
+            &[
+                ("/post_finish_hooks/status", fixture_json!("skipped")),
+                (
+                    "/post_finish_hooks/reason",
+                    fixture_json!("no_hooks_configured"),
+                ),
+            ],
+        )?;
+    }
+    if recovery {
+        finish_fields(
+            value,
+            &[
+                ("/auto_snapshot", FixtureValue::Null),
+                ("/repo_root_restore/plan/write_count", fixture_json!(0)),
+                ("/repo_root_restore/plan/remove_count", fixture_json!(0)),
+            ],
+        )
+    } else {
+        finish_fields(
+            value,
+            &[
+                ("/auto_snapshot/snapshot_id", identity.snapshot.clone()),
+                ("/auto_snapshot/task_id", fixture_json!(context.task)),
+                ("/auto_snapshot/change_id", FixtureValue::Null),
+                ("/auto_snapshot/newly_created", fixture_json!(true)),
+                (
+                    "/auto_snapshot/parent_snapshot_id",
+                    context.checkpoint.clone(),
+                ),
+            ],
+        )
+    }
+}
+
+fn finish_other_phases(value: &FixtureValue, allowed: &[&str]) -> Result<(), String> {
+    for (phase, component) in value.as_object().ok_or("finish is not an object")? {
+        if !allowed.contains(&phase.as_str())
+            && matches!(
+                component["status"].as_str(),
+                Some("failed" | "blocked" | "partial" | "pending" | "deferred")
+            )
+        {
+            return Err(format!("unrelated finish failure: {phase}"));
+        }
+    }
+    Ok(())
+}
+
+fn finish_windows_partial(
+    context: &GitlessFinishContext<'_>,
+    identity: &GitlessFinishIdentity,
+    value: &FixtureValue,
+) -> Result<(), String> {
+    finish_common(context, identity, value, false)?;
+    finish_fields(
+        value,
+        &[
+            ("/closeout_status", fixture_json!("partial")),
+            ("/bound_worktree_cleanup/status", fixture_json!("failed")),
+            (
+                "/bound_worktree_cleanup/task_id",
+                fixture_json!(context.task),
+            ),
+            ("/bound_line_closeout/status", fixture_json!("failed")),
+            (
+                "/bound_line_closeout/reason",
+                fixture_json!("feature_line_closeout_failed"),
+            ),
+            (
+                "/bound_line_closeout/error",
+                fixture_json!("Bound worktree cleanup failed before Line closeout."),
+            ),
+            ("/bound_line_closeout/task_id", fixture_json!(context.task)),
+            (
+                "/bound_line_closeout/task_status",
+                fixture_json!("completed"),
+            ),
+            ("/main_seed_sync/status", fixture_json!("pending")),
+            (
+                "/main_seed_sync/reason",
+                fixture_json!("task_closeout_recovery_pending"),
+            ),
+            ("/main_seed_sync/line_name", fixture_json!("main")),
+            ("/automatic_reconciliation/status", fixture_json!("skipped")),
+            (
+                "/automatic_reconciliation/reason",
+                fixture_json!("task_closeout_recovery_pending"),
+            ),
+            (
+                "/closeout_recovery/code",
+                fixture_json!("resume_task_land_closeout"),
+            ),
+            (
+                "/closeout_recovery/command",
+                fixture_json!(format!("ait task finish {} --local", context.task)),
+            ),
+            ("/closeout_recovery/idempotent", fixture_json!(true)),
+        ],
+    )?;
+    if !value["bound_worktree_cleanup"]["error"]
+        .as_str()
+        .is_some_and(|error| error.ends_with("(os error 32)"))
+    {
+        return Err("finish cleanup is not exactly Windows sharing violation32".into());
+    }
+    finish_other_phases(
+        value,
+        &[
+            "bound_worktree_cleanup",
+            "bound_line_closeout",
+            "main_seed_sync",
+        ],
+    )
+}
+
+fn finish_complete(
+    context: &GitlessFinishContext<'_>,
+    identity: &GitlessFinishIdentity,
+    value: &FixtureValue,
+    recovery: bool,
+) -> Result<(), String> {
+    finish_common(context, identity, value, recovery)?;
+    finish_fields(
+        value,
+        &[
+            ("/closeout_status", fixture_json!("complete")),
+            ("/bound_worktree_cleanup/status", fixture_json!("removed")),
+            (
+                "/bound_worktree_cleanup/task_id",
+                fixture_json!(context.task),
+            ),
+            (
+                "/bound_worktree_cleanup/worktree/removed",
+                fixture_json!(true),
+            ),
+            (
+                "/bound_worktree_cleanup/worktree/deleted_path",
+                fixture_json!(true),
+            ),
+            (
+                "/bound_worktree_cleanup/worktree/path",
+                fixture_json!(context.edit),
+            ),
+            ("/bound_line_closeout/status", fixture_json!("archived")),
+            ("/bound_line_closeout/task_id", fixture_json!(context.task)),
+            (
+                "/bound_line_closeout/task_status",
+                fixture_json!("completed"),
+            ),
+            ("/bound_line_closeout/target_line", fixture_json!("main")),
+            (
+                "/bound_line_closeout/expected_revision_snapshot_id",
+                identity.snapshot.clone(),
+            ),
+            (
+                "/bound_line_closeout/local/line/status",
+                fixture_json!("archived"),
+            ),
+            (
+                "/bound_line_closeout/local/line/head_snapshot_id",
+                identity.snapshot.clone(),
+            ),
+            (
+                "/automatic_reconciliation/status",
+                fixture_json!("completed"),
+            ),
+        ],
+    )?;
+    if !value
+        .get("closeout_recovery")
+        .is_none_or(FixtureValue::is_null)
+        || value["main_seed_sync"]["status"].as_str().is_none()
+    {
+        return Err("finish still requires closeout recovery".into());
+    }
+    finish_other_phases(value, &[])
+}
+
+fn finish_initial(
+    context: &GitlessFinishContext<'_>,
+    value: &FixtureValue,
+    code: Option<i32>,
+    windows: bool,
+) -> Result<GitlessFinishIdentity, String> {
+    let snapshot = value["auto_snapshot"]["snapshot_id"].clone();
+    if !snapshot.as_str().is_some_and(|id| {
+        id.len() == 16
+            && id.starts_with("SNP-")
+            && id.as_bytes()[4..]
+                .iter()
+                .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(b))
+    }) {
+        return Err("finish did not create the exact Task Snapshot".into());
+    }
+    let identity = GitlessFinishIdentity {
+        snapshot,
+        receipt: value["local_finish"].clone(),
+    };
+    match code {
+        Some(0) => finish_complete(context, &identity, value, false)?,
+        Some(2) if windows => finish_windows_partial(context, &identity, value)?,
+        _ => return Err(format!("unexpected first finish exit {code:?}")),
+    }
+    Ok(identity)
+}
+
+fn finish_no_reapply(
+    before: &[u8],
+    after: &[u8],
+    count: &FixtureValue,
+    recovered_count: &FixtureValue,
+) -> Result<(), String> {
+    if before != after || count.as_u64().is_none() || count != recovered_count {
+        Err("finish recovery repeated apply or created an extra Snapshot".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn finish_recovered(
+    context: &GitlessFinishContext<'_>,
+    identity: &GitlessFinishIdentity,
+    value: &FixtureValue,
+    code: Option<i32>,
+) -> Result<(), String> {
+    if code != Some(0) {
+        return Err(format!("root finish recovery failed with {code:?}"));
+    }
+    finish_complete(context, identity, value, true)
+}
+
+fn finish_guard_controls(
+    context: &GitlessFinishContext<'_>,
+    identity: &GitlessFinishIdentity,
+    first: &FixtureValue,
+) {
+    // Exercise response guards on every host; only a real Windows run can
+    // prove the actual partial-closeout/root-resume path below.
+    let mut partial = first.clone();
+    partial["closeout_status"] = fixture_json!("partial");
+    partial["bound_worktree_cleanup"] = fixture_json!({
+        "status":"failed", "task_id":context.task,
+        "error":"The process cannot access the file because it is being used by another process. (os error 32)"
+    });
+    partial["bound_line_closeout"] = fixture_json!({
+        "status":"failed", "reason":"feature_line_closeout_failed",
+        "error":"Bound worktree cleanup failed before Line closeout.",
+        "task_id":context.task, "task_status":"completed"
+    });
+    partial["main_seed_sync"] = fixture_json!({
+        "status":"pending", "reason":"task_closeout_recovery_pending", "line_name":"main"
+    });
+    partial["automatic_reconciliation"] = fixture_json!({
+        "status":"skipped", "reason":"task_closeout_recovery_pending"
+    });
+    partial["closeout_recovery"] = fixture_json!({
+        "code":"resume_task_land_closeout", "idempotent":true,
+        "command":format!("ait task finish {} --local", context.task)
+    });
+    finish_initial(context, &partial, Some(2), true).unwrap();
+    assert!(finish_initial(context, &partial, Some(2), false).is_err());
+    assert!(finish_initial(context, &partial, Some(1), true).is_err());
+    assert!(finish_initial(context, &partial, Some(0), true).is_err());
+    let common_drift = [
+        ("/task_id", fixture_json!("LT-9999")),
+        ("/landed_snapshot_id", fixture_json!("wrong-snapshot")),
+        (
+            "/local_finish/land_ordinal",
+            fixture_json!(identity.receipt["land_ordinal"].as_u64().unwrap() + 1),
+        ),
+        ("/task/local_finish/target_line", fixture_json!("other")),
+        ("/target_line", fixture_json!("other")),
+        ("/apply_status", fixture_json!("failed")),
+        ("/task_status", fixture_json!("active")),
+        ("/task/status", fixture_json!("active")),
+        ("/plan_checklist_closeout/status", fixture_json!("failed")),
+        (
+            "/plan_markdown_materialization/status",
+            fixture_json!("failed"),
+        ),
+        ("/repo_root_restore/status", fixture_json!("failed")),
+    ];
+    for (field, replacement) in &common_drift {
+        let mut invalid = partial.clone();
+        *invalid.pointer_mut(field).unwrap() = replacement.clone();
+        assert!(
+            finish_windows_partial(context, identity, &invalid).is_err(),
+            "accepted {field}"
+        );
+    }
+    for (field, replacement) in [
+        (
+            "/bound_worktree_cleanup/error",
+            fixture_json!("sharing violation (os error 320)"),
+        ),
+        (
+            "/bound_worktree_cleanup/error",
+            fixture_json!("Permission denied (os error 13)"),
+        ),
+        ("/bound_line_closeout/reason", fixture_json!("unrelated")),
+        ("/main_seed_sync/status", fixture_json!("failed")),
+        (
+            "/automatic_reconciliation/reason",
+            fixture_json!("unrelated"),
+        ),
+        ("/post_finish_hooks/status", fixture_json!("failed")),
+        (
+            "/closeout_recovery/command",
+            fixture_json!("ait task finish LT-9999 --local"),
+        ),
+        ("/closeout_recovery/idempotent", fixture_json!(false)),
+    ] {
+        let mut invalid = partial.clone();
+        *invalid.pointer_mut(field).unwrap() = replacement;
+        assert!(
+            finish_windows_partial(context, identity, &invalid).is_err(),
+            "accepted {field}"
+        );
+    }
+    let mut unrelated = partial.clone();
+    unrelated["other_mandatory_step"] = fixture_json!({"status":"failed"});
+    assert!(finish_windows_partial(context, identity, &unrelated).is_err());
+
+    let mut recovered = first.clone();
+    recovered["execution_status"] = fixture_json!("already_landed");
+    recovered["auto_snapshot"] = FixtureValue::Null;
+    recovered["closeout_status"] = fixture_json!("complete");
+    recovered["closeout_recovery"] = FixtureValue::Null;
+    recovered["bound_worktree_cleanup"] = fixture_json!({
+        "status":"removed", "task_id":context.task,
+        "worktree":{"removed":true, "deleted_path":true, "path":context.edit}
+    });
+    recovered["bound_line_closeout"] = fixture_json!({
+        "status":"archived", "task_id":context.task, "task_status":"completed",
+        "target_line":"main", "expected_revision_snapshot_id":identity.snapshot,
+        "local":{"line":{"status":"archived", "head_snapshot_id":identity.snapshot}}
+    });
+    recovered["main_seed_sync"] = fixture_json!({"status":"refreshed"});
+    recovered["automatic_reconciliation"] = fixture_json!({"status":"completed"});
+    recovered["repo_root_restore"]["plan"]["write_count"] = fixture_json!(0);
+    recovered["repo_root_restore"]["plan"]["remove_count"] = fixture_json!(0);
+    finish_recovered(context, identity, &recovered, Some(0)).unwrap();
+    assert!(finish_recovered(context, identity, &recovered, Some(2)).is_err());
+    for (field, replacement) in common_drift.iter().cloned().chain([
+        ("/execution_status", fixture_json!("applied")),
+        ("/auto_snapshot", fixture_json!({"newly_created":true})),
+        ("/closeout_status", fixture_json!("partial")),
+        ("/bound_worktree_cleanup/status", fixture_json!("failed")),
+        (
+            "/bound_worktree_cleanup/worktree/removed",
+            fixture_json!(false),
+        ),
+        (
+            "/bound_worktree_cleanup/worktree/path",
+            fixture_json!("other-worktree"),
+        ),
+        ("/bound_line_closeout/status", fixture_json!("active")),
+        ("/main_seed_sync/status", fixture_json!("pending")),
+        ("/repo_root_restore/plan/write_count", fixture_json!(1)),
+        ("/repo_root_restore/plan/remove_count", fixture_json!(1)),
+    ]) {
+        let mut invalid = recovered.clone();
+        *invalid.pointer_mut(field).unwrap() = replacement;
+        assert!(
+            finish_recovered(context, identity, &invalid, Some(0)).is_err(),
+            "accepted {field}"
+        );
+    }
+    assert!(
+        finish_no_reapply(b"receipt", b"receipt", &fixture_json!(3), &fixture_json!(3)).is_ok()
+    );
+    assert!(finish_no_reapply(
+        b"receipt",
+        b"duplicate",
+        &fixture_json!(3),
+        &fixture_json!(3)
+    )
+    .is_err());
+    assert!(
+        finish_no_reapply(b"receipt", b"receipt", &fixture_json!(3), &fixture_json!(4)).is_err()
+    );
+}
+
 #[test]
 fn native_lifecycle_preserves_content_history_and_cleanup_without_git() {
     use workflow_process::Fixture;
@@ -452,7 +946,16 @@ fn native_lifecycle_preserves_content_history_and_cleanup_without_git() {
     );
     assert_no_git(root);
     assert_no_git(&edit);
-    let finished = fixture.json(
+    let baseline =
+        fixture.json(root, &["line", "show", "main", "--json"])["head_snapshot_id"].clone();
+    let context = GitlessFinishContext {
+        task,
+        root,
+        edit: &edit,
+        baseline: &baseline,
+        checkpoint: &checkpoint["snapshot_id"],
+    };
+    let (first, identity) = workflow_process::checked_cli_json(
         &edit,
         &[
             "task",
@@ -464,7 +967,36 @@ fn native_lifecycle_preserves_content_history_and_cleanup_without_git() {
             "--json",
             "--full",
         ],
+        Some(path),
+        |output, value| finish_initial(&context, value, output.status.code(), cfg!(windows)),
     );
+    finish_guard_controls(&context, &identity, &first);
+    let windows_recovery = cfg!(windows) && first["closeout_status"] == "partial";
+    // One recovery only. The original already-complete retry at the end of
+    // this case still checks that later retries preserve the same receipt.
+    let finished = if windows_recovery {
+        let receipts = fs::read(root.join(".ait/binary-db/land.bin")).unwrap();
+        let count = fixture.json(root, &["status", "--json", "--full"])["snapshot_count"].clone();
+        let (recovered, ()) = workflow_process::checked_cli_json(
+            root,
+            &["task", "finish", task, "--local", "--json", "--full"],
+            Some(path),
+            |output, value| {
+                finish_recovered(&context, &identity, value, output.status.code())?;
+                let after = fs::read(root.join(".ait/binary-db/land.bin"))
+                    .map_err(|error| error.to_string())?;
+                let state = fixture.json(root, &["status", "--json", "--full"]);
+                finish_no_reapply(&receipts, &after, &count, &state["snapshot_count"])?;
+                if state["head_snapshot_id"] != identity.snapshot || edit.exists() {
+                    return Err("root recovery changed target or left the worktree".into());
+                }
+                Ok(())
+            },
+        );
+        recovered
+    } else {
+        first
+    };
     assert_eq!(
         fs::read_to_string(root.join("native.txt")).unwrap(),
         "first checkpoint\nfinal change\n"
@@ -505,6 +1037,9 @@ fn native_lifecycle_preserves_content_history_and_cleanup_without_git() {
         fixture.json(root, &["line", "show", "main", "--json"])["head_snapshot_id"],
         finished["landed_snapshot_id"]
     );
+    if windows_recovery {
+        eprintln!("Windows os32 root recovery completed with unchanged receipt and full cleanup");
+    }
     workflow_process::gitless_worker_complete();
 }
 

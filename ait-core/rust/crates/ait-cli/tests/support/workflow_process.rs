@@ -178,6 +178,7 @@ pub fn gitless_worker(test: &str) -> bool {
             );
             gitless_result(&isolated, GITLESS_COMPLETE)
                 .unwrap_or_else(|failure| panic!("{failure}"));
+            eprint!("{}", String::from_utf8_lossy(&isolated.stderr));
             println!("\n{GITLESS_PARENT_COMPLETE}");
             true
         }
@@ -196,6 +197,7 @@ pub fn gitless_worker(test: &str) -> bool {
             );
             gitless_result(&output, GITLESS_PARENT_COMPLETE)
                 .unwrap_or_else(|failure| panic!("{failure}"));
+            eprint!("{}", String::from_utf8_lossy(&output.stderr));
             // Nested harness summaries stay captured: installed-case accounting
             // must still report exactly one execution of the existing selector.
             eprintln!("Git-free worker verified NotFound, lifecycle and isolation controls");
@@ -267,6 +269,24 @@ fn parsed_cli(root: &Path, args: &[&str], search_path: Option<&Path>) -> Value {
     parsed(&diagnostic_output(cli_command(root, args, search_path)))
 }
 
+pub fn checked_cli_json<T>(
+    root: &Path,
+    args: &[&str],
+    search_path: Option<&Path>,
+    check: impl FnOnce(&Output, &Value) -> Result<T, String>,
+) -> (Value, T) {
+    let command = cli_command(root, args, search_path);
+    let identity = command_identity(&command);
+    let output = bounded_output(command);
+    let checked = (|| {
+        let value = serde_json::from_slice(&output.stdout)
+            .map_err(|error| format!("Invalid CLI JSON: {error}"))?;
+        let accepted = check(&output, &value)?;
+        Ok::<_, String>((value, accepted))
+    })();
+    checked.unwrap_or_else(|error| panic!("{error}\n{}", command_output(&identity, &output)))
+}
+
 fn cli_command(root: &Path, args: &[&str], search_path: Option<&Path>) -> Command {
     let binary = cli_binary::selected(env!("CARGO_BIN_EXE_ait-cli"));
     assert!(binary.is_absolute(), "selected CLI must remain absolute");
@@ -286,18 +306,18 @@ fn cli_command(root: &Path, args: &[&str], search_path: Option<&Path>) -> Comman
     command
 }
 
-fn diagnostic_output(command: Command) -> Output {
-    let identity = format!(
+fn command_identity(command: &Command) -> String {
+    format!(
         "executable: {:?}\nargv: {:?}\ncwd: {:?}",
         command.get_program(),
         command.get_args().collect::<Vec<_>>(),
         command.get_current_dir(),
-    );
-    let output = bounded_output(command);
-    if !output.status.success() {
-        // Keep both original streams. Identity follows them so tail-based
-        // reporters still identify a failed command with a large JSON stdout.
-        eprintln!(
+    )
+}
+
+fn command_output(identity: &str, output: &Output) -> String {
+    // Keep the original streams before the identity for tail-based reporters.
+    format!(
             "Workflow CLI failure\nstdout ({} bytes):\n{}\nstderr ({} bytes):\n{}\n{identity}\nraw status: {:?}\nexit code: {:?}",
             output.stdout.len(),
             String::from_utf8_lossy(&output.stdout),
@@ -305,7 +325,14 @@ fn diagnostic_output(command: Command) -> Output {
             String::from_utf8_lossy(&output.stderr),
             output.status,
             output.status.code(),
-        );
+    )
+}
+
+fn diagnostic_output(command: Command) -> Output {
+    let identity = command_identity(&command);
+    let output = bounded_output(command);
+    if !output.status.success() {
+        eprintln!("{}", command_output(&identity, &output));
     }
     output
 }
