@@ -253,7 +253,7 @@ Remote `ait workflow ready` 只读检查 readiness；加 `--apply` 才准备 can
 - [功能工作流](https://ait-native.dev/technical/workflows/feature/)与[回归修复](https://ait-native.dev/technical/workflows/regression/)
 - [组件](https://ait-native.dev/zh-cn/components/)与[发行状态](https://ait-native.dev/zh-cn/proof/)
 
-发行源码：**v1.1.4**。`ait-monorepo-source.json` 记录导出的组件 Snapshot。
+发行源码：**v1.2.0**。`ait-monorepo-source.json` 记录导出的组件 Snapshot。
 软件包渠道可用性请参阅[发行状态](https://ait-native.dev/zh-cn/proof/)。
 
 <details>

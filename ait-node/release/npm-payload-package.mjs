@@ -99,7 +99,7 @@ export function validateContract(contract) {
   if (
     contract.schema !== "ait.node.napi-platform-packages/v2" ||
     contract.top_level_package !== "@wa120/ait-native" ||
-    contract.family_version !== "1.1.4" ||
+    contract.family_version !== "1.2.0" ||
     !Array.isArray(contract.payloads) ||
     contract.payloads.length !== 6
   ) {
