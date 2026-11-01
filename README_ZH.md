@@ -253,7 +253,7 @@ Remote `ait workflow ready` 唯讀檢查 readiness；加 `--apply` 才準備 can
 - [功能工作流](https://ait-native.dev/technical/workflows/feature/)與[回歸修復](https://ait-native.dev/technical/workflows/regression/)
 - [元件](https://ait-native.dev/zh-tw/components/)與[發行狀態](https://ait-native.dev/zh-tw/proof/)
 
-發行原始碼：**v1.2.0**。`ait-monorepo-source.json` 記錄匯出的元件 Snapshot。
+發行原始碼：**v1.1.4**。`ait-monorepo-source.json` 記錄匯出的元件 Snapshot。
 套件通路可用性請參閱[發行狀態](https://ait-native.dev/zh-tw/proof/)。
 
 <details>
@@ -309,14 +309,6 @@ npm install --global @wa120/ait-native@1.1.4
 `ait-agent` 與 `ait-agent-worker`；Agent Teams 及核心 Python/Node
 綁定保留。舊聊天綁定符號仍可匯入，呼叫時回傳明確的退役錯誤。保留設定、儲存庫資料及手動安裝檔案；
 套件升級依對應通路記錄的檔案所有權，不依 PATH 中的命令名稱刪除檔案。
-
-## 從 0.x 升級
-
-1.x 沒有 `ait install` 命令。請透過套件管理工具升級，並以 `ait --version` 確認版本。
-保留既有 `.ait` 權威資料，遷移前先查看確切版本的轉換指示。
-建立新的權威資料與升級既有歷史，是不同的操作。
-請參閱[轉換契約](docs/distribution.md#public-0x-to-10-transition)
-與[Git 退出參考](https://ait-native.dev/technical/cli/reference/git/)。
 
 ## 建置這份原始碼
 

@@ -21,7 +21,13 @@ pub fn ensure_team_session(
     agent: u32,
     role: Option<u32>,
 ) -> WorkflowOperationResult {
-    result(agent_teams::ensure(repo, agent, role), "ready")
+    let payload = agent_teams::ensure(repo, agent, role);
+    let expected = if payload["status"] == "activation_required" {
+        "activation_required"
+    } else {
+        "ready"
+    };
+    result(payload, expected)
 }
 
 pub(crate) fn pending_team_session(agent: u32, detail: String) -> WorkflowOperationResult {
@@ -42,6 +48,9 @@ pub fn format_team_session_acknowledge(payload: &JsonValue) -> String {
     )
 }
 pub fn format_team_session_ensure(payload: &JsonValue, agent: u32) -> String {
+    if let Some(activation) = agent_teams::render_activation(payload) {
+        return activation;
+    }
     format!(
         "Team session: {}\nAgent: {}\nSession ID: {}\nAction: {}\n{}",
         payload["status"],

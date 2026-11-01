@@ -296,7 +296,7 @@ required review. Accepted formal retries reuse their original acceptance.
 - [Feature workflow](https://ait-native.dev/technical/workflows/feature/) and [regression repair](https://ait-native.dev/technical/workflows/regression/)
 - [Components](https://ait-native.dev/components/) and [release status](https://ait-native.dev/proof/)
 
-Release source: **v1.2.0**. `ait-monorepo-source.json` records
+Release source: **v1.1.4**. `ait-monorepo-source.json` records
 the exported component Snapshots. See [release status](https://ait-native.dev/proof/)
 for package-channel availability.
 
@@ -361,15 +361,6 @@ chat binding symbols stay importable and return an explicit retirement error
 when called. Preserve settings, repository data and manually installed files;
 package upgrades use that channel's recorded ownership rather than deleting
 commands found on PATH.
-
-## Upgrading from 0.x
-
-There is no `ait install` command in 1.x. Upgrade through your package manager
-and check `ait --version`. Preserve an existing `.ait` authority and consult
-the transition instructions for the exact version before migration. New-authority
-setup and an upgrade of existing history are different operations.
-See the [transition contract](docs/distribution.md#public-0x-to-10-transition)
-and [Git exit reference](https://ait-native.dev/technical/cli/reference/git/).
 
 ## Build this source tree
 

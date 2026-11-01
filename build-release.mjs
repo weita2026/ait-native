@@ -1097,8 +1097,6 @@ async function validatePublicReadme(family) {
     "FIRST_TASK_ACCEPTED",
     "## Why AIT beyond worktrees?",
     OFFICIAL_WEBSITE,
-    "## Upgrading from 0.x",
-    "There is no `ait install` command in 1.x.",
     "Current stable: 1.1.4. AIT 1.2.0 is in development and has not been released.",
     "Agent Teams, sprint binding and Local/Remote scope are independent.",
     "ait team contacts --json",
@@ -1200,6 +1198,9 @@ async function validatePublicReadme(family) {
       "releases/tag/v1.2.0", "ait-native==1.2.0", "@wa120/ait-native@1.2.0",
     ]) {
       if (text.includes(unavailable)) fail(`${name} recommends an unreleased 1.2.0 package`);
+    }
+    if (/^## (?:Upgrading from 0\.x|從 0\.x 升級|从 0\.x 升级)\s*$|\]\(#(?:upgrading-from-0x|從-0x-升級|从-0x-升级)\)/imu.test(text)) {
+      fail(`${name} contains obsolete 0.x upgrade guidance`);
     }
     if (/@AIT_[A-Z0-9_]+@/u.test(text)) fail(`${name} contains an unresolved release token`);
   }

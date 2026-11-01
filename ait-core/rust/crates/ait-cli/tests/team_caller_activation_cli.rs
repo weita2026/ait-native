@@ -52,6 +52,15 @@ fn enable(temp: &TempDir, id: &str, success: bool) -> JsonValue {
     )["team_bootstrap"]
         .clone()
 }
+fn ensure_owner(temp: &TempDir, id: &str, success: bool) -> JsonValue {
+    caller(
+        temp,
+        id,
+        &["team", "session", "ensure", "--agent", "0", "--json"],
+        success,
+    )
+}
+
 fn acknowledge(temp: &TempDir, offer: &JsonValue, success: bool) -> JsonValue {
     acknowledge_as(temp, "caller", offer, success)
 }
@@ -84,71 +93,90 @@ fn title_action(temp: &TempDir, offer: &JsonValue) {
 }
 
 #[test]
-fn existing_enable_and_init_reregister_archived_or_missing_owners_into_the_current_caller() {
-    for entrypoint in ["enable", "init"] {
-        for state in ["archived", "missing"] {
-            let temp = fixture();
-            let initial = enable(&temp, "caller", true);
-            title_action(&temp, &initial);
-            acknowledge(&temp, &initial, true);
-            let history = b"former caller history remains intact";
-            fs::write(temp.path().join("caller.persisted"), history).unwrap();
-            fs::write(temp.path().join(format!("caller.{state}")), "").unwrap();
-            let offer = if entrypoint == "enable" {
-                enable(&temp, "replacement", true)
-            } else {
-                caller(&temp, "replacement", &["init", "--json"], true)["agent_team_bootstrap"]
-                    .clone()
-            };
-            assert_eq!(offer["status"], "activation_required");
-            assert_eq!(offer["previous_session_id"], "caller");
-            assert_eq!(offer["replacement_reason"], state);
-            assert_eq!(offer["session_id"], "replacement");
-            assert!(offer["role_instructions"]
-                .as_str()
-                .unwrap()
-                .contains("Project Manager"));
-            let retry = enable(&temp, "replacement", true);
-            assert_eq!(retry["activation_token"], offer["activation_token"]);
-            assert!(retry["role_instructions"].is_null());
-            let before = fixture::run(&temp, &["team", "contacts", "--json"], true);
-            assert_eq!(before["members"][0]["session_id"], "caller");
-            title_action(&temp, &offer);
-            let ready = acknowledge_as(&temp, "replacement", &offer, true);
-            assert_eq!(ready["status"], "ready");
-            assert_eq!(ready["replacement_reason"], state);
-            let after = fixture::run(&temp, &["team", "contacts", "--json"], true);
-            assert_eq!(after["bound_session_count"], 1);
-            assert_eq!(after["members"][0]["session_id"], "replacement");
-            assert_eq!(after["members"][0]["role_reload_status"], "complete");
-            assert_eq!(
-                enable(&temp, "replacement", true)["action"],
-                "reused_current"
-            );
-            assert_eq!(
-                fs::read(temp.path().join("caller.persisted")).unwrap(),
-                history
-            );
-            assert!(temp.path().join(format!("caller.{state}")).exists());
-            assert!(!temp.path().join("count").exists());
-            let rpc = fs::read_to_string(temp.path().join("rpc.log")).unwrap();
-            for method in [
-                "thread/resume",
-                "thread/start",
-                "thread/inject_items",
-                "turn/interrupt",
+fn init_and_enable_preserve_unresolved_activation_without_host_access_or_implicit_ack() {
+    let temp = fixture();
+    let offer = enable(&temp, "caller", true);
+    let journal = temp
+        .path()
+        .join(".ait/team-session-bootstrap/agent-0.activation");
+    let original = fs::read(&journal).unwrap();
+    let rpc = fs::read(temp.path().join("rpc.log")).unwrap();
+    for phase in ["offered", "acknowledged"] {
+        let mut saved = JsonCodec::parse_slice_with_error_prefix(&original, "activation").unwrap();
+        saved["phase"] = phase.into();
+        fs::write(
+            &journal,
+            JsonCodec::encode_value_to_vec(
+                &saved,
+                ait_core::json_support::JsonEncodeOptions::compact(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let before = fs::read(&journal).unwrap();
+        for id in ["caller", "foreign"] {
+            for args in [
+                vec!["init", "--json"],
+                vec!["config", "set", "--agent-teams", "enabled", "--json"],
             ] {
-                assert!(
-                    !rpc.contains(&format!("\"method\":\"{method}\"")),
-                    "unexpected {method}"
-                );
+                let result = caller(&temp, id, &args, true);
+                let team = if args[0] == "init" {
+                    &result["agent_team_bootstrap"]
+                } else {
+                    &result["team_bootstrap"]
+                };
+                assert_eq!(team["status"], "preserved");
+                assert_eq!(team["session_readiness"], "pending");
+                assert!(team["role_instructions"].is_null());
+                assert_eq!(fs::read(&journal).unwrap(), before);
+                assert_eq!(fs::read(temp.path().join("rpc.log")).unwrap(), rpc);
             }
         }
+        assert!(!temp
+            .path()
+            .join(".ait/team-session-bootstrap/agent-0.role-loaded")
+            .exists());
+    }
+    fs::write(&journal, original).unwrap();
+    title_action(&temp, &offer);
+    assert_eq!(acknowledge(&temp, &offer, true)["status"], "ready");
+}
+
+#[test]
+fn existing_init_and_enable_preserve_archived_or_missing_owners() {
+    for state in ["archived", "missing"] {
+        let temp = fixture();
+        let offer = enable(&temp, "caller", true);
+        title_action(&temp, &offer);
+        acknowledge(&temp, &offer, true);
+        fs::write(temp.path().join(format!("caller.{state}")), "").unwrap();
+        let journal = temp
+            .path()
+            .join(".ait/team-session-bootstrap/agent-0.activation");
+        let before = fs::read(&journal).unwrap();
+        let rpc = fs::read(temp.path().join("rpc.log")).unwrap();
+        for args in [
+            vec!["init", "--json"],
+            vec!["config", "set", "--agent-teams", "enabled", "--json"],
+        ] {
+            let output = caller(&temp, "replacement", &args, true);
+            let team = if args[0] == "init" {
+                &output["agent_team_bootstrap"]
+            } else {
+                &output["team_bootstrap"]
+            };
+            assert_eq!(team["status"], "preserved");
+            assert_eq!(team["session_id"], "caller");
+            assert!(team["activation_token"].is_null());
+            assert_eq!(fs::read(&journal).unwrap(), before);
+            assert_eq!(fs::read(temp.path().join("rpc.log")).unwrap(), rpc);
+        }
+        assert!(!temp.path().join("count").exists());
     }
 }
 
 #[test]
-fn reregistration_rejects_uncertain_or_mismatched_former_owners_without_an_offer() {
+fn existing_enable_preserves_uncertain_or_mismatched_owners_without_host_inspection() {
     for failure in ["denied", "system-error", "wrong-workspace", "bad-cursor"] {
         let temp = fixture();
         let initial = enable(&temp, "caller", true);
@@ -170,8 +198,8 @@ fn reregistration_rejects_uncertain_or_mismatched_former_owners_without_an_offer
         if failure == "wrong-workspace" {
             fs::write(temp.path().join("caller.archived"), "").unwrap();
         }
-        let result = enable(&temp, "replacement", false);
-        assert_eq!(result["status"], "pending");
+        let result = enable(&temp, "replacement", true);
+        assert_eq!(result["status"], "preserved");
         assert_eq!(result["session_id"], "caller");
         assert_eq!(fs::read(&journal).unwrap(), previous);
         assert!(!temp.path().join("replacement.project").exists());
@@ -180,24 +208,44 @@ fn reregistration_rejects_uncertain_or_mismatched_former_owners_without_an_offer
 }
 
 #[test]
-fn reregistration_ack_rechecks_unarchived_and_reappearing_former_owners() {
-    for state in ["archived", "missing"] {
-        let temp = fixture();
-        let initial = enable(&temp, "caller", true);
-        title_action(&temp, &initial);
-        acknowledge(&temp, &initial, true);
-        let marker = temp.path().join(format!("caller.{state}"));
-        fs::write(&marker, "").unwrap();
-        let offer = enable(&temp, "replacement", true);
-        title_action(&temp, &offer);
-        fs::remove_file(marker).unwrap();
-        let blocked = acknowledge_as(&temp, "replacement", &offer, false);
-        assert_eq!(blocked["status"], "pending");
-        assert_eq!(blocked["previous_session_id"], "caller");
-        assert_eq!(blocked["target_session_id"], "replacement");
-        assert!(blocked["detail"].as_str().unwrap().contains("no longer"));
-        let contacts = fixture::run(&temp, &["team", "contacts", "--json"], true);
-        assert_eq!(contacts["members"][0]["session_id"], "caller");
+fn pending_initial_offer_refresh_requires_explicit_ensure_from_its_original_caller() {
+    let temp = fixture();
+    let offer = enable(&temp, "caller", true);
+    let path = temp.path().join("docs/roles/0_Project Manager.md");
+    fs::write(
+        &path,
+        fs::read_to_string(&path).unwrap() + "\nUpdated initial responsibility.\n",
+    )
+    .unwrap();
+    let journal = temp
+        .path()
+        .join(".ait/team-session-bootstrap/agent-0.activation");
+    let before = fs::read(&journal).unwrap();
+    assert_eq!(enable(&temp, "caller", true)["status"], "preserved");
+    assert_eq!(fs::read(&journal).unwrap(), before);
+    assert_eq!(ensure_owner(&temp, "foreign", false)["status"], "pending");
+    assert_eq!(fs::read(&journal).unwrap(), before);
+    assert!(acknowledge(&temp, &offer, false)["detail"]
+        .as_str()
+        .unwrap()
+        .contains("Role changed"));
+    let refreshed = ensure_owner(&temp, "caller", true);
+    assert_eq!(refreshed["status"], "activation_required");
+    assert_ne!(refreshed["activation_token"], offer["activation_token"]);
+    assert!(refreshed["role_instructions"]
+        .as_str()
+        .unwrap()
+        .contains("Updated initial responsibility."));
+    title_action(&temp, &refreshed);
+    assert_eq!(acknowledge(&temp, &refreshed, true)["status"], "ready");
+    let rpc = fs::read_to_string(temp.path().join("rpc.log")).unwrap();
+    for method in [
+        "thread/start",
+        "thread/resume",
+        "thread/inject_items",
+        "turn/interrupt",
+    ] {
+        assert!(!rpc.contains(&format!("\"method\":\"{method}\"")));
     }
 }
 
@@ -226,10 +274,10 @@ fn enable_acknowledgment_and_changed_revision_use_the_busy_active_caller() {
         history
     );
     let repeated = enable(&temp, "caller", true);
-    assert_eq!(repeated["status"], "ready");
+    assert_eq!(repeated["status"], "preserved");
     assert!(repeated["role_instructions"].is_null());
     let existing = enable(&temp, "different-caller", true);
-    assert_eq!(existing["action"], "existing_owner");
+    assert_eq!(existing["action"], "bindings_preserved");
     assert_eq!(existing["session_id"], "caller");
     let role = temp.path().join("docs/roles/0_Project Manager.md");
     fs::write(
@@ -249,14 +297,14 @@ fn enable_acknowledgment_and_changed_revision_use_the_busy_active_caller() {
         true,
     );
     assert_eq!(acknowledge(&temp, &offer, false)["status"], "pending");
-    let changed = enable(&temp, "caller", true);
+    let rpc_before = fs::read(temp.path().join("rpc.log")).unwrap();
+    assert_eq!(enable(&temp, "caller", true)["status"], "preserved");
+    assert_eq!(fs::read(temp.path().join("rpc.log")).unwrap(), rpc_before);
+    assert_eq!(ensure_owner(&temp, "caller", false)["status"], "pending");
+    fs::remove_file(temp.path().join("writer-busy")).unwrap();
+    let changed = ensure_owner(&temp, "caller", true);
     assert_ne!(changed["role_revision_index"], revision);
-    assert!(changed["role_instructions"]
-        .as_str()
-        .unwrap()
-        .contains("Updated caller responsibility."));
-    assert!(changed["app_actions"].as_array().unwrap().is_empty());
-    assert_eq!(acknowledge(&temp, &changed, true)["status"], "ready");
+    assert_eq!(changed["status"], "ready");
     let contacts = fixture::run(&temp, &["team", "contacts", "--json"], true);
     assert_eq!(contacts["bound_session_count"], 1);
     assert_eq!(
@@ -268,18 +316,8 @@ fn enable_acknowledgment_and_changed_revision_use_the_busy_active_caller() {
         "created a blank session"
     );
     let rpc = fs::read_to_string(temp.path().join("rpc.log")).unwrap();
-    for method in [
-        "thread/resume",
-        "thread/start",
-        "thread/inject_items",
-        "turn/start",
-        "turn/interrupt",
-    ] {
-        assert!(
-            !rpc.contains(&format!("\"method\":\"{method}\"")),
-            "unexpected {method}"
-        );
-    }
+    assert!(rpc.contains("\"method\":\"thread/resume\""));
+    assert!(rpc.contains("\"method\":\"thread/inject_items\""));
 }
 
 #[test]
@@ -287,13 +325,13 @@ fn incomplete_offer_requires_same_caller_and_native_metadata_before_closeout() {
     let temp = fixture();
     let offer = enable(&temp, "caller", true);
     let retry = enable(&temp, "caller", true);
-    assert_eq!(retry["activation_token"], offer["activation_token"]);
+    assert_eq!(retry["status"], "preserved");
     assert!(retry["role_instructions"].is_null());
-    assert_eq!(enable(&temp, "foreign", false)["status"], "pending");
+    assert_eq!(enable(&temp, "foreign", true)["status"], "preserved");
     let missing = fixture::run(
         &temp,
         &["config", "set", "--agent-teams", "enabled", "--json"],
-        false,
+        true,
     );
     assert_eq!(missing["team_bootstrap"]["session_id"], "caller");
     fixture::run(
@@ -304,7 +342,7 @@ fn incomplete_offer_requires_same_caller_and_native_metadata_before_closeout() {
     title_action(&temp, &offer);
     fs::write(temp.path().join("caller.project"), "wrong-project").unwrap();
     assert_eq!(acknowledge(&temp, &offer, false)["status"], "pending");
-    enable(&temp, "caller", true); // reconcile only the project
+    ensure_owner(&temp, "caller", true); // explicit recovery reconciles the project
     assert_eq!(acknowledge(&temp, &offer, true)["status"], "ready");
 }
 
@@ -378,23 +416,18 @@ fn two_repository_entrypoints_refresh_defaults_and_local_drift_without_crossing_
         fs::read_to_string(&path).unwrap() + "\nRepository-specific responsibility.\n",
     )
     .unwrap();
-    let refreshed = enable(&first, "caller", true);
-    assert!(refreshed["role_instructions"]
-        .as_str()
-        .unwrap()
-        .contains("Repository-specific responsibility."));
+    assert_eq!(enable(&first, "caller", true)["status"], "preserved");
+    fs::write(first.path().join("caller.persisted"), "existing caller").unwrap();
+    fs::remove_file(first.path().join("active-role")).unwrap();
+    fs::remove_file(first.path().join("writer-busy")).unwrap();
+    let refreshed = ensure_owner(&first, "caller", true);
     assert_ne!(
         refreshed["role_revision_index"],
         offer["role_revision_index"]
     );
-    acknowledge(&first, &refreshed, true);
     let repeated =
         caller(&first, "caller", &["init", "--json"], true)["agent_team_bootstrap"].clone();
-    assert_eq!(repeated["action"], "reused_current");
-    assert_eq!(
-        repeated["role_revision_index"],
-        refreshed["role_revision_index"]
-    );
+    assert_eq!(repeated["action"], "bindings_preserved");
     assert_eq!(repeated["synchronization"]["contacts"]["added_count"], 0);
     assert!(repeated["role_instructions"].is_null());
     let second = fixture::uninitialized_fixture();
@@ -554,7 +587,8 @@ fn acknowledgment_rejects_unsynced_drift_and_host_failure_preserves_sync_outcome
         .as_str()
         .unwrap()
         .contains("Role changed after delivery"));
-    let current = enable(&temp, "caller", true);
+    assert_eq!(enable(&temp, "caller", true)["status"], "preserved");
+    let current = ensure_owner(&temp, "caller", true);
     assert!(current["role_instructions"]
         .as_str()
         .unwrap()
@@ -595,18 +629,30 @@ fn repository_name_controls_init_config_acknowledgment_and_current_binding_recon
         let accepted = acknowledge(&temp, &offer, true);
         assert_eq!(accepted["title"], expected);
         assert_eq!(accepted["project_id"], project);
-        assert_eq!(enable(&temp, "caller", true)["action"], "reused_current");
+        assert_eq!(
+            enable(&temp, "caller", true)["action"],
+            "bindings_preserved"
+        );
         fs::write(temp.path().join("caller.name"), incorrect).unwrap();
-        let reconciliation = enable(&temp, "caller", true);
+        assert_eq!(enable(&temp, "caller", true)["status"], "preserved");
+        fs::write(temp.path().join("caller.persisted"), "existing caller").unwrap();
+        fs::remove_file(temp.path().join("active-role")).unwrap();
+        fs::remove_file(temp.path().join("writer-busy")).unwrap();
+        let reconciliation = ensure_owner(&temp, "caller", true);
         assert_eq!(reconciliation["title"], expected);
         assert!(reconciliation["role_instructions"].is_null());
         assert_eq!(
             reconciliation["role_revision_index"],
             offer["role_revision_index"]
         );
-        assert_eq!(reconciliation["project_id"], project);
-        title_action(&temp, &reconciliation);
-        assert_eq!(acknowledge(&temp, &reconciliation, true)["title"], expected);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("caller.project")).unwrap(),
+            project.as_str().unwrap()
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("caller.name")).unwrap(),
+            expected
+        );
         assert_eq!(
             fixture::run(&temp, &["team", "contacts", "--json"], true)["bound_session_count"],
             1

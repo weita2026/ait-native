@@ -253,7 +253,7 @@ pub fn config_set(repo: &RepoRuntime, request: &ConfigSetRequest) -> Result<Json
     complete_config_mutation(repo)
 }
 
-/// The native configure operation, including enabled-Team preparation.
+/// The native configure operation, including initial enabled-Team preparation.
 pub fn config_set_with_team_bootstrap(
     repo: &RepoRuntime,
     request: &ConfigSetRequest,
@@ -276,7 +276,7 @@ pub fn config_set_from_payload_with_team_bootstrap(
 /// Report the existing post-save failure after the caller has rendered the payload.
 pub fn team_setup_error(payload: &JsonValue) -> Option<String> {
     let deployment = payload.get("team_bootstrap")?;
-    (!matches!(deployment["status"].as_str(), Some("ready" | "activation_required")))
+    (!matches!(deployment["status"].as_str(), Some("ready" | "activation_required" | "preserved")))
         .then(|| "Configuration saved, but team sessions are not ready; see team_bootstrap for recovery details.".to_string())
 }
 

@@ -47,6 +47,10 @@ pub fn bootstrap(repo: &RepoRuntime) -> JsonValue {
                 json!({"status":"disabled","synchronization":synchronization,"session_readiness":"disabled","work_started":false}),
             );
         }
+        if let Some(mut preserved) = preserve_session_state(&repo)? {
+            preserved["synchronization"] = synchronization;
+            return Ok(preserved);
+        }
         let result = activation::caller_session().and_then(|caller| {
             let mut host = CodexSessionHost::connect()?;
             activation::prepare(&repo, &mut host, caller.as_deref())
@@ -57,6 +61,53 @@ pub fn bootstrap(repo: &RepoRuntime) -> JsonValue {
         Ok(result)
     })();
     result.unwrap_or_else(|e: String| activation_failure(repo, e))
+}
+
+/// Init/config synchronize assets, but existing bindings and unfinished initial
+/// preparation belong to explicit session operations, regardless of host health.
+fn preserve_session_state(repo: &RepoRuntime) -> Result<Option<JsonValue>, String> {
+    let agents = single_team::read(&repo.binary_db_stores::<1>().local_db())
+        .map_err(|error| error.to_string())?;
+    let bound = agents.iter().any(|agent| !agent.session.is_empty());
+    let offer = activation::pending(repo)?;
+    let operational = repo
+        .authoritative_repo_root()
+        .join(".ait/team-session-bootstrap");
+    let mut pending = offer.is_some();
+    for name in ["agent-0.pending", "agent-0.assignment", "agent-0.retired"] {
+        match fs::symlink_metadata(operational.join(name)) {
+            Ok(_) => pending = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Cannot inspect existing session preparation: {error}"
+                ))
+            }
+        }
+    }
+    if !bound && !pending {
+        return Ok(None);
+    }
+    let session = agents
+        .first()
+        .filter(|agent| !agent.session.is_empty())
+        .map(|agent| json!(agent.session))
+        .or_else(|| offer.as_ref().map(|offer| offer["session_id"].clone()));
+    Ok(Some(json!({
+        "status":"preserved",
+        "action":if bound {"bindings_preserved"} else {"preparation_preserved"},
+        "session_id":session,
+        "session_readiness":if pending {"pending"} else {"unchanged"},
+        "host_activation":"not_performed",
+        "condition":if offer.is_some() {
+            "Existing activation is preserved. Continue its original acknowledgment, or use explicit team session ensure in the original conversation for recovery."
+        } else if pending {
+            "Existing native session preparation is preserved. Use explicit team session ensure for recovery."
+        } else {
+            "Existing session bindings are preserved. Use explicit team session ensure for recovery or role delivery."
+        },
+        "work_started":false
+    })))
 }
 fn activation_failure(repo: &RepoRuntime, detail: String) -> JsonValue {
     let owner = sessions::current(repo, 0)
@@ -116,6 +167,16 @@ pub fn ensure(repo: &RepoRuntime, index: u32, role: Option<u32>) -> JsonValue {
             return Err("Agent Teams is disabled".into());
         }
         let (_op, _lock) = operation_lock(&repo.authoritative_repo_root())?;
+        if index == 0 && role.is_none_or(|role| role == 0) {
+            if let Some(offer) = activation::pending(&repo)? {
+                let caller = activation::caller_session()?;
+                if caller.as_deref() == offer["session_id"].as_str() {
+                    let mut host = CodexSessionHost::connect()?;
+                    return activation::prepare(&repo, &mut host, caller.as_deref());
+                }
+                return Err("Caller activation is pending; continue in its original conversation before session ensure".into());
+            }
+        }
         let mut host = CodexSessionHost::connect()?;
         sessions::ensure_with_host(&repo, &mut host, index, role)
     })();

@@ -153,6 +153,8 @@ pub fn format_initialize_repository(payload: &JsonValue) -> String {
             activation
         } else if team["status"] == "disabled" {
             "Agent Teams assets synchronized; sessions disabled.".into()
+        } else if team["status"] == "preserved" {
+            "Agent Teams assets synchronized; existing session state preserved. Host readiness was not checked.".into()
         } else if let Some(id) = team["session_id"].as_str() {
             format!("有專案需求或問題，請找 Newton\nSession ID: {id}\nResume: codex resume {id}")
         } else {
@@ -187,7 +189,9 @@ pub(crate) fn format_configuration_with_keys(
             "\n\nTeam sessions: {}",
             deployment["status"].as_str().unwrap_or("blocked")
         ));
-        if let Some(activation) = crate::agent_teams::render_activation(deployment) {
+        if deployment["status"] == "preserved" {
+            text.push_str("\nExisting session state preserved; host readiness was not checked.");
+        } else if let Some(activation) = crate::agent_teams::render_activation(deployment) {
             text.push_str(&format!("\n{activation}"));
         } else if let Some(id) = deployment["session_id"].as_str() {
             text.push_str(&format!(

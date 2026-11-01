@@ -263,12 +263,12 @@ pub(super) fn acknowledge_with_host(
         || fs::read_to_string(root.join(&role.path)).map_err(|e| e.to_string())? != role.body
     {
         return Err(
-            "Role changed after delivery; repeat enable to receive the current role".into(),
+            "Role changed after delivery; run explicit team session ensure --agent 0 in the original conversation to receive the current role".into(),
         );
     }
     let before = sessions::current(repo, 0)?;
     if saved["title"] != sessions::session_title(repo, &before, &role) {
-        return Err("Activation title differs from the authoritative repository name; repeat enable to reconcile it".into());
+        return Err("Activation title differs from the authoritative repository name; run explicit team session ensure --agent 0 in the original conversation to reconcile it".into());
     }
     let already_bound = !before.archived && before.session == caller && before.role == Some(0);
     if saved["expected_agent"] != agent_state(&before)
@@ -280,7 +280,7 @@ pub(super) fn acknowledge_with_host(
     }
     verify_metadata(&host.activation_metadata(caller, &root)?, &saved)?;
     if host.activation_project(&root)? != saved["project_id"] {
-        return Err("Native project changed; repeat enable before acknowledging".into());
+        return Err("Native project changed; run explicit team session ensure --agent 0 in the original conversation before acknowledging".into());
     }
     if !already_bound {
         verify_former_owner(host, &root, &saved)?;
