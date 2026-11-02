@@ -24,7 +24,7 @@ AIT 是以本地工作為主的 CLI，適合將程式修改交給 agent、並對
 
 ## 1.2.0 亮點
 
-- **新儲存庫預設啟用 Agent Teams。** 全新 `ait init` 預設啟用團隊；既有儲存庫的設定與
+- **[新儲存庫預設啟用 Agent Teams。](#agent-teams-如何運作)** 全新 `ait init` 預設啟用團隊；既有儲存庫的設定與
   session 綁定保持不變。團隊設定、sprint 綁定與 Local/Remote 範圍各自獨立；
   可用對話仍需受支援的 agent host 準備。
 - **固定遠端審查內容，支援故障後續行。** 後續 Local finish 不會改變已封存的遠端內容。
@@ -35,6 +35,32 @@ AIT 是以本地工作為主的 CLI，適合將程式修改交給 agent、並對
 - **聊天整合退役，原始碼保留。** 1.2.0 不再提供獨立的 `ait-agent` 與
   `ait-agent-worker`；Agent Teams 與核心 Python/Node 綁定繼續支援，
   原始碼、授權與歷史發行保留。
+
+## Agent Teams 如何運作
+
+你定義意圖與驗收標準。Product Manager 釐清產品方向與可衡量的驗收條件；
+Project Manager 組織工作，指派 Developer 與獨立的 Reviewer。
+Developer 在各自的 Task worktree 中實作變更並執行相關檢查。
+Reviewer 檢查實作與驗證證據；需要修正時，將發現的問題退回負責的 Developer，
+並負責必要的審查與 finish 步驟。僅準備 session 不代表已指派工作或開始實作。
+
+新的團隊候選版本以 `ai_only_experimental` 作為有效預設模式：
+由獨立 agent 審查程式碼，無須額外的人工程式碼審查核准步驟。
+明確選擇且有效的 author mode 優先。啟用 Teams 不會改寫已儲存的單人工作 author-mode 預設值；
+已封存的候選版本保留原有模式。實際 CI、Task approval 與強制 Policy 仍然適用。
+
+例如，兩位 Developer 可以並行處理不同 Task，各自使用隔離的 worktree；
+啟用 sprint 綁定時，每個 Task 都綁定自己的需求與驗收標準。
+通過獨立審查與適用檢查後，AIT 會對照共用目標重新檢查每個 Task，再依序套用。
+相容的變更可在完成必要驗證後協調整合；實際衝突會阻止完成，
+退回負責的 Developer 修正並重新審查。成功的 Task finish 會報告完成、
+worktree 清理，以及有綁定時的 sprint 項目關閉。後續 Local finish 不會改變已封存的遠端內容。
+
+全新 `ait init` 啟用 Teams 並產生儲存庫工作流程說明。
+重新初始化既有儲存庫會保留設定與 session 綁定。可用對話仍需受支援的 agent host。
+Teams、sprint 綁定與 Local/Remote 範圍是各自獨立的選擇；本機初始化不需要執行中的 Server。
+確切命令請遵循產生的說明；session 準備前提請參閱
+[Agent Teams 指南](https://ait-native.dev/zh-tw/development/1.2.0/agent-teams/)。
 
 ## 走完一個 AIT 任務
 

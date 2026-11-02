@@ -26,7 +26,7 @@ your hands.
 
 ## 1.2.0 highlights
 
-- **Agent Teams enabled for new repositories.** Fresh `ait init` enables Teams;
+- **[Agent Teams enabled for new repositories.](#how-agent-teams-work)** Fresh `ait init` enables Teams;
   existing repository settings and session bindings are preserved. Team setup,
   sprint binding and Local/Remote scope are independent. Usable sessions still
   require a supported agent host.
@@ -40,6 +40,39 @@ your hands.
 - **Chat integrations retired; source retained.** Standalone `ait-agent` and
   `ait-agent-worker` are excluded from 1.2.0. Agent Teams and core Python/Node
   bindings remain supported; source, licenses and historical releases remain.
+
+## How Agent Teams work
+
+You define the intent and acceptance criteria. The Product Manager clarifies
+direction and measurable acceptance. The Project Manager organizes the work and
+assigns Developers and an independent Reviewer. Developers implement changes
+and run the relevant checks in their Task worktrees. The Reviewer checks the
+implementation and verification evidence, returns findings to the Developer
+when corrections are needed, and handles the required review and finish steps.
+Preparing a session alone does not assign work or start implementation.
+
+Fresh team candidates use `ai_only_experimental` as the effective default:
+independent agent code review without an extra human code-review approval step.
+A valid, explicitly selected author mode takes precedence. Enabling Teams does
+not rewrite the saved solo author-mode default. Sealed candidates retain their
+original mode. Real CI, Task approval and mandatory Policy still apply.
+
+For example, two Developers can work on separate Tasks in parallel, each with an
+isolated worktree and, when sprint binding is enabled, its own bound requirement
+and acceptance criteria. After independent review and the applicable checks,
+AIT rechecks each Task against the shared target before applying it in sequence.
+Compatible changes can be reconciled with the required validation; real conflicts
+stop completion and return to the responsible Developer for correction and review.
+A successful Task finish reports completion, worktree cleanup and, when bound,
+the sprint-item closeout. Later Local finishes do not alter sealed remote content.
+
+Fresh `ait init` enables Teams and generates repository workflow instructions.
+Reinitializing an existing repository preserves its settings and session bindings.
+Usable conversations still require a supported agent host. Teams, sprint binding,
+and Local/Remote scope are independent choices; local initialization does not
+require a running Server. Use the generated instructions for exact commands and
+the [Agent Teams guide](https://ait-native.dev/development/1.2.0/agent-teams/)
+for session preparation prerequisites.
 
 ## Follow an AIT Task
 
