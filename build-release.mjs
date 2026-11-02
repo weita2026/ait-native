@@ -1097,11 +1097,11 @@ async function validatePublicReadme(family) {
     "FIRST_TASK_ACCEPTED",
     "## Why AIT beyond worktrees?",
     OFFICIAL_WEBSITE,
-    "Current stable: 1.1.4. AIT 1.2.0 is in development and has not been released.",
+    "Current stable: 1.2.0.",
     "Agent Teams, sprint binding and Local/Remote scope are independent.",
     "ait team contacts --json",
-    "## Planned migration to 1.2.0 (unreleased)",
-    "Package contents in the published AIT 1.1.4:",
+    "## Migrating to 1.2.0",
+    "Package contents in the published AIT 1.2.0:",
     "## What each install route gives you",
     "AGENTS.md",
     "ait task start",
@@ -1133,7 +1133,7 @@ async function validatePublicReadme(family) {
     }
   }
   if (!readme.startsWith("# AIT\n")) {
-    fail("public README title must not present the unreleased version as available");
+    fail("public README title must be # AIT");
   }
   for (const forbidden of [
     "mkdir -p docs/sprints",
@@ -1177,27 +1177,40 @@ async function validatePublicReadme(family) {
     }
     const guidance = {
       "README.md": [
-        "AIT 1.2.0 is in development and has not been released.",
+        "Current stable: 1.2.0.", "**1. Install AIT 1.2.0.**", "The version must be 1.2.0.",
+        "**AIT 1.2.0 workflow:**", "## Migrating to 1.2.0",
+        "WinGet's public catalog lists 1.2.0.",
         `Release source: **${family.family.tag}**.`,
       ],
       "README_CN.md": [
-        "AIT 1.2.0 仍在开发中，尚未发布。",
+        "当前稳定版：1.2.0。", "**1. 安装 AIT 1.2.0。**", "版本应为 1.2.0。",
+        "**AIT 1.2.0 工作流：**", "## 迁移至 1.2.0", "在 WinGet 公共目录列出 1.2.0 前",
         `发行源码：**${family.family.tag}**。`,
       ],
       "README_ZH.md": [
-        "AIT 1.2.0 仍在開發中，尚未發布。",
+        "目前穩定版：1.2.0。", "**1. 安裝 AIT 1.2.0。**", "版本應為 1.2.0。",
+        "**AIT 1.2.0 工作流：**", "## 遷移至 1.2.0", "在 WinGet 公開目錄列出 1.2.0 前",
         `發行原始碼：**${family.family.tag}**。`,
       ],
     }[name];
     for (const required of [
-      ...guidance, "releases/tag/v1.1.4", "ait-native==1.1.4", "@wa120/ait-native@1.1.4",
+      ...guidance, "releases/tag/v1.2.0", "ait-native==1.2.0", "@wa120/ait-native@1.2.0", "PyO3", "Node-API",
     ]) {
-      if (!text.includes(required)) fail(`${name} is missing prepublication availability guidance`);
+      if (!text.includes(required)) fail(`${name} is missing published 1.2.0 availability guidance`);
     }
-    for (const unavailable of [
-      "releases/tag/v1.2.0", "ait-native==1.2.0", "@wa120/ait-native@1.2.0",
+    // Dated historical release links remain valid. Current install selectors
+    // and availability claims must describe the actually published version.
+    for (const stale of [
+      "ait-native==1.1.4", "@wa120/ait-native@1.1.4", "Current stable: 1.1.4.",
+      "当前稳定版：1.1.4。", "目前穩定版：1.1.4。",
+      "AIT 1.2.0 is in development and has not been released.",
+      "AIT 1.2.0 仍在开发中，尚未发布。", "AIT 1.2.0 仍在開發中，尚未發布。",
+      "Development preview (unreleased 1.2.0)", "Planned migration to 1.2.0 (unreleased)",
+      "开发预览（尚未发布的 1.2.0）", "開發預覽（尚未發布的 1.2.0）",
+      "The published Python wheel installs the native `ait` workflow.",
+      "已发布的 Python wheel 安装原生 `ait` 工作流。", "已發布的 Python wheel 安裝原生 `ait` 工作流。",
     ]) {
-      if (text.includes(unavailable)) fail(`${name} recommends an unreleased 1.2.0 package`);
+      if (text.includes(stale)) fail(`${name} contains stale prepublication availability guidance`);
     }
     if (/^## (?:Upgrading from 0\.x|從 0\.x 升級|从 0\.x 升级)\s*$|\]\(#(?:upgrading-from-0x|從-0x-升級|从-0x-升级)\)/imu.test(text)) {
       fail(`${name} contains obsolete 0.x upgrade guidance`);

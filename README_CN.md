@@ -2,7 +2,7 @@
 
 [English](README.md) · **[简体中文](README_CN.md)** · [繁體中文](README_ZH.md)
 
-**当前稳定版：1.1.4。AIT 1.2.0 仍在开发中，尚未发布。**
+**当前稳定版：1.2.0。**
 
 **将多个并行的 coding agent 对话，变成经过验证、可追溯的 Task。**
 
@@ -39,16 +39,16 @@ AIT 是以本地工作为主的 CLI，适合将代码修改交给 agent、并对
 请从全新的示例文件夹开始。你需要自己的 coding agent，以及执行此小示例所需的 Node.js 22+；
 Node.js 并非 AIT 对仓库的通用要求。
 
-**1. 安装 AIT 1.1.4。**
+**1. 安装 AIT 1.2.0。**
 
-从 [v1.1.4 发行](https://github.com/weita2026/ait-native/releases/tag/v1.1.4) 或[安装指南](https://ait-native.dev/zh-cn/local-quickstart/)
+从 [v1.2.0 发行](https://github.com/weita2026/ait-native/releases/tag/v1.2.0) 或[安装指南](https://ait-native.dev/zh-cn/local-quickstart/)
 选择适用平台的原生软件包，然后检查安装版本：
 
 ```sh
 ait --version
 ```
 
-版本应为 1.1.4。下方列出 Python 与 JavaScript 软件包安装方式。
+版本应为 1.2.0。下方列出 Python 与 JavaScript 软件包安装方式。
 
 其他软件包渠道请参阅[安装指南](https://ait-native.dev/zh-cn/local-quickstart/)。
 
@@ -231,8 +231,7 @@ Coding agent 负责实现及选定的检查；AIT 管理任务生命周期，并
 `ait init` 建立本地 `.ait` 权威数据，并在 `AGENTS.md` 与 `CLAUDE.md` 生成受管理的工作流区块。
 该生成的区块是有效命令的依据；本地仓库初始化不需要执行中的 `ait-server`。
 
-**开发预览（尚未发布的 1.2.0）：**以下工作流细节描述未来版本。
-当前的命令与完成要求，请以已安装版本生成的指引为准。
+**AIT 1.2.0 工作流：**命令与完成要求，请以已安装版本生成的指引为准。
 
 在 AIT 1.2.0 中，Agent Teams、sprint 绑定与 Local/Remote 范围各自独立。
 全新 `ait init` 默认启用 Agent Teams；已有仓库保留原设置，仍需受支持的 agent host 准备可用对话。
@@ -270,20 +269,20 @@ Remote `ait workflow ready` 只读检查 readiness；加 `--apply` 才准备 can
 <details>
 <summary>软件包内容与历史版本差异</summary>
 
-已发布的 AIT 1.1.4 软件包内容：
+已发布的 AIT 1.2.0 软件包内容：
 
 | 渠道 | 声明内容 |
 | --- | --- |
-| PyPI `ait-native` | 安装原生 `ait` 工作流的 Python wheel。 |
-| npm `@wa120/ait-native` | JavaScript/TypeScript API、Node-API 附加组件与进程内 `ait` 命令；不含 Server 或 Runner。 |
-| Homebrew 与 WinGet | 1.1.4 产品组合包含原生 `ait`、`ait-server` 与 `ait-runner`。安装时不启动任何后台进程；渠道可用性请查阅发行状态。 |
-| APT | 在 1.1.4，`ait-native` 拥有全部三个命令；`ait-runner` 是仅声明依赖关系的过渡别名。软件包内的服务仍仅适用服务器。 |
-| OCI | 分开提供 `ait-server` 与 `ait-runner` 镜像。 |
+| PyPI `ait-native` | 调用带类型 PyO3 操作的 Python `ait` 前端；不含独立原生 CLI、Server 或 Runner。 |
+| npm `@wa120/ait-native` | JavaScript/TypeScript API、Node-API 附加组件与 JavaScript `ait` 前端；不含独立原生 CLI、Server 或 Runner。 |
+| Homebrew | 原生产品组合包含 `ait`、`ait-server` 与 `ait-runner`，安装时不启动任何后台进程。 |
+| APT | `ait-native` 拥有全部三个原生命令；`ait-runner` 是仅声明依赖关系的过渡别名。软件包内的服务仍仅适用服务器。 |
+| WinGet | [1.2.0 提交](https://github.com/microsoft/winget-pkgs/pull/468379) 正在等待社区审查。在 WinGet 公共目录列出 1.2.0 前，请使用 GitHub 的 Windows 归档。 |
+| OCI | 分开提供 `ait-server` 与 `ait-runner` 镜像，版本标签为 `1.2.0`。 |
 | GitHub Release | 绑定校验码的原生压缩包，以及各声明渠道使用的软件包资产。 |
 
-尚未发布的 1.2.0 计划将 Python 软件包改为调用带类型 PyO3 操作的 Python `ait` 前端，
-npm 软件包改为调用带类型 Node-API 操作的 JavaScript `ait` 前端。这些规划中的软件包
-不含独立的原生 CLI、Server 或 Runner 可执行文件。
+AIT 1.2.0 使用调用带类型 PyO3 与 Node-API 操作的 Python 和 JavaScript `ait` 前端，
+在进程内执行 Core 操作。独立的原生 CLI、Server 与 Runner 可执行文件请使用原生发行渠道。
 
 不可变的 1.1.0 Homebrew、apt 与 WinGet 产品软件包包含 `ait`／`ait-server` 组合，apt 另外提供 runner。
 这项历史例外保持不变。现行渠道操作请参阅[安装指南](https://ait-native.dev/zh-cn/local-quickstart/)，
@@ -295,17 +294,21 @@ npm 软件包改为调用带类型 Node-API 操作的 JavaScript `ait` 前端。
 
 选择其中一种软件包安装 `ait` 命令，再以 `ait --version` 确认版本：
 
+Python 软件包需要 Python 3.11+；npm 软件包需要 Node.js 20+。
+
 ```sh
-python -m pip install ait-native==1.1.4
-npm install --global @wa120/ait-native@1.1.4
+python -m pip install ait-native==1.2.0
+npm install --global @wa120/ait-native@1.2.0
 ```
 
-已发布的 Python wheel 安装原生 `ait` 工作流。已发布的 npm 软件包提供进程内
-`ait` 命令与 Node-API 附加组件，不含 Server 或 Runner；这两个独立命令请使用原生发行渠道。
+Python wheel 提供 Python `ait` 前端与 PyO3 绑定；npm 软件包提供 JavaScript `ait` 前端与
+Node-API 附加组件。两者均不含独立的原生 CLI、Server 或 Runner 可执行文件。
+这些命令固定安装 1.2.0。GitHub 最新发行、npm `latest` 与 Server、Runner 的 OCI `latest` 标签
+已核对为 1.2.0。各渠道当前可用性请查看[发布状态](https://ait-native.dev/zh-cn/proof/)。
 
-## 规划中的 1.2.0 迁移（尚未发布）
+## 迁移至 1.2.0
 
-以下是开发中内容，并非当前可用的升级路径。规划中的 1.2.0 发行组合排除独立聊天命令
+已发布的 1.2.0 发行组合排除独立聊天命令
 `ait-agent` 与 `ait-agent-worker`；Agent Teams 及核心 Python/Node
 绑定保留。旧聊天绑定符号仍可导入，调用时返回明确的退役错误。保留设置、仓库数据及手动安装文件；
 软件包升级依据对应渠道记录的文件所有权，不按 PATH 中的命令名称删除文件。

@@ -3,24 +3,24 @@
 Authority: this centralized product distribution contract. Internal planning
 lineage remains governed by AIT Plan revisions and is not duplicated here.
 
-Status: 1.2.0 development requirements, the current stable-family contract,
+Status: published 1.2.0 requirements, the current stable-family contract,
 and immutable historical release and RC records. The current stable section below overrides version-relative
 wording in dated historical sections; those records remain evidence for their
 own bytes only.
 
-## 1.2.0 qualification requirements
+## 1.2.0 release contract
 
-1.2.0 is in development and unpublished. Workflow and migration wording
-below describes the development contract. The stable
-installation baseline remains the dated 1.1.4 record below; no 1.2.0 channel,
-download or latest availability is established here.
+1.2.0 is published. The current stable section below records its exact
+release, available channels and verified default aliases. WinGet community
+review, discovery and public installation remain pending. The dated 1.1.4
+section preserves that release's original installation and evidence scope.
 
 The owner-approved [1.2.0 pre-publication acceptance](release_sop.md#120-pre-publication-acceptance)
 adds native Git-independent workflows, concurrent agents, sealed-candidate
 recovery, six-platform execution and representative language-neutral fixtures
-to the existing release gates. It is the active 1.2.0 acceptance entry point,
-not evidence of a completed run or a new published version. Existing artifact,
-channel, Web/security and post-publication obligations remain. Earlier version
+to the existing release gates. It defines the accepted 1.2.0 contract;
+publication evidence and remaining channel obligations are recorded below.
+Existing artifact, channel, Web/security and post-publication obligations remain. Earlier version
 exceptions and results retain only their explicit historical scope; see the
 [disposition table](release_sop.md#disposition-of-earlier-release-standards).
 
@@ -30,17 +30,18 @@ requires 24 non-Mac runtime rows and four probe targets, while retaining all
 six build, package and publication targets. It overrides this run's six-target
 runtime/32-row requirements. Historical failures and local evidence keep their
 original scope; this exception does not establish Mac hosted/final-artifact
-success or change the public 1.1.4/unreleased 1.2.0 boundary.
+success. Both Mac artifact targets remain published.
 
 For this 1.2.0 run, the owner explicitly deferred Personal-only protocol,
 current/legacy compatibility and UI acceptance; see the
 [current scope](release_sop.md#owner-deferred-personal-scope--2026-10-24).
-Community and native/platform/binding/install gates remain. The successful
+The owner also paused Community acceptance; the native/platform/binding/install
+gates remain. The successful
 1.1.4 Web qualification included Personal; public package membership and test
-coverage are separate. The inspected root and LNAT-0021 family manifests do
-not list Personal or Web-test components, but still say 1.1.4 with unbound
-source identities. They are not a frozen 1.2.0 candidate or evidence of release
-readiness. No public Personal-support claim is added by this deferral.
+coverage are separate. Early root and LNAT-0021 family templates were preparation
+inputs, not frozen release authority. The published 1.2.0 family and source
+identity are recorded below. No public Personal-support claim is added by
+this deferral.
 
 ## 1.2.0 chat-integration retirement
 
@@ -75,8 +76,8 @@ execution. Never sweep PATH or delete a file by basename.
 The single source product authority is
 `ait-core/docs/product.md#language-cli-binding-contract`; the selected
 [1.2.0 manual](https://ait-native.dev/development/1.2.0/) is its public
-documentation consumer. This section records the required boundary, not
-completed implementation or channel availability.
+documentation consumer. This section records the release boundary; current
+channel availability is recorded in the stable-release section below.
 
 Both npm `@wa120/ait-native` and pip `ait-native` retain terminal `ait`.
 JavaScript or Python parses existing syntax and calls concrete N-API or PyO3
@@ -105,9 +106,9 @@ channels. Full command/API coverage, actual extensions, no-relay negative
 cases and same-candidate review remain release gates. Earlier frozen wheels,
 package composition and evidence keep their original scope.
 
-## 1.2.0 development quickstart and workflow
+## 1.2.0 quickstart and workflow
 
-For a prepared development executable, `ait init` creates or refreshes the
+With a published 1.2.0 executable, `ait init` creates or refreshes the
 generated repository workflow. Fresh initialization enables Agent Teams;
 existing repositories retain their settings and repeated initialization
 preserves identities. Usable sessions still require a supported agent host.
@@ -125,13 +126,34 @@ the candidate; real CI and the required independent review precede guarded
 finish. Preserve the actual returned identity. A preformal Server restart
 may require reprepare of the same sealed content/mode with a new Job, CI and
 review. Accepted formal retries retain the original acceptance and one apply.
-These development semantics do not replace the installed 1.1.4 quickstart or
-qualify an unshipped artifact. Preserve the package ownership and user-data
-boundaries in the retirement guidance above.
+Use the current stable installation selectors below and the generated Core
+workflow guidance. The dated 1.1.4 quickstart retains its historical scope.
+Preserve the package ownership and user-data boundaries in the retirement
+guidance above.
 
-## Current Stable 1.1.4 Release Identity (2026-10-07)
+## Current Stable 1.2.0 Release Identity (2026-11-02)
 
-The current published stable release is [v1.1.4](https://github.com/weita2026/ait-native/releases/tag/v1.1.4), published on 2026-10-07 with 91 immutable assets. Its tag remains bound to `4990eea85831ddfae8975e227d36dd280e3bfa7c` and release family `REL-FAM-79B1908F60843FE4`. Documentation updates on public `main` do not change the tag, component Snapshots or release bytes.
+The current published stable release is [v1.2.0](https://github.com/weita2026/ait-native/releases/tag/v1.2.0), published on 2026-11-02. Its immutable annotated tag resolves to `c93e59411d044e7a44bd73d92cdb38ac38327c3b` and release family `REL-FAM-20F89016931A7897`. Later documentation commits on public `main` do not change that tag or the frozen payloads.
+
+| Channel | Verified 1.2.0 status |
+| --- | --- |
+| GitHub Release | Regular public release; exact assets read back; `latest` resolves to `v1.2.0`. |
+| PyPI | `ait-native==1.2.0`; all six frozen platform wheels published and read back. |
+| npm | `@wa120/ait-native@1.2.0` and six platform packages published and read back; all seven `latest` aliases verified at `1.2.0`. |
+| Homebrew | Stable `weita2026/ait-native` formula and exact frozen archives published and read back. |
+| APT | Signed `stable` suite published and read back for `amd64` and `arm64`. |
+| GHCR | `ghcr.io/weita2026/ait-server:1.2.0` and `ghcr.io/weita2026/ait-runner:1.2.0` published for Linux amd64/arm64; anonymous filesystem/provenance readback passed and each `latest` alias matches its immutable version digest. |
+| WinGet | [PR 468379](https://github.com/microsoft/winget-pkgs/pull/468379) submitted and awaiting upstream review. Fresh x64 and ARM64 user-scope pre-review installations passed. Merge, community-source discovery and post-merge public installation remain pending. |
+
+Publication evidence: [endpoint publication and independent readback run 41371540533](https://github.com/weita2026/ait-native/actions/runs/41371540533), [latest-alias readback run 41372725757](https://github.com/weita2026/ait-native/actions/runs/41372725757), and [WinGet pre-review run 41372022111](https://github.com/weita2026/ait-native/actions/runs/41372022111). The normal operator result is `published_readback_complete`. This is publication of the available channels, not completed WinGet or overall G/H closeout. Website and public-document updates are being completed separately.
+
+Use `python3 -m pip install 'ait-native==1.2.0'` or `npm install --global @wa120/ait-native@1.2.0` for the language CLI. Native standalone archives and native package-manager channels contain `ait`, `ait-server` and `ait-runner`; installation starts neither background process. The 1.2.0 Python and npm packages retain their language CLI and in-process binding, without standalone native CLI/Server/Runner payloads.
+
+Windows 1.2.0 installation currently uses the published [x64 ZIP](https://github.com/weita2026/ait-native/releases/download/v1.2.0/ait-native-1.2.0-x86_64-pc-windows-msvc.zip) or [ARM64 ZIP](https://github.com/weita2026/ait-native/releases/download/v1.2.0/ait-native-1.2.0-aarch64-pc-windows-msvc.zip), verified against [SHA256SUMS](https://github.com/weita2026/ait-native/releases/download/v1.2.0/SHA256SUMS). WinGet 1.2.0 availability awaits the separate merge and fresh public-source checks above. All six native artifact targets remain published; the owner-approved Mac runtime exception is not an executed hosted-Mac qualification pass.
+
+## Historical Stable 1.1.4 Release Identity (2026-10-07)
+
+At this historical checkpoint, the published stable release was [v1.1.4](https://github.com/weita2026/ait-native/releases/tag/v1.1.4), published on 2026-10-07 with 91 immutable assets. Its tag remains bound to `4990eea85831ddfae8975e227d36dd280e3bfa7c` and release family `REL-FAM-79B1908F60843FE4`. Documentation updates on public `main` do not change the tag, component Snapshots or release bytes.
 
 | Channel | Verified 1.1.4 status |
 | --- | --- |
