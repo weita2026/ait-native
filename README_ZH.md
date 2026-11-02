@@ -22,6 +22,20 @@ AIT 是以本地工作為主的 CLI，適合將程式修改交給 agent、並對
 [简体中文入门](https://ait-native.dev/zh-cn/local-quickstart/#first-task) ·
 [繁體中文入門](https://ait-native.dev/zh-tw/local-quickstart/#first-task)
 
+## 1.2.0 亮點
+
+- **新儲存庫預設啟用 Agent Teams。** 全新 `ait init` 預設啟用團隊；既有儲存庫的設定與
+  session 綁定保持不變。團隊設定、sprint 綁定與 Local/Remote 範圍各自獨立；
+  可用對話仍需受支援的 agent host 準備。
+- **固定遠端審查內容，支援故障後續行。** 後續 Local finish 不會改變已封存的遠端內容。
+  Server 在正式接受前重啟，重新準備時須取得新的 CI 與必要審查；
+  已接受的 finish 重試則沿用原 acceptance。
+- **Python 與 JavaScript CLI 直接呼叫 Rust。** 兩種 `ait` 前端透過具型別的
+  PyO3 或 Node-API 操作，在同一程序執行，不以子程序啟動 Rust CLI。
+- **聊天整合退役，原始碼保留。** 1.2.0 不再提供獨立的 `ait-agent` 與
+  `ait-agent-worker`；Agent Teams 與核心 Python/Node 綁定繼續支援，
+  原始碼、授權與歷史發行保留。
+
 ## 走完一個 AIT 任務
 
 [![AIT Task 實際錄製：初始化、開始隔離工作、測試、完成並追溯結果](https://ait-native.dev/public/tour/ait-task-tour.gif)](https://ait-native.dev/zh-tw/demo/#in-action)

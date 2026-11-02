@@ -24,6 +24,23 @@ your hands.
 [简体中文入门](https://ait-native.dev/zh-cn/local-quickstart/#first-task) ·
 [繁體中文入門](https://ait-native.dev/zh-tw/local-quickstart/#first-task)
 
+## 1.2.0 highlights
+
+- **Agent Teams enabled for new repositories.** Fresh `ait init` enables Teams;
+  existing repository settings and session bindings are preserved. Team setup,
+  sprint binding and Local/Remote scope are independent. Usable sessions still
+  require a supported agent host.
+- **Stable remote review and recoverable finish.** Later Local finishes do not
+  change sealed remote content. After a pre-acceptance Server restart, reprepare
+  uses fresh CI and required review; accepted finish retries reuse their original
+  acceptance.
+- **Python and JavaScript CLIs call Rust directly.** Both `ait` frontends use
+  typed PyO3 or Node-API operations in-process, without launching a Rust CLI
+  subprocess.
+- **Chat integrations retired; source retained.** Standalone `ait-agent` and
+  `ait-agent-worker` are excluded from 1.2.0. Agent Teams and core Python/Node
+  bindings remain supported; source, licenses and historical releases remain.
+
 ## Follow an AIT Task
 
 [![Recorded AIT Task: initialize, start isolated work, test, finish and trace the result](https://ait-native.dev/public/tour/ait-task-tour.gif)](https://ait-native.dev/demo/#in-action)
