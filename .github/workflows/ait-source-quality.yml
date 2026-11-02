@@ -34,17 +34,40 @@ jobs:
           toolchain=$(node -p 'JSON.parse(require("fs").readFileSync("ci/native_bootstrap_matrix.json", "utf8")).rust_toolchain')
           rustup toolchain install "${toolchain}" --profile minimal --component rustfmt,clippy
           rustup default "${toolchain}"
-      - name: Core and Runner gates (Unix)
+      - name: Core gates (Unix)
+        id: core_unix
         if: runner.os != 'Windows'
+        continue-on-error: true
         shell: bash
-        run: |
-          set -euo pipefail
-          bash ait-core/ci/run.sh patchset
-          bash ait-runner/ci/run.sh all
-      - name: Core and Runner gates (Windows)
+        run: bash ait-core/ci/run.sh patchset
+      - name: Runner gates (Unix)
+        id: runner_unix
+        if: runner.os != 'Windows'
+        continue-on-error: true
+        shell: bash
+        run: bash ait-runner/ci/run.sh all
+      - name: Core gates (Windows)
+        id: core_windows
         if: runner.os == 'Windows'
+        continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           & ./ait-core/ci/run.ps1 patchset
+      - name: Runner gates (Windows)
+        id: runner_windows
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
           & ./ait-runner/ci/run.ps1 all
+      - name: Require both component results
+        if: always()
+        shell: bash
+        env:
+          CORE_RESULT: ${{ runner.os == 'Windows' && steps.core_windows.outcome || steps.core_unix.outcome }}
+          RUNNER_RESULT: ${{ runner.os == 'Windows' && steps.runner_windows.outcome || steps.runner_unix.outcome }}
+        run: |
+          printf 'Core: %s\nRunner: %s\n' "${CORE_RESULT}" "${RUNNER_RESULT}"
+          [[ "${CORE_RESULT}" == success && "${RUNNER_RESULT}" == success ]]

@@ -278,7 +278,10 @@ mod tests {
             .expect("resolve env path"),
         );
 
-        assert_eq!(selected["path"], default_path.to_string_lossy().as_ref());
+        assert_eq!(
+            Path::new(selected["path"].as_str().expect("selected path")),
+            default_path
+        );
     }
 
     #[test]
@@ -307,11 +310,11 @@ mod tests {
         assert_eq!(config["background_sync_enabled"], true);
         assert_eq!(config["background_sync_interval_seconds"], 12.5);
         assert_eq!(
-            config["env_path"],
+            Path::new(config["env_path"].as_str().expect("env path")),
             repo.path()
-                .join(".ait/agent-runtime/telegram.env")
-                .to_string_lossy()
-                .as_ref()
+                .join(".ait")
+                .join("agent-runtime")
+                .join("telegram.env")
         );
     }
 
@@ -346,8 +349,8 @@ mod tests {
 
         assert_eq!(config["token"], "repo-secret");
         assert_eq!(
-            config["manifest_path"],
-            default_manifest.to_string_lossy().as_ref()
+            Path::new(config["manifest_path"].as_str().expect("manifest path")),
+            default_manifest
         );
     }
 

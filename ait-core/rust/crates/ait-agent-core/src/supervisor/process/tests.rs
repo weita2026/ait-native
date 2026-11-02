@@ -268,8 +268,35 @@ fn start_contract_returns_already_running_without_spawn() {
 
 #[test]
 fn start_contract_leaves_transport_validation_to_the_typed_worker_manifest() {
+    #[cfg(windows)]
+    if let Some(ready_path) = std::env::var_os("AIT_TEST_SUPERVISOR_PROCESS_READY") {
+        fs::write(ready_path, std::process::id().to_string()).expect("write worker readiness");
+        thread::sleep(Duration::from_secs(30));
+        return;
+    }
     let root = temp_dir("start-missing-env");
     let paths = test_paths(&root);
+    #[cfg(windows)]
+    let ready_path = root.join("worker.ready");
+    #[cfg(windows)]
+    let argv = vec![
+        std::env::current_exe()
+            .expect("test executable")
+            .to_string_lossy()
+            .into_owned(),
+        "--exact".to_string(),
+        "supervisor::process::tests::start_contract_leaves_transport_validation_to_the_typed_worker_manifest".to_string(),
+        "--nocapture".to_string(),
+    ];
+    #[cfg(not(windows))]
+    let argv = vec!["/bin/sleep".to_string(), "30".to_string()];
+    #[cfg(windows)]
+    let parent_env = BTreeMap::from([(
+        "AIT_TEST_SUPERVISOR_PROCESS_READY".to_string(),
+        ready_path.to_string_lossy().into_owned(),
+    )]);
+    #[cfg(not(windows))]
+    let parent_env = BTreeMap::new();
     let result = start_worker_process(AgentWorkerStartInput {
         repo_root: root.to_string_lossy().into_owned(),
         paths: paths.clone(),
@@ -283,12 +310,25 @@ fn start_contract_leaves_transport_validation_to_the_typed_worker_manifest() {
             bot_token: None,
             application_id: None,
         },
-        argv: vec!["/bin/sleep".to_string(), "30".to_string()],
-        parent_env: BTreeMap::new(),
+        argv,
+        parent_env,
     })
     .expect("the process layer must not duplicate typed manifest validation");
 
     assert!(result.started);
+    #[cfg(windows)]
+    let ready_pid = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let pid = fs::read_to_string(&ready_path)
+                .ok()
+                .and_then(|text| text.parse::<i64>().ok());
+            if pid == result.pid || std::time::Instant::now() >= deadline {
+                break pid;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    };
     let stop = stop_worker_process(AgentWorkerStopInput {
         paths,
         reason: Some("test_cleanup".to_string()),
@@ -298,6 +338,12 @@ fn start_contract_leaves_transport_validation_to_the_typed_worker_manifest() {
     })
     .unwrap();
     assert!(stop.stopped);
+    #[cfg(windows)]
+    assert_eq!(
+        ready_pid,
+        Some(result.pid.expect("spawned worker pid")),
+        "native Windows worker must acknowledge readiness"
+    );
 }
 
 #[test]

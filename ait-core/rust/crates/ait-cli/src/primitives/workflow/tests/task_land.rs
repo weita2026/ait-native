@@ -955,7 +955,10 @@ fn local_task_land_reuses_already_landed_state_for_idempotent_closeout() {
     assert_eq!(recovered["execution_status"], "already_landed");
     assert_eq!(recovered["change_status"], "landed");
     assert_eq!(recovered["task_status"], "completed");
-    assert_eq!(recovered["closeout_status"], "complete_unbound");
+    assert_eq!(
+        recovered["closeout_status"], "complete_unbound",
+        "closeout phase payload: {recovered:#?}"
+    );
     assert_eq!(
         recovered["plan_checklist_closeout"]["reason"],
         "no_plan_binding"

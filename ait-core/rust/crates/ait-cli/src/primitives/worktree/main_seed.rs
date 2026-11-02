@@ -566,9 +566,72 @@ where
         staging_path,
         seed_path,
         backup_path,
-        |source, target| fs::rename(source, target),
+        |source, target| {
+            #[cfg(all(test, target_os = "macos"))]
+            {
+                let result = fs::rename(source, target);
+                if let Err(error) = &result {
+                    trace_failed_seed_rename(source, target, error);
+                }
+                result
+            }
+            #[cfg(not(all(test, target_os = "macos")))]
+            {
+                fs::rename(source, target)
+            }
+        },
         validate,
     )
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn trace_failed_seed_rename(source: &Path, target: &Path, error: &std::io::Error) {
+    use std::os::macos::fs::MetadataExt as _;
+    use std::os::unix::fs::MetadataExt as _;
+
+    eprintln!(
+        "main-seed rename failed: source={} target={} kind={:?} raw_os_error={:?}: {error}",
+        source.display(),
+        target.display(),
+        error.kind(),
+        error.raw_os_error(),
+    );
+    let paths = [
+        ("source", Some(source)),
+        ("target", Some(target)),
+        ("source_parent", source.parent()),
+        ("target_parent", target.parent()),
+    ];
+    for (label, path) in paths {
+        let Some(path) = path else { continue };
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => eprintln!(
+                "{label}={} mode={:#o} uid={} gid={} flags={:#x} symlink={}",
+                path.display(),
+                metadata.mode(),
+                metadata.uid(),
+                metadata.gid(),
+                metadata.st_flags(),
+                metadata.file_type().is_symlink(),
+            ),
+            Err(error) => eprintln!("{label}={}: metadata error: {error}", path.display()),
+        }
+    }
+    // Keep ACLs and extended attributes in the failed test's original stream.
+    // Inspection must never replace the rename error or change permissions.
+    match std::process::Command::new("/bin/ls")
+        .arg("-ldeO@")
+        .args(paths.into_iter().filter_map(|(_, path)| path))
+        .output()
+    {
+        Ok(output) => eprintln!(
+            "seed rename ACL/flags: status={:?}\n{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ),
+        Err(error) => eprintln!("seed rename ACL/flags inspection failed: {error}"),
+    }
 }
 
 fn restore_promoted_worktree_source(
@@ -1995,7 +2058,7 @@ mod selected_binary_main_seed_tests {
             "main",
             &snapshot_id,
         );
-        assert_eq!(promoted["status"], json!("promoted"));
+        assert_eq!(promoted["status"], json!("promoted"), "{promoted:#?}");
         let backup_path = main_seed_backup_path(&seed_path);
 
         fs::rename(&seed_path, &backup_path).expect("simulate interrupted swap");
@@ -2158,7 +2221,7 @@ mod selected_binary_main_seed_tests {
             &snapshot_id,
         );
 
-        assert_eq!(refreshed["status"], json!("refreshed"));
+        assert_eq!(refreshed["status"], json!("refreshed"), "{refreshed:#?}");
         assert_eq!(refreshed["fallback_used"], json!(true));
         assert_eq!(
             refreshed["fallback_reason"],
@@ -2282,7 +2345,7 @@ mod selected_binary_main_seed_tests {
             &snapshot_id,
         );
 
-        assert_eq!(refreshed["status"], json!("refreshed"));
+        assert_eq!(refreshed["status"], json!("refreshed"), "{refreshed:#?}");
         assert_eq!(refreshed["fallback_used"], json!(true));
         assert_eq!(refreshed["fallback_reason"], json!("task_not_completed"));
         assert!(worktree_path.is_dir());
