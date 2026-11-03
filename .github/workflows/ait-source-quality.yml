@@ -8,6 +8,11 @@ on:
         required: true
         type: boolean
         default: false
+      diagnostic_runner_timeout:
+        description: Original R8 Windows x64 Runner timeout observations only
+        required: false
+        type: boolean
+        default: false
       coordinator_snapshot:
         description: Exact independently reviewed Native control Snapshot
         required: true
@@ -15,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: affected-consumers-${{ github.sha }}
@@ -22,7 +28,7 @@ concurrency:
 
 jobs:
   affected-consumers:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_affected_consumers }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_affected_consumers && !inputs.diagnostic_runner_timeout }}
     name: Affected ${{ matrix.consumer }} / ${{ matrix.target }}
     strategy:
       fail-fast: false
@@ -98,6 +104,7 @@ jobs:
           name: affected-python-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ait-python/dist/wheels/*.whl
           if-no-files-found: warn
+
       - name: Retain prepared Node addon
         if: always() && matrix.consumer == 'node'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -121,3 +128,266 @@ jobs:
             ${{ runner.temp }}/ait-affected-runner/binary/${{ matrix.target }}/release/ait-runner
             ${{ runner.temp }}/ait-affected-runner/binary/${{ matrix.target }}/release/ait-runner.exe
           if-no-files-found: warn
+
+  windows-diagnostic:
+    name: Windows diagnostic only
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_runner_timeout }}
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact diagnostic source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Select the existing source validator runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Require the exact exclusive diagnostic control and sources
+        shell: bash
+        env:
+          AIT_CONTROL_SNAPSHOT: ${{ inputs.coordinator_snapshot }}
+          DIAGNOSTIC_AFFECTED_CONSUMERS: ${{ inputs.diagnostic_affected_consumers }}
+          DIAGNOSTIC_RUNNER_TIMEOUT: ${{ inputs.diagnostic_runner_timeout }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { spawnSync } from 'node:child_process';
+          import { SOURCES, verifyControlIdentity, verifySource } from './ci/release_affected_consumers.mjs';
+          assert.equal(process.env.GITHUB_EVENT_NAME, 'workflow_dispatch');
+          assert.equal(process.env.GITHUB_REPOSITORY, 'weita2026/ait-native');
+          assert.match(process.env.GITHUB_REF, /^refs\/heads\/diagnostic\/release-121-/);
+          assert.equal(process.env.DIAGNOSTIC_RUNNER_TIMEOUT, 'true');
+          assert.equal(process.env.DIAGNOSTIC_AFFECTED_CONSUMERS, 'false', 'the 18-job batch must not be selected');
+          const head = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' });
+          assert.equal(head.status, 0); assert.equal(head.stdout.trim(), process.env.GITHUB_SHA);
+          console.log(verifyControlIdentity(process.cwd(), process.env.AIT_CONTROL_SNAPSHOT));
+          for (const [name, snapshot, extra] of [
+            ['ait-runner', 'SNP-07E0076369EE', []],
+            ['ait-core', 'SNP-49762426B59A', ['.ait-external-marker.json']],
+          ]) {
+            const source = SOURCES.find(row => row.name === name);
+            assert.equal(source?.snapshot, snapshot);
+            verifySource(process.cwd(), source, extra);
+          }
+          NODE
+      - name: Collect the fixed minimal Windows inventory
+        id: diagnostic
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidence = Join-Path $env:RUNNER_TEMP ('ait-windows-diagnostic-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          "evidence_root=$evidence" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $utf8 = [Text.UTF8Encoding]::new($false)
+          function Save-Json([string]$Name, $Value) {
+            [IO.File]::WriteAllText((Join-Path $evidence $Name), ($Value | ConvertTo-Json -Depth 30), $utf8)
+          }
+          $artifactId = 13224216750
+          $api = "https://api.github.com/repos/weita2026/ait-native/actions/artifacts/$artifactId"
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          $artifact = Invoke-RestMethod -Uri $api -Headers $headers
+          if ($artifact.id -ne $artifactId -or $artifact.expired -or $artifact.workflow_run.id -ne 41621671998 -or
+              $artifact.workflow_run.head_sha -ne 'b1972473998bf4c090f9daac3ea48cc91b9b3b9a' -or
+              $artifact.name -ne 'affected-runner-x86_64-pc-windows-msvc-41621671998-1' -or
+              $artifact.size_in_bytes -ne 2638343 -or
+              $artifact.digest -ne 'sha256:10473a03467a3b12fa169a759b5791ec0e65395da01efef35ccb90f436bd607b') {
+            throw 'Original R8 Runner artifact identity is unavailable or changed'
+          }
+          $archive = Join-Path $env:RUNNER_TEMP ('ait-r8-runner-' + [guid]::NewGuid().ToString('N') + '.zip')
+          Invoke-WebRequest -Uri "$api/zip" -Headers $headers -OutFile $archive
+          $archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($archiveHash -ne '10473a03467a3b12fa169a759b5791ec0e65395da01efef35ccb90f436bd607b') { throw 'Original R8 ZIP hash differs' }
+          $runnerBin = Join-Path $env:RUNNER_TEMP ('ait-r8-runner-' + [guid]::NewGuid().ToString('N') + '.exe')
+          $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+          try {
+            if ($zip.Entries.Count -ne 1 -or $zip.Entries[0].FullName -ne 'ait-runner.exe' -or $zip.Entries[0].Length -ne 6228480) {
+              throw 'Original artifact must contain only the exact Runner executable'
+            }
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($zip.Entries[0], $runnerBin, $false)
+          } finally { $zip.Dispose() }
+          $exeHash = (Get-FileHash -LiteralPath $runnerBin -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($exeHash -ne '31b0dc7fb3058abaf44ba05ab4d21eba5dedc29198d795151b6e6f2cb17990e3') { throw 'Original R8 executable hash differs' }
+          $bytes = [IO.File]::ReadAllBytes($runnerBin)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x4550 -or [BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) {
+            throw 'Original Runner is not the selected Windows x64 PE'
+          }
+          Save-Json 'identity.json' @{ run_id = 41621671998; run_attempt = 1; artifact_id = $artifactId;
+            original_head = $artifact.workflow_run.head_sha; zip_sha256 = $archiveHash; exe_sha256 = $exeHash;
+            executable_bytes = $bytes.Length; machine = '0x8664'; runner_snapshot = 'SNP-07E0076369EE'; core_snapshot = 'SNP-49762426B59A' }
+          if (-not [IO.Path]::IsPathFullyQualified($env:SystemRoot)) { throw 'The original absolute SystemRoot is required' }
+          $tasklist = Join-Path $env:SystemRoot 'System32/tasklist.exe'
+          if (-not (Test-Path -LiteralPath $tasklist -PathType Leaf)) { throw 'Native tasklist is unavailable' }
+          $fixture = @'
+          $child = Start-Process -FilePath "$env:SystemRoot\System32\ping.exe" -ArgumentList @('-n', '31', '127.0.0.1') -NoNewWindow -PassThru
+          [IO.File]::WriteAllText($env:PID_FILE, $child.Id.ToString())
+          $child.WaitForExit()
+          '@
+          $fixture = $fixture.Replace("`r`n", "`n") + "`n"
+          $diagnosticFailed = $false
+          foreach ($budget in @(2000, 10000)) {
+            if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '10473a03467a3b12fa169a759b5791ec0e65395da01efef35ccb90f436bd607b' -or
+                (Get-Item -LiteralPath $runnerBin).Length -ne 6228480 -or
+                (Get-FileHash -LiteralPath $runnerBin -Algorithm SHA256).Hash.ToLowerInvariant() -ne '31b0dc7fb3058abaf44ba05ab4d21eba5dedc29198d795151b6e6f2cb17990e3') {
+              throw 'Original R8 artifact/executable identity changed before the diagnostic window'
+            }
+            $label = "timeout-$budget"
+            $fixtureRoot = Join-Path $evidence "$label-source"
+            $attemptParent = Join-Path $evidence "$label-attempts"
+            $pidFile = Join-Path $evidence "$label-child.pid"
+            New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'ci'), $attemptParent | Out-Null
+            if (Test-Path -LiteralPath $pidFile) { throw 'PID file must be unique and initially absent' }
+            $fixtureFile = Join-Path $fixtureRoot 'ci/run.ps1'
+            [IO.File]::WriteAllText($fixtureFile, $fixture, $utf8)
+            if ((Get-Item -LiteralPath $fixtureFile).Length -ne 215 -or
+                (Get-FileHash -LiteralPath $fixtureFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne '52e09069e36631da549f3959b12d7b97842ca25369e77f2c862c3534d0858743') {
+              throw 'Verbatim 07/4E PowerShell fixture differs'
+            }
+            $request = @{ contract = 'ait.runner.native-job.v3'; label = $null; source = @{ kind = 'local_directory'; path = '.' };
+              command = @{ argv = @('./ci/run', 'patchset'); working_directory = '.'; environment = @{ PID_FILE = $pidFile } };
+              timeout_ms = $budget; suite_id = 'test-suite' }
+            $requestFile = Join-Path $evidence "$label.request.json"
+            Save-Json "$label.request.json" $request
+            $info = [Diagnostics.ProcessStartInfo]::new($runnerBin)
+            $info.UseShellExecute = $false
+            $info.CreateNoWindow = $true
+            $info.RedirectStandardOutput = $true
+            $info.RedirectStandardError = $true
+            $info.StandardOutputEncoding = $utf8
+            $info.StandardErrorEncoding = $utf8
+            $info.WorkingDirectory = $fixtureRoot
+            foreach ($argument in @('execute', '--request', $requestFile, '--source-root', $fixtureRoot, '--attempt-root', $attemptParent)) {
+              $info.ArgumentList.Add($argument)
+            }
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $info
+            $clock = [Diagnostics.Stopwatch]::StartNew()
+            $startedUtc = [DateTime]::UtcNow
+            $first = $null
+            $pidReadErrors = @()
+            $failure = $null
+            $stdout = $null
+            $stderr = $null
+            $runnerId = $null
+            try {
+              if (-not $process.Start()) { throw 'Original Runner did not start' }
+              $runnerId = $process.Id
+              $stdout = $process.StandardOutput.ReadToEndAsync()
+              $stderr = $process.StandardError.ReadToEndAsync()
+              while (-not $process.HasExited) {
+                if ($null -eq $first -and (Test-Path -LiteralPath $pidFile -PathType Leaf)) {
+                  try { $text = [IO.File]::ReadAllText($pidFile).Trim() }
+                  catch {
+                    if ($pidReadErrors.Count -lt 4) { $pidReadErrors += $_.Exception.Message }
+                    $text = ''
+                  }
+                  if ($text -match '^[1-9][0-9]*$') {
+                    $childId = 0
+                    if (-not [int]::TryParse($text, [ref]$childId)) { throw 'Child PID is out of range' }
+                    $first = @{ pid = $childId; host_wall_ms = $clock.ElapsedMilliseconds; alive = $null;
+                      alive_observed_host_wall_ms = $null; start_time_utc = $null; process_path = $null; process_name = $null; read_error = $null }
+                    try {
+                      $childProcess = [Diagnostics.Process]::GetProcessById($childId)
+                      try {
+                        $first.alive = -not $childProcess.HasExited
+                        $first.alive_observed_host_wall_ms = $clock.ElapsedMilliseconds
+                        $first.start_time_utc = $childProcess.StartTime.ToUniversalTime().ToString('o')
+                        $first.process_path = $childProcess.MainModule.FileName
+                        $first.process_name = $childProcess.ProcessName
+                      } finally { $childProcess.Dispose() }
+                    } catch { $first.read_error = $_.Exception.Message }
+                  }
+                }
+                if ($clock.ElapsedMilliseconds -gt $budget + 30000) {
+                  $process.Kill($true)
+                  throw 'Host wall-clock safety limit exceeded; forced termination is not native cleanup proof'
+                }
+                Start-Sleep -Milliseconds 10
+              }
+              $process.WaitForExit()
+            } catch {
+              $failure = $_.Exception.Message
+              $diagnosticFailed = $true
+              if ($runnerId -and -not $process.HasExited) { $process.Kill($true); $null = $process.WaitForExit(5000) }
+            } finally { $clock.Stop() }
+            $out = if ($stdout) { $stdout.GetAwaiter().GetResult() } else { '' }
+            $err = if ($stderr) { $stderr.GetAwaiter().GetResult() } else { '' }
+            [IO.File]::WriteAllText((Join-Path $evidence "$label.result.stdout"), $out, $utf8)
+            [IO.File]::WriteAllText((Join-Path $evidence "$label.result.stderr"), $err, $utf8)
+            $exitCode = if ($runnerId -and $process.HasExited) { $process.ExitCode } else { $null }
+            $process.Dispose()
+            $result = $null
+            try {
+              $result = $out | ConvertFrom-Json -Depth 30
+              $null = $result.cleanup.attempt_root_removed
+              $null = $result.cleanup.remaining_owned_paths
+              $null = $result.suite_results[0].execution.timed_out
+              foreach ($stream in @('stdout', 'stderr')) {
+                $tail = $result.suite_results[0].execution.$stream.tail_base64
+                [IO.File]::WriteAllBytes((Join-Path $evidence "$label.execution.$stream"), [Convert]::FromBase64String($tail))
+              }
+            } catch { $result = $null; $failure = "Native result/tail unavailable: $($_.Exception.Message)"; $diagnosticFailed = $true }
+            $pidText = if (Test-Path -LiteralPath $pidFile -PathType Leaf) { [IO.File]::ReadAllText($pidFile).Trim() } else { $null }
+            $childAfter = $null
+            $sameChildAfter = $null
+            $tasklistExit = $null
+            $tasklistHasPid = $null
+            $cleanup = 'no verified live child to clean'
+            if ($pidText -match '^[1-9][0-9]*$') {
+              $tasklistOut = & $tasklist /FI "PID eq $pidText" /FO CSV /NH 2> (Join-Path $evidence "$label.tasklist.stderr")
+              $tasklistExit = $LASTEXITCODE
+              $tasklistHasPid = ([string]::Join("`n", [string[]]$tasklistOut)).Contains(",`"$pidText`",")
+              [IO.File]::WriteAllLines((Join-Path $evidence "$label.tasklist.stdout"), [string[]]$tasklistOut, $utf8)
+              try {
+                $after = [Diagnostics.Process]::GetProcessById([int]$pidText)
+                try {
+                  $childAfter = @{ alive = -not $after.HasExited; start_time_utc = $after.StartTime.ToUniversalTime().ToString('o'); process_name = $after.ProcessName }
+                  $sameChildAfter = $first -and $first.start_time_utc -eq $childAfter.start_time_utc
+                  if ($sameChildAfter -and $childAfter.alive -and $first.process_name -eq 'PING' -and
+                      $first.process_path -ieq (Join-Path $env:SystemRoot 'System32/ping.exe') -and
+                      [DateTime]::Parse($first.start_time_utc).ToUniversalTime() -ge $startedUtc) {
+                    try {
+                      $after.Kill()
+                      $null = $after.WaitForExit(5000)
+                      $cleanup = 'terminated exact surviving observed child after native result; native descendant cleanup failed'
+                    } catch { $cleanup = 'exact surviving child cleanup failed: ' + $_.Exception.Message }
+                  }
+                } finally { $after.Dispose() }
+              } catch [ArgumentException] { $childAfter = @{ alive = $false }; $sameChildAfter = $false }
+              catch { $childAfter = @{ read_error = $_.Exception.Message } }
+              if ($tasklistExit -ne 0) { $diagnosticFailed = $true }
+            }
+            $remaining = @(Get-ChildItem -LiteralPath $attemptParent -Force | ForEach-Object { $_.FullName })
+            $childProof = $first -and $first.alive -eq $true -and $null -ne $first.alive_observed_host_wall_ms -and $first.alive_observed_host_wall_ms -lt $budget
+            $nativeProof = $exitCode -eq 0 -and $result -and $result.contract -eq 'ait.runner.native-result.v1' -and $result.status -eq 'timed_out' -and
+              $result.suite_results[0].execution.timed_out -eq $true -and $result.cleanup.attempt_root_removed -eq $true -and
+              @($result.cleanup.remaining_owned_paths).Count -eq 0 -and $remaining.Count -eq 0
+            $gone = $tasklistExit -eq 0 -and $tasklistHasPid -eq $false -and $childAfter -and $childAfter.ContainsKey('alive') -and $childAfter.alive -eq $false
+            if (-not ($childProof -and $nativeProof -and $gone)) { $diagnosticFailed = $true }
+            Save-Json "$label.observation.json" @{ requested_timeout_ms = $budget; runner_pid = $runnerId; runner_exit_code = $exitCode;
+              timing_scope = 'host wall clock includes CLI startup and materialization; not spawn or native execution duration';
+              pid_read_errors = $pidReadErrors; host_started_utc = $startedUtc.ToString('o'); host_wall_ms = $clock.ElapsedMilliseconds; first_readable_pid = $first;
+              alive_within_requested_host_wall_budget = [bool]$childProof; final_pid_text = $pidText;
+              child_after_native_result = $childAfter; same_process_identity_after = $sameChildAfter;
+              tasklist_exit_code = $tasklistExit; tasklist_contains_exact_pid = $tasklistHasPid;
+              attempt_parent_remaining = $remaining; native_assertions_observed = [bool]$nativeProof; observation_error = $failure;
+              external_cleanup = $cleanup; finding_disposition = 'F02 remains open; 10s success or failure to reproduce cannot close it' }
+          }
+          Remove-Item -LiteralPath $archive, $runnerBin -Force
+          if ($diagnosticFailed) { throw 'Bounded observations collected; child/timeout/cleanup evidence is failed, absent or inconclusive. F02 remains open.' }
+          Write-Output 'Bounded observations collected only. No product acceptance or F02 closure is granted.'
+      - name: Retain original diagnostic streams and observations
+        if: always() && steps.diagnostic.outputs.evidence_root != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.diagnostic.outputs.evidence_root }}
+          if-no-files-found: error
+          retention-days: 90
