@@ -217,7 +217,7 @@ fn init_creates_authority_agent_contract_and_configured_sprint_directory() {
     assert_eq!(payload["action"], "initialized");
     assert_eq!(payload["repo_name"], "housekeeper");
     assert_eq!(payload["default_line"], "main");
-    assert_eq!(payload["workflow_mode"]["value"], "solo_local");
+    assert!(payload.get("workflow_mode").is_none());
     assert_eq!(payload["policy_profile"], "prototype");
     assert_eq!(payload["default_author_mode"], "ai_with_human_review");
     assert_eq!(payload["default_model"], "codex");
@@ -235,7 +235,7 @@ fn init_creates_authority_agent_contract_and_configured_sprint_directory() {
     );
     let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
     assert!(agents.contains("<!-- ait:workflow:start -->"));
-    assert!(agents.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(agents.contains("Route: sprint=`on`; scope=`local`"));
     assert!(agents.contains("plan-binding=`required`"));
     assert!(agents.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent"));
     assert!(agents.contains("Work only in the returned `edit_root`"));
@@ -244,11 +244,10 @@ fn init_creates_authority_agent_contract_and_configured_sprint_directory() {
     assert!(agents.contains("Read `docs/plan.md` Current Priorities only"));
     let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
     assert!(claude.contains("<!-- ait:workflow:start -->"));
-    assert!(claude.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(claude.contains("Route: sprint=`on`; scope=`local`"));
     assert!(claude.contains("--edit-root <absolute-path>"));
     assert!(claude.contains("&& cd <absolute-path>"));
-    assert!(!agents.to_ascii_lowercase().contains("json"));
-    assert!(!claude.to_ascii_lowercase().contains("json"));
+
     assert!(claude.contains("Do not omit `--edit-root`"));
     assert!(!claude.contains("@AGENTS.md"));
     assert!(temp.path().join("docs/sprints").is_dir());

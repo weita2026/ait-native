@@ -5,6 +5,7 @@ use crate::runtime::SNAPSHOT_BINARY_DB_WRITE_LAYOUT;
 use crate::task_land_contract::attach_task_audit_land_contract;
 use ait_core::line_store::{LineRecord, LineStore};
 use ait_core::snapshot_store::SnapshotStore;
+#[cfg(test)]
 use ait_core::task_workflow_store::list_changes_with_task_workflow_change_store;
 use ait_core::task_workflow_store::{
     close_task_with_task_workflow_task_store, create_task_with_task_workflow_task_store,
@@ -386,6 +387,7 @@ fn inspect_local_task_closeout_evidence(
     task: &JsonValue,
     change_rows: &[JsonValue],
     target: &JsonValue,
+    task_lines: &[JsonValue],
 ) -> JsonValue {
     let root_repo = match workflow_root_repo(repo) {
         Ok(root_repo) => root_repo,
@@ -423,7 +425,33 @@ fn inspect_local_task_closeout_evidence(
             "error": error,
         }),
     };
-    local_task_closeout_evidence_from_parts(plan_evidence, worktree_evidence, change_rows, target)
+    let mut evidence_rows = change_rows.to_vec();
+    evidence_rows.push(json!({"candidate_lines":task_lines}));
+    let mut evidence = local_task_closeout_evidence_from_parts(
+        plan_evidence,
+        worktree_evidence,
+        &evidence_rows,
+        target,
+    );
+    if let Some(receipt) = task.get("local_finish") {
+        let snapshot = string_field(receipt, "landed_snapshot_id");
+        let on_target = snapshot.as_ref().is_some_and(|snapshot| {
+            string_field(target, "head_snapshot_id").as_ref() == Some(snapshot)
+                || target
+                    .get("ancestry")
+                    .and_then(JsonValue::as_array)
+                    .is_some_and(|ancestors| {
+                        ancestors
+                            .iter()
+                            .any(|ancestor| ancestor.as_str() == Some(snapshot.as_str()))
+                    })
+        });
+        evidence["receipt"] = json!({"status":if on_target {"done"} else {"incomplete"},"record":receipt,"on_target":on_target});
+        if !on_target {
+            evidence["status"] = json!("incomplete");
+        }
+    }
+    evidence
 }
 
 pub(super) fn local_task_closeout_evidence_from_parts(
@@ -675,13 +703,21 @@ pub(super) fn infer_local_task_audit_with_change_store<C>(
 where
     C: TaskWorkflowChangeLister + ?Sized,
 {
-    let mut changes = task_audit_local_change_rows_with_change_store(change_store)?
+    let mut changes = change_store
+        .list_task_changes(task_id)
+        .map_err(|error| error.to_string())?
         .into_iter()
         .filter(|row| string_field(row, "task_id").as_deref() == Some(task_id))
         .collect::<Vec<_>>();
     changes.sort_by_key(|row| string_field(row, "created_at").unwrap_or_default());
     let all_lines = local_task_audit_lines(repo)?;
     let task_match_terms = task_audit_id_tokens(task_id);
+    let task_line = format!("feature/{}", task_id.to_ascii_lowercase());
+    let task_lines = all_lines
+        .iter()
+        .filter(|line| string_field(line, "line_name").as_deref() == Some(task_line.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
     let mut change_rows = Vec::new();
 
     for change in changes {
@@ -745,8 +781,11 @@ where
     let verdict_obj = verdict
         .as_object()
         .ok_or_else(|| "task audit verdict payload must decode to an object".to_string())?;
-    let local_closeout_evidence = (string_field(task, "status").as_deref() == Some("completed"))
-        .then(|| inspect_local_task_closeout_evidence(repo, task, &change_rows, target));
+    let local_closeout_evidence = (string_field(task, "status").as_deref() == Some("completed")
+        || task
+            .get("local_finish")
+            .is_some_and(|receipt| !receipt.is_null()))
+    .then(|| inspect_local_task_closeout_evidence(repo, task, &change_rows, target, &task_lines));
     let mut output = json!({
         "task": task.clone(),
         "repository": {
@@ -770,6 +809,8 @@ where
         },
         "summary": verdict_obj.get("summary").cloned().unwrap_or(JsonValue::Null),
         "changes": change_rows,
+        "local_finish":task.get("local_finish").cloned().unwrap_or(JsonValue::Null),
+        "task_candidate_lines":task_lines,
     });
     if let (Some(object), Some(evidence)) = (output.as_object_mut(), local_closeout_evidence) {
         object.insert("local_closeout_evidence".to_string(), evidence);
@@ -778,6 +819,7 @@ where
     Ok(output)
 }
 
+#[cfg(test)]
 pub(super) fn task_audit_local_change_rows_with_change_store<S>(
     change_store: &S,
 ) -> Result<Vec<JsonValue>, String>
@@ -976,6 +1018,11 @@ pub(super) fn http_task_remote(
 ) -> Result<HttpTaskRemote, String> {
     let mut remote =
         HttpTaskRemote::new(http_config(repo, remote_row)).map_err(|err| err.to_string())?;
+    remote.set_actor_registration(
+        remote_row.repo_name.as_deref().unwrap_or(&repo.repo_name()),
+        repo.remote_actor_identity(),
+        Some(&repo.id_namespace_prefix()),
+    );
     if let Some(metadata) = current_worktree_metadata(repo)? {
         remote.set_bound_change_identity_context(
             metadata.bound_task_id.as_deref(),
@@ -992,6 +1039,11 @@ pub(super) fn http_closeout_remote(
 ) -> Result<HttpWorkflowCloseoutRemote, String> {
     let mut remote = HttpWorkflowCloseoutRemote::new(http_config(repo, remote_row))
         .map_err(|err| err.to_string())?;
+    remote.set_actor_registration(
+        remote_row.repo_name.as_deref().unwrap_or(&repo.repo_name()),
+        repo.remote_actor_identity(),
+        Some(&repo.id_namespace_prefix()),
+    );
     if let Some(metadata) = current_worktree_metadata(repo)? {
         remote.set_bound_change_identity_context(
             metadata.bound_task_id.as_deref(),

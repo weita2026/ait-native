@@ -1583,8 +1583,11 @@ mod tests {
     }
 
     fn executable_snapshot_fixture(packs: &TempDir, entry_name: &str) -> FixtureProvider {
-        let script =
-            b"#!/bin/sh\nset -eu\ntest -n \"$AIT_RUNNER_ATTEMPT_ROOT\"\nprintf remote-ok\n";
+        let script: &[u8] = if cfg!(windows) {
+            b"if ([string]::IsNullOrEmpty($env:AIT_RUNNER_ATTEMPT_ROOT)) { exit 1 }\n[Console]::Out.Write('remote-ok')\n"
+        } else {
+            b"#!/bin/sh\nset -eu\ntest -n \"$AIT_RUNNER_ATTEMPT_ROOT\"\nprintf remote-ok\n"
+        };
         let blob_sha = sha256_hex(script);
         let blob_id = format!("BLB-{}", &blob_sha[..20]);
         let object_pack_id = "PCK-RUNNER-TEST";
@@ -1596,7 +1599,7 @@ mod tests {
         let object_members = json!([{
             "entry_name": format!("blobs/{blob_id}"),
             "blob_id": blob_id,
-            "data": script.as_slice(),
+            "data": script,
             "entry_type": "full",
             "chain_depth": 0
         }]);
@@ -1749,7 +1752,8 @@ mod tests {
     #[test]
     fn remote_snapshot_executes_and_removes_every_attempt_owned_path() {
         let packs = tempfile::tempdir().expect("packs");
-        let provider = executable_snapshot_fixture(&packs, "run.sh");
+        let entry_name = if cfg!(windows) { "run.ps1" } else { "run.sh" };
+        let provider = executable_snapshot_fixture(&packs, entry_name);
         let attempts = tempfile::tempdir().expect("attempts");
         let source_root = tempfile::tempdir().expect("unused local source");
         let executor = NativeExecutor::new(ExecutorConfig {

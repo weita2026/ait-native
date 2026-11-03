@@ -7,7 +7,7 @@ tokens consumed by fresh coding-agent sessions using two repository surfaces:
 - git_linear_single_session
 - ait_linear_single_session
 
-The AIT core mode is solo_local. Sprint-off and sprint-on campaigns are
+The AIT core uses local authority. Sprint-off and sprint-on campaigns are
 reported separately and never pooled. A sprint-on smoke requires all five
 workloads exactly once in both modes and remains non-claim-eligible; a
 sprint-on complete campaign requires 20 attempts per workload and mode. Both measure

@@ -2,6 +2,7 @@ use super::*;
 use crate::json_support::{
     encode_value, encode_value_pretty_with_newline_error_string, parse_value,
 };
+use ait_core::file_io::{FileIoDurabilityStore, FilesystemFileIoStore};
 use ait_core::local_snapshot::{
     LocalSnapshotBlobReadStore, LocalSnapshotTreeReadStore, SnapshotAuthoringOptions,
 };
@@ -434,16 +435,16 @@ fn inspect_source(source: &str) -> Result<SourceInfo, String> {
     } else {
         source.to_string()
     };
-    let output = run_git(
-        [
-            "ls-remote",
-            "--symref",
-            source,
-            "HEAD",
-            "refs/heads/*",
-            "refs/tags/*",
-            "refs/notes/*",
-            "refs/replace/*",
+    let output = run_git_os(
+        vec![
+            "ls-remote".into(),
+            "--symref".into(),
+            git_path_argument(Path::new(source)),
+            "HEAD".into(),
+            "refs/heads/*".into(),
+            "refs/tags/*".into(),
+            "refs/notes/*".into(),
+            "refs/replace/*".into(),
         ],
         &[],
         None,
@@ -576,11 +577,11 @@ fn prepare_retained_repository(
     }
     if !refspecs.is_empty() {
         let mut args = vec![
-            OsString::from(format!("--git-dir={}", path.display())),
+            git_directory_argument(path),
             OsString::from("fetch"),
             OsString::from("--no-tags"),
             OsString::from("--no-write-fetch-head"),
-            OsString::from(&source.source),
+            git_path_argument(Path::new(&source.source)),
         ];
         args.extend(refspecs.into_iter().map(OsString::from));
         run_git_os(args, &[], None)?;
@@ -596,6 +597,42 @@ fn prepare_retained_repository(
     }
     imported_refs.sort_by(|left, right| left.source_name.cmp(&right.source_name));
     Ok(imported_refs)
+}
+
+// Adapt only path-valued arguments. Rust canonical paths use the verbatim
+// namespace on Windows, while Git's path parser expects drive or UNC spelling.
+fn git_path_argument(path: &Path) -> OsString {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut parts = path.components();
+        if let Some(Component::Prefix(prefix)) = parts.next() {
+            let mut normalized = match prefix.kind() {
+                Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:\\", char::from(drive))),
+                Prefix::VerbatimUNC(server, share) => {
+                    let mut root = OsString::from("\\\\");
+                    root.push(server);
+                    root.push("\\");
+                    root.push(share);
+                    PathBuf::from(root)
+                }
+                _ => return path.as_os_str().to_owned(),
+            };
+            for part in parts {
+                if part != Component::RootDir {
+                    normalized.push(part.as_os_str());
+                }
+            }
+            return normalized.into_os_string();
+        }
+    }
+    path.as_os_str().to_owned()
+}
+
+fn git_directory_argument(path: &Path) -> OsString {
+    let mut argument = OsString::from("--git-dir=");
+    argument.push(git_path_argument(path));
+    argument
 }
 
 fn ensure_bare_repository(path: &Path, object_format: &str) -> Result<(), String> {
@@ -618,7 +655,7 @@ fn ensure_bare_repository(path: &Path, object_format: &str) -> Result<(), String
                 OsString::from("init"),
                 OsString::from("--bare"),
                 OsString::from("--object-format=sha1"),
-                path.as_os_str().to_os_string(),
+                git_path_argument(path),
             ],
             &[],
             None,
@@ -757,7 +794,7 @@ impl GitBatchProcess {
             .try_clone()
             .map_err(|error| format!("Failed to clone Git batch stderr: {error}"))?;
         let mut child = Command::new("git")
-            .arg(format!("--git-dir={}", git_dir.display()))
+            .arg(git_directory_argument(git_dir))
             .args(["cat-file", mode])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1092,7 +1129,7 @@ fn materialize_commit(git_dir: &Path, object_id: &str) -> Result<TempDir, String
     let index_path = temp.path().join("index");
     let env = vec![(
         OsString::from("GIT_INDEX_FILE"),
-        index_path.as_os_str().to_os_string(),
+        git_path_argument(&index_path),
     )];
     git_repo_bytes_os(
         git_dir,
@@ -1101,7 +1138,7 @@ fn materialize_commit(git_dir: &Path, object_id: &str) -> Result<TempDir, String
         None,
     )?;
     let args = vec![
-        OsString::from(format!("--git-dir={}", git_dir.display())),
+        git_directory_argument(git_dir),
         OsString::from(format!("--work-tree={}", temp.path().display())),
         OsString::from("checkout-index"),
         OsString::from("-a"),
@@ -1174,7 +1211,7 @@ fn git_repo_bytes<'a, I>(git_dir: &Path, args: I) -> Result<Vec<u8>, String>
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let mut owned = vec![OsString::from(format!("--git-dir={}", git_dir.display()))];
+    let mut owned = vec![git_directory_argument(git_dir)];
     owned.extend(args.into_iter().map(OsString::from));
     run_git_os(owned, &[], None)
 }
@@ -1185,7 +1222,7 @@ fn git_repo_bytes_os(
     env: &[(OsString, OsString)],
     stdin: Option<&[u8]>,
 ) -> Result<Vec<u8>, String> {
-    let mut owned = vec![OsString::from(format!("--git-dir={}", git_dir.display()))];
+    let mut owned = vec![git_directory_argument(git_dir)];
     owned.extend(args);
     run_git_os(owned, env, stdin)
 }
@@ -2788,7 +2825,7 @@ fn ensure_import_mapping_in_generated(
                 OsString::from("fetch"),
                 OsString::from("--no-tags"),
                 OsString::from("--no-write-fetch-head"),
-                source_git_dir.as_os_str().to_os_string(),
+                git_path_argument(&source_git_dir),
                 OsString::from(refspec),
             ],
             &[],
@@ -2802,7 +2839,7 @@ fn ensure_import_mapping_in_generated(
                     OsString::from("fetch"),
                     OsString::from("--no-tags"),
                     OsString::from("--no-write-fetch-head"),
-                    source_git_dir.as_os_str().to_os_string(),
+                    git_path_argument(&source_git_dir),
                     OsString::from(format!("+{object_id}:{cache_ref}")),
                 ],
                 &[],
@@ -2852,7 +2889,7 @@ where
     let index_path = temp.path().join("index");
     let env = vec![(
         OsString::from("GIT_INDEX_FILE"),
-        index_path.as_os_str().to_os_string(),
+        git_path_argument(&index_path),
     )];
     git_repo_bytes_os(
         generated_git_dir,
@@ -3090,7 +3127,7 @@ fn export_tag_object(
                         OsString::from("fetch"),
                         OsString::from("--no-tags"),
                         OsString::from("--no-write-fetch-head"),
-                        source_git_dir.as_os_str().to_os_string(),
+                        git_path_argument(&source_git_dir),
                         OsString::from(format!(
                             "+{object_id}:{}",
                             generated_tag_ref(&reference.ait_name)
@@ -3166,7 +3203,7 @@ fn fetch_cache_ref(
             OsString::from("fetch"),
             OsString::from("--no-tags"),
             OsString::from("--no-write-fetch-head"),
-            generated_git_dir.as_os_str().to_os_string(),
+            git_path_argument(generated_git_dir),
             OsString::from(format!("+{source_ref}:{destination_ref}")),
         ],
         &[],
@@ -3177,7 +3214,7 @@ fn fetch_cache_ref(
 
 fn git_ref_object_id(git_dir: &Path, reference: &str) -> Result<Option<String>, String> {
     let output = Command::new("git")
-        .arg(format!("--git-dir={}", git_dir.display()))
+        .arg(git_directory_argument(git_dir))
         .args(["rev-parse", "--verify", "--quiet", reference])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -3216,6 +3253,39 @@ fn git_update_ref(
 mod import_object_reader_tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn git_source_arguments_preserve_remote_urls() {
+        for source in [
+            "https://example.test/owner/repository.git",
+            "ssh://git@example.test:2222/owner/repository.git",
+            "git@example.test:owner/repository.git",
+        ] {
+            assert_eq!(git_path_argument(Path::new(source)), OsString::from(source));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_path_arguments_preserve_drive_unc_and_unicode_names() {
+        for (input, expected) in [
+            (
+                r"\\?\C:\work space\資料\objects.git",
+                r"C:\work space\資料\objects.git",
+            ),
+            (
+                r"\\?\UNC\server\share\objects.git",
+                r"\\server\share\objects.git",
+            ),
+            (r"C:\ordinary\objects.git", r"C:\ordinary\objects.git"),
+            ("relative/path", "relative/path"),
+        ] {
+            assert_eq!(
+                git_path_argument(Path::new(input)),
+                OsString::from(expected)
+            );
+        }
+    }
 
     fn repository() -> TempDir {
         let dir = TempDir::new().unwrap();

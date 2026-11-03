@@ -14,7 +14,7 @@ use crate::event_loop::telegram_command_runtime::{
     SystemTelegramCommandRuntimeClockPort, TelegramCommandRuntimeDeliveryPort,
 };
 use crate::event_loop::telegram_workflow_query::DefaultTelegramWorkflowQueryPlanner;
-use crate::transport_config::{AgentRuntimeMode, AgentRuntimeTarget, AgentWorkflowMode};
+use crate::transport_config::{AgentRuntimeMode, AgentRuntimeTarget};
 
 const COMMAND_CONTRACT: &str = "ait_agent_core.event_loop.TelegramCommandRuntimeExecution.v1";
 const COMMAND_MIGRATION_STAGE: &str = "rust_agent_telegram_command_runtime_execution";
@@ -332,16 +332,9 @@ fn validate_native_configuration(
         || request_timeout_seconds
             .is_some_and(|value| !value.is_finite() || value <= 0.0 || value > 86_400.0)
         || match target.mode {
-            AgentRuntimeMode::Local => {
-                target.workflow_mode != AgentWorkflowMode::SoloLocal
-                    || target.remote_name.is_some()
-                    || target.server_url.is_some()
-            }
+            AgentRuntimeMode::Local => false,
             AgentRuntimeMode::Remote => {
-                !matches!(
-                    target.workflow_mode,
-                    AgentWorkflowMode::SoloRemote | AgentWorkflowMode::TeamRemote
-                ) || target
+                target
                     .remote_name
                     .as_deref()
                     .is_none_or(|value| !valid_config_text(value, MAX_CONFIG_TEXT_BYTES))

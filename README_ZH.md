@@ -4,6 +4,9 @@
 
 **目前穩定版：1.2.0。**
 
+**開發目標：1.2.1。** 原始碼、相依元件相容性與最終產物仍在驗證中。
+1.2.1 套件與通路可用性須待實際發布；下方安裝範例選用已發布的 1.2.0。
+
 **將多個並行的 coding agent 對話，變成經過驗證、可追溯的 Task。**
 
 AIT 是以本地工作為主的 CLI，適合將程式修改交給 agent、並對結果負責的個人開發者與維護者。
@@ -16,13 +19,17 @@ AIT 是以本地工作為主的 CLI，適合將程式修改交給 agent、並對
 
 **[試跑第一個 Task](https://ait-native.dev/zh-tw/local-quickstart/#first-task)** ·
 [觀看演示](https://ait-native.dev/zh-tw/demo/#in-action) ·
-[技術文件](https://ait-native.dev/technical/) ·
+[1.2.1 手冊準備](https://ait-native.dev/zh-tw/technical/1.2.1/) ·
 [取得協助](https://github.com/weita2026/ait-native/discussions)
 
 [简体中文入门](https://ait-native.dev/zh-cn/local-quickstart/#first-task) ·
 [繁體中文入門](https://ait-native.dev/zh-tw/local-quickstart/#first-task)
 
-## 1.2.0 亮點
+## 1.2.1 開發目標
+
+開發版本整合經審查的安全與平台修正，以及共用的自主 rebase 指引。
+完整原始碼准入、相符套件產物、跨平台與 Web 驗證、發布後回讀仍須完成。
+以下已發布的 1.2.0 工作流邊界繼續適用：
 
 - **[新儲存庫預設啟用 Agent Teams。](#agent-teams-如何運作)** 全新 `ait init` 預設啟用團隊；既有儲存庫的設定與
   session 綁定保持不變。團隊設定、sprint 綁定與 Local/Remote 範圍各自獨立；
@@ -59,8 +66,12 @@ worktree 清理，以及有綁定時的 sprint 項目關閉。後續 Local finis
 全新 `ait init` 啟用 Teams 並產生儲存庫工作流程說明。
 重新初始化既有儲存庫會保留設定與 session 綁定。可用對話仍需受支援的 agent host。
 Teams、sprint 綁定與 Local/Remote 範圍是各自獨立的選擇；本機初始化不需要執行中的 Server。
-確切命令請遵循產生的說明；session 準備前提請參閱
-[Agent Teams 指南](https://ait-native.dev/zh-tw/development/1.2.0/agent-teams/)。
+確切命令與 session 準備前提請遵循產生的說明及已安裝版本的指南。
+
+規劃中的 [1.2.1 Agent Teams 指南](https://ait-native.dev/zh-tw/technical/1.2.1/agent-teams/)
+說明開發版本的契約。Teams 關閉時，執行者自行處理範圍內必要的 rebase；
+Teams 開啟時，由 Developer rebase 並解決範圍內衝突，Reviewer 在 finish 前驗證整合。
+一般目標前進無須透過 PM 中轉；範圍決策與未解決的阻礙仍依既有規則升級處理。
 
 ## 走完一個 AIT 任務
 
@@ -107,7 +118,7 @@ ait config set --user-name "your-name"
 
 三項基準測試應全部通過。Task start 的初始化流程會記錄起始基準。
 之後僅能在回傳的 Task worktree 內，使用 Task ID 建立 checkpoint。
-若使用既有專案，請改依[入門指南](https://ait-native.dev/technical/getting-started/)操作。
+若使用既有專案，請改依[已發布版本的快速上手](https://ait-native.dev/zh-tw/local-quickstart/)操作。
 
 **3. 初始化完成後，從範例資料夾開啟全新的 coding agent 對話。**
 
@@ -136,12 +147,15 @@ node checks/first-task.mjs
 worktree 已清理，並在適用時關閉綁定的 sprint 項目。功能驗收與工作流完成是兩項分開的檢查。
 審閱修改後，再到自己的專案嘗試一個小任務。
 
+若結果顯示 partial、pending 或 blocked，即使命令回傳 0 或 Task 已完成，仍有未完成的必要步驟。
+保留已成功的套用與原始身分，只恢復尚未完成的步驟，不重複套用。
+
 ## 你能得到什麼
 
 - **讓需求與工作持續相連。** 明確的 Markdown sprint 項目及其 Plan 版本會綁定至 Task。
   上下文壓縮後，產生的指示要求 agent 重新閱讀該項目。
 - **以專案目前的狀態完成工作。** 獨立 Task 各自擁有 worktree。AIT 會重新檢查目標，
-  對相容修改進行 rebase，遇到實質衝突則停止，並在 Task finish 成功後清理工作區。
+  由負責的執行者在必要時 rebase 並驗證整合。實質衝突須先修正，才能成功 finish 並清理工作區。
 - **出問題時找到相關脈絡。** `ait blame` 將受影響的程式碼或 Plan 文字連結到已記錄的版本與可用工作流歷史。
   Agent 可據此診斷問題、做出範圍明確的修正，並驗證結果。
 
@@ -194,16 +208,15 @@ Sprint 開啟的重複實驗分別使用 45,432,262 與 71,238,660 tokens（減�
 [已發布基準的證據](https://github.com/weita2026/ait-native/tree/v1.1.0/ait-core/release/benchmarks/game-v1-g56s-max-complete200-fx27-20260826) ·
 [Sprint 開啟重複實驗的證據](https://github.com/weita2026/ait-native/tree/benchmark-sprint-on-20260829/ait-core/release/benchmarks/game-v1-g56s-max-sprint-on-natural-complete200-20260828)
 
-### Claude Fable 評測——仍在進行
+### Claude Fable 評測——未完成的檢查點
 
-我們正在執行一輪設定已固定的 200-session 評測，比較 AIT 的任務導向工作流與 agent 自行管理的本地 Git worktree，
+這輪未完成、設定已固定的 200-session 評測，比較 AIT 的任務導向工作流與 agent 自行管理的本地 Git worktree，
 兩組使用相同的五種遊戲開發工作負載。
 
-**進度：22 / 200 個 session**
+**已記錄進度：22 / 200 個 session**
 
-目前觀察到的 22 次執行全部有效且通過驗收，沒有切換至備用模型。
-實驗尚未完成，仍為 `claim_eligible=false`。
-無論剩餘結果偏向 AIT 或 Git，我們都會繼續完成全部 200 個 session。
+該檢查點觀察到的 22 次執行全部有效且通過驗收，沒有切換至備用模型。
+實驗尚未完成，仍為 `claim_eligible=false`；這是保留的中期紀錄，不能視為已完成的 Claude/Fable 評測或新的成效宣稱。
 
 最新的平衡檢查點為 20/200，每種工作負載各有兩組完整 AIT/Git 配對：
 
@@ -271,16 +284,23 @@ Coding agent 負責實作及選定的檢查；AIT 管理任務生命週期，並
 `ait init` 建立本地 `.ait` 權威資料，並在 `AGENTS.md` 與 `CLAUDE.md` 產生受管理的工作流區塊。
 該產生式區塊是有效命令的依據；本地儲存庫初始化不需要執行中的 `ait-server`。
 
-**AIT 1.2.0 工作流：**命令與完成要求，請以已安裝版本產生的指引為準。
+**AIT 1.2.1 開發工作流：**命令與完成要求，請以已安裝版本產生的指引為準。
 
-在 AIT 1.2.0 中，Agent Teams、sprint 綁定與 Local/Remote 範圍各自獨立。
+Agent Teams、sprint 綁定與 Local/Remote 範圍各自獨立。
 全新 `ait init` 預設啟用 Agent Teams；既有儲存庫保留原設定，仍需受支援的 agent host 準備可用對話。
 `ait team contacts --json` 提供綁定與原生可用性；`ait team session ensure` 準備既有成員，
 不等於派發工作，也不提供桌面執行狀態。準備 Reviewer 對話需要 server registration。
 
+自動 session 準備與檢查目前使用原生 Codex host。AIT 也會產生 `CLAUDE.md` 儲存庫指引；
+實際 Claude host 編排、混合 provider 派送與行動工作流仍延後且未通過資格驗證。
+產生指引與未完成的 benchmark 不能證明 Claude host 已通過驗證。
+
 Agent Teams 與設定參考：
-[Agent Teams 聯絡資料與 session](https://ait-native.dev/zh-tw/development/1.2.0/agent-teams/) ·
-[初始化與設定](https://ait-native.dev/zh-tw/development/1.2.0/config/)。
+[Agent Teams 聯絡資料與 session](https://ait-native.dev/zh-tw/technical/1.2.1/agent-teams/) ·
+[原生命令參考，包含 init 與 config](https://ait-native.dev/zh-tw/technical/1.2.1/cli/reference/ait/)。
+這些是規劃中的 1.2.1 參考文件；既有 [1.2.0 文件](https://ait-native.dev/zh-tw/development/1.2.0/)
+保留已發布版本的範圍。目前產生的 Claude 指引要求明確指定安全的 `--edit-root`，
+AGENTS 指引則可使用回傳的目錄。請遵循實際安裝版本的 harness 說明。
 
 依產生的指示執行 `ait task start`、`ait snapshot create` 檢查點、`ait plan sync` Markdown 沿革，
 以及適用的 `ait task finish` 或 `ait workflow finish`。團隊所需的獨立審查與 finish 由指派的 Reviewer 負責。
@@ -288,11 +308,12 @@ Remote `ait workflow ready` 唯讀檢查 readiness；加 `--apply` 才準備 can
 保留實際回傳的確切 identity。Server 在 formal acceptance 前重啟後，可經明確的 ready apply
 以相同 sealed 內容和 mode 重新準備新 Job、CI 及所需審查。已接受的 formal retry 復用原 acceptance。
 
-- [Git 匯入、匯出與退出路徑](https://ait-native.dev/technical/cli/reference/git/)
-- [功能工作流](https://ait-native.dev/technical/workflows/feature/)與[回歸修復](https://ait-native.dev/technical/workflows/regression/)
+- [1.2.1 使用與復原手冊](https://ait-native.dev/zh-tw/technical/1.2.1/)
+- [完整命令目錄](https://ait-native.dev/zh-tw/technical/1.2.1/cli/reference/)與[原生命令，包含 Git 互通](https://ait-native.dev/zh-tw/technical/1.2.1/cli/reference/ait/)
+- [Python CLI/API](https://ait-native.dev/zh-tw/technical/1.2.1/integrations/python/)與[Node.js CLI/API](https://ait-native.dev/zh-tw/technical/1.2.1/integrations/node/)
 - [元件](https://ait-native.dev/zh-tw/components/)與[發行狀態](https://ait-native.dev/zh-tw/proof/)
 
-發行原始碼：**v1.2.0**。`ait-monorepo-source.json` 記錄匯出的元件 Snapshot。
+原始碼目標：**v1.2.0**。`ait-monorepo-source.json` 記錄匯出的元件 Snapshot。
 套件通路可用性請參閱[發行狀態](https://ait-native.dev/zh-tw/proof/)。
 
 <details>
@@ -302,7 +323,12 @@ Remote `ait workflow ready` 唯讀檢查 readiness；加 `--apply` 才準備 can
 
 </details>
 
-官網技術參考與 PDF 保留封存的 1.1.1 原始碼及命令回執。安裝請使用[現行快速上手](https://ait-native.dev/zh-tw/local-quickstart/)，工作流命令以已安裝版本產生的 AGENTS.md 為準。錄製示範與 benchmark 實驗保留原版本及日期。
+規劃中的 1.2.1 手冊包括[使用](https://ait-native.dev/zh-tw/technical/1.2.1/#user-manual-pdf)、
+[命令](https://ait-native.dev/zh-tw/technical/1.2.1/#command-manual-pdf)與
+[Agent Teams](https://ait-native.dev/zh-tw/technical/1.2.1/#agent-teams-pdf) PDF。
+這些連結屬於協調中的準備工作，仍待部署及最終產物回讀。封存的 1.1.1 技術手冊、PDF 與錄製示範
+保留原版本及日期。已發布版本的安裝請使用[快速上手](https://ait-native.dev/zh-tw/local-quickstart/)
+及已安裝版本的指引。
 
 ## 各安裝通路提供什麼
 
@@ -395,6 +421,5 @@ npm 的 `ait` JavaScript 前端呼叫具型別的綁定操作，不會尋找或�
 `ait-runner/**`、`ait-python/**` 與 `ait-node/**` 採用 Apache-2.0。
 唯一的元件例外為 `ait-server/**`，採用 AGPL-3.0-only。
 各元件子樹保留其確切的 `LICENSE` 與 `NOTICE`；綁附發行不會變更任一元件的授權。
-公開 1.0 原始碼路徑不適用商業或專有授權。
 
 完整的套件、原始碼、建置與授權契約位於 [`docs/distribution.md`](docs/distribution.md)。

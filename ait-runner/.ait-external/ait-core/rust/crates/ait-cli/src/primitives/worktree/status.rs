@@ -10,6 +10,94 @@ pub fn worktree_get(
     worktree_summary_from_metadata(repo, &metadata, refresh_status, refresh_status)
 }
 
+pub(crate) fn worktree_show(
+    repo: &RepoRuntime,
+    name: Option<&str>,
+    refresh_status: bool,
+) -> Result<JsonValue, String> {
+    let worktree_name = resolve_runtime_worktree_name(repo, name)?;
+    let metadata = load_worktree_metadata(repo, &worktree_name)?;
+    let capture_authority = worktree_capture_authority(repo, &worktree_name, &metadata)?;
+    let mut summary =
+        worktree_summary_from_metadata(repo, &metadata, refresh_status, refresh_status)?;
+    summary["capture_authority"] = capture_authority;
+    Ok(summary)
+}
+
+fn worktree_capture_authority(
+    repo: &RepoRuntime,
+    worktree_name: &str,
+    metadata: &JsonMap<String, JsonValue>,
+) -> Result<JsonValue, String> {
+    let invalid = |reason: &str| {
+        format!(
+            "Cannot verify capture authority for worktree {worktree_name}: {reason}. Verify its pinned authority and configured Remote before capture."
+        )
+    };
+    if [
+        "capture_remote_name",
+        "capture_remote_url",
+        "capture_repository_index",
+    ]
+    .iter()
+    .all(|key| !metadata.contains_key(*key))
+    {
+        return Ok(JsonValue::Null);
+    }
+    let text = |key: &str| {
+        metadata
+            .get(key)
+            .and_then(JsonValue::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| invalid("capture pin fields are incomplete or malformed"))
+    };
+    let name = text("capture_remote_name")?;
+    let url = text("capture_remote_url")?;
+    let index = metadata
+        .get("capture_repository_index")
+        .and_then(JsonValue::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| invalid("capture pin fields are incomplete or malformed"))?;
+    let selected = resolve_worktree_content_repo(repo, Some(worktree_name))
+        .map_err(|_| invalid("selected worktree is missing or detached"))?;
+    let same_root = selected
+        .authoritative_repo_root()
+        .canonicalize()
+        .ok()
+        .zip(repo.authoritative_repo_root().canonicalize().ok())
+        .is_some_and(|(selected_root, root)| selected_root == root);
+    if !same_root
+        || metadata.get("name").and_then(JsonValue::as_str) != Some(worktree_name)
+        || resolve_runtime_worktree_name(&selected, None)
+            .ok()
+            .as_deref()
+            != Some(worktree_name)
+    {
+        return Err(invalid(
+            "selected worktree Repository identity does not match",
+        ));
+    }
+    let row = selected
+        .remote_row(Some(name))
+        .map_err(|_| invalid("pinned configured Remote is unavailable"))?;
+    if row.name != name || row.url.trim_end_matches('/') != url {
+        return Err(invalid(
+            "pinned Remote name or URL differs from configuration",
+        ));
+    }
+    if selected
+        .require_repository_index()
+        .map_err(|_| invalid("native Repository authority is unavailable"))?
+        .get()
+        != index
+    {
+        return Err(invalid(
+            "pinned Repository index differs from native authority",
+        ));
+    }
+    Ok(json!({"remote_name": row.name, "repository_index": index}))
+}
+
 pub(in crate::primitives) fn resolve_worktree_content_repo(
     repo: &RepoRuntime,
     name: Option<&str>,

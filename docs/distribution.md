@@ -3,29 +3,59 @@
 Authority: this centralized product distribution contract. Internal planning
 lineage remains governed by AIT Plan revisions and is not duplicated here.
 
-Status: published 1.2.0 requirements, the current stable-family contract,
-and immutable historical release and RC records. The current stable section below overrides version-relative
-wording in dated historical sections; those records remain evidence for their
-own bytes only.
+References to `release_sop.md` identify internal maintainer authority. The
+public source export includes this distribution contract, not that internal
+SOP; the current public manual links below remain planned until deployment.
 
-## 1.2.0 release contract
+Status: 1.2.1 development/target contract; published stable remains 1.2.0.
+The current stable section records available channels. Dated release and RC
+records retain their original sources, artifacts and exceptions.
+
+## 1.2.1 development contract and publication boundary
+
+1.2.1 preparation covers source security and platform repairs, reviewed Core
+and consumer bindings, and the shared autonomous-rebase guidance. Native,
+Server, Runner, Python and Node source versions, immutable Snapshots and final
+artifact receipts must agree before the family can qualify. Personal and
+Community retain their own actual versions; a 1.2.1 family does not relabel
+those Web programs.
+
+The complete release gates (`release_sop.md#gate-by-gate-execution-contract`)
+apply, including six-target artifact/runtime qualification, language package
+boundaries, Personal/Community browser and security checks, exactly 3,000
+deterministic groups, and final installed-byte/channel readback. Website,
+manual/PDF content, deployment and readback are separate post-publication
+follow-up for 1.2.1 and do not block the product tag or channel closeout. The
+dated 1.2.0 deferrals and Mac exception below remain specific to that release.
+
+The planned current manuals are [English](https://ait-native.dev/technical/1.2.1/),
+[Traditional Chinese](https://ait-native.dev/zh-tw/technical/1.2.1/) and
+[Simplified Chinese](https://ait-native.dev/zh-cn/technical/1.2.1/), with usage,
+command and Agent Teams PDF editions. These are coordinated preparation links;
+their deployment/readback follows product publication. Package availability
+still requires actual release and channel readback. Use the published 1.2.0
+selectors below for installation.
+
+<a id="120-release-contract"></a>
+
+## Published 1.2.0 release contract
 
 1.2.0 is published. The current stable section below records its exact
 release, available channels and verified default aliases. WinGet community
 review, discovery and public installation remain pending. The dated 1.1.4
 section preserves that release's original installation and evidence scope.
 
-The owner-approved [1.2.0 pre-publication acceptance](release_sop.md#120-pre-publication-acceptance)
+The owner-approved 1.2.0 pre-publication acceptance (`release_sop.md#120-pre-publication-acceptance`)
 adds native Git-independent workflows, concurrent agents, sealed-candidate
 recovery, six-platform execution and representative language-neutral fixtures
 to the existing release gates. It defines the accepted 1.2.0 contract;
 publication evidence and remaining channel obligations are recorded below.
 Existing artifact, channel, Web/security and post-publication obligations remain. Earlier version
 exceptions and results retain only their explicit historical scope; see the
-[disposition table](release_sop.md#disposition-of-earlier-release-standards).
+disposition table (`release_sop.md#disposition-of-earlier-release-standards`).
 
 For the selected stable `1.2.0` / `v1.2.0` run only, the
-[Mac runtime exception](release_sop.md#owner-exception-repeated-mac-runtime-tests--2026-10-31)
+Mac runtime exception (`release_sop.md#owner-exception-repeated-mac-runtime-tests--2026-10-31`)
 requires 24 non-Mac runtime rows and four probe targets, while retaining all
 six build, package and publication targets. It overrides this run's six-target
 runtime/32-row requirements. Historical failures and local evidence keep their
@@ -34,7 +64,7 @@ success. Both Mac artifact targets remain published.
 
 For this 1.2.0 run, the owner explicitly deferred Personal-only protocol,
 current/legacy compatibility and UI acceptance; see the
-[current scope](release_sop.md#owner-deferred-personal-scope--2026-10-24).
+current scope (`release_sop.md#owner-deferred-personal-scope--2026-10-24`).
 The owner also paused Community acceptance; the native/platform/binding/install
 gates remain. The successful
 1.1.4 Web qualification included Personal; public package membership and test
@@ -48,7 +78,7 @@ this deferral.
 The owner decided on 2026-10-24 to retain `ait-agent` and `ait-agent-worker`
 source while excluding these chat-integration components from public 1.2.0
 distribution. Apply the scope and verification in
-[the release SOP](release_sop.md#120-pre-publication-acceptance); retain earlier
+the release SOP (`release_sop.md#120-pre-publication-acceptance`); retain earlier
 tags, source archives and assets unchanged. Historical component tables below
 do not require these binaries in the 1.2.0 family. Agent Teams and core
 Python/Node bindings remain supported. This decision does not cancel the
@@ -57,7 +87,7 @@ Python/Node bindings remain supported. This decision does not cancel the
 The current family selectors and source build wrapper produce `ait`,
 `ait-server`, `ait-runner`, the Python binding and the Node-API binding.
 Source crate checks, version stamping, shared binding helpers and licenses
-remain. Historical seven-component tables and the v1.1.4 source-build example
+remain. Historical seven-component tables and dated source-build records
 below describe their original release only.
 
 For upgrades, inspect the actual prior package's recorded file inventory and
@@ -120,6 +150,13 @@ historical workflow-mode presets.
 ensure prepares an existing member; assignment and desktop runtime status
 remain separate. Preparing a Reviewer session requires server registration.
 Disabling Teams preserves sessions and history.
+
+Automatic session preparation and host checks currently use the native Codex
+host. `CLAUDE.md` is generated repository guidance; live Claude host
+orchestration, mixed-provider delivery and mobile workflows remain deferred
+and unqualified. The incomplete Claude/Fable benchmark does not qualify that
+integration. Follow the actual installed harness, including the intentional
+Claude explicit-safe-`--edit-root` requirement and AGENTS returned-root route.
 
 Remote ready without `--apply` checks readiness. Explicit ready apply prepares
 the candidate; real CI and the required independent review precede guarded
@@ -403,13 +440,14 @@ The current public brand and stable release family are:
 
 ```text
 product: ait-native
-version: 1.1.4
+version: 1.2.0
 ```
 
 One frozen release manifest must bind every component, platform artifact,
 package identity, source revision, license, checksum, signature, and clean-host
 receipt. No component may drift to an independent semantic version while
-claiming membership in the current 1.1.4 compatibility family.
+claiming membership in the selected compatibility family. The development
+target is 1.2.1; it is not published stable until its release gates complete.
 
 ### Internal authority and public source layout
 
@@ -507,13 +545,13 @@ A clean tagged checkout validates and builds the current host without an AIT
 server:
 
 ```text
-git clone --branch v1.1.4 https://github.com/weita2026/ait-native.git
+git clone --branch v1.2.0 https://github.com/weita2026/ait-native.git
 cd ait-native
 ./build-release.sh
 ```
 
 Windows uses `build-release.ps1`. The shared Node implementation builds the
-native `ait`, `ait-agent`, `ait-agent-worker`, `ait-server`, and `ait-runner`
+native `ait`, `ait-server`, and `ait-runner`
 executables, the Python wheel, the portable npm JS/TS envelope, and the current
 host's direct Node-API addon. Its locally synthesized receipts and all resulting files are
 marked `publishable: false`; they prove clean source usability but cannot
@@ -527,6 +565,9 @@ security or legal requirement because it would break existing links, tags,
 forks, and source traceability.
 
 ## Public 0.x To 1.0 Transition
+
+Historical 1.0 transition contract, preserved for its original scope. These
+clauses do not describe the current 1.2.1 release's admission status.
 
 The public 0.x package page is historical. Its requirement to run `ait install`
 as a second installation step and its previous orchestration, parallel-agent,
@@ -612,12 +653,23 @@ reinterpret the native runtime.
 
 ## Public Components
 
+Published 1.2.0 and the current 1.2.1 target use the five source components
+`ait-core`, `ait-server`, `ait-runner`, `ait-python` and `ait-node`. The native
+public commands are `ait`, `ait-server` and `ait-runner`; Python and Node
+provide their own in-process `ait` frontends. Standalone chat commands remain
+retired under the [current boundary](#120-chat-integration-retirement).
+
 Current `ait-core` source additionally builds the native `aitk` read-only
 history-browser companion. It shares the `ait-core` source/version identity and
 is not a new family component. The frozen stable 1.1.0 manifest below did not
 admit it and remains unchanged; no existing package may claim `aitk` until a later family freezes
 its six-target executable bytes and the affected installer receipts. Local
 source builds and `./ait.sh core install` do install the current executable.
+
+### Historical seven-component inventory
+
+The following inventory records the earlier family, including retained chat
+source. It does not add those retired executables to current public packages.
 
 | Component | Public surface | Source authority | License | Stable-family role |
 | --- | --- | --- | --- | --- |
@@ -629,7 +681,7 @@ source builds and `./ait.sh core install` do install the current executable.
 | `ait-python` | PyO3 binding payload embedded in PyPI `ait-native` | `ait-python` + pinned `ait-core` | Apache-2.0 | direct in-process integration without a separate PyPI project |
 | `ait-node` | portable JS/TS facade and six Node-API addon packages | `ait-node` + pinned `ait-core` | Apache-2.0 | direct in-process Node.js integration and `ait` command without a separate `ait-node` registry product |
 
-`ait-web` is excluded from 1.1.0.
+`ait-web` was excluded from that historical 1.1.0 family.
 
 ## License And Source Publication Gate
 
@@ -889,8 +941,8 @@ frozen native binaries, without compiling a component or downloading a
 component during the image build:
 
 ```text
-ghcr.io/weita2026/ait-server:1.1.4
-ghcr.io/weita2026/ait-runner:1.1.4
+ghcr.io/weita2026/ait-server:1.2.0
+ghcr.io/weita2026/ait-runner:1.2.0
 ```
 
 The immutable version tags are the evidence and deployment boundary. The
@@ -911,7 +963,7 @@ docker run --detach \
   --publish 127.0.0.1:8088:8088 \
   --restart unless-stopped \
   --volume ait-native-data:/var/lib/ait \
-  ghcr.io/weita2026/ait-server:1.1.4 \
+  ghcr.io/weita2026/ait-server:1.2.0 \
   --listen 0.0.0.0:8088 \
   --init-if-missing \
   --defer-ci-admission
@@ -938,7 +990,7 @@ docker run --detach \
   --network ait-native \
   --restart unless-stopped \
   --volume ait-native-runner:/var/lib/ait-runner \
-  ghcr.io/weita2026/ait-runner:1.1.4 \
+  ghcr.io/weita2026/ait-runner:1.2.0 \
   serve \
   --server http://ait-server:8088 \
   --worker-id container-ci-host-01 \
@@ -1074,7 +1126,7 @@ governed solely by [the centralized requirements above](#repository-language-neu
 ## Compatibility Rules
 
 - Every public component reports or exposes its frozen family version; the
-  current stable family reports `1.1.4`.
+  published stable family reports `1.2.0`; the development target is `1.2.1`.
 - Every bundled native command reports the same family version while retaining
   independent component digests and license notices. Every family after the
   exact immutable 1.1.0 exception requires the Homebrew, apt, and WinGet

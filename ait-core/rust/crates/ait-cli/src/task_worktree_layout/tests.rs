@@ -503,10 +503,11 @@ fn macos_bootstraps_default_spec_when_unmounted() {
 
 #[test]
 fn macos_legacy_configured_root_reprovisions_from_path() {
-    let (_repo_temp, repo) = repo_with_task_worktree(json!({
-        "ephemeral_root": "/Volumes/AIT_RAM/.ait-repos/123456789abc",
-    }));
     let expected_root = resolve_path_strict_false(Path::new("/Volumes/AIT_RAM"));
+    let configured_base = expected_root.join(".ait-repos/123456789abc");
+    let (_repo_temp, repo) = repo_with_task_worktree(json!({
+        "ephemeral_root": configured_base,
+    }));
     let ops = FakeTaskWorktreeOps {
         provision_roots: BTreeSet::from([expected_root.to_string_lossy().to_string()]),
         default_macos_spec: TaskWorktreeMemoryRoot {
@@ -519,9 +520,6 @@ fn macos_legacy_configured_root_reprovisions_from_path() {
     };
 
     let location = resolve_task_worktree_location_with_ops(&repo, "rt-791", &ops);
-    let configured_base =
-        resolve_path_strict_false(Path::new("/Volumes/AIT_RAM/.ait-repos/123456789abc"));
-
     assert_eq!(location.root_source, "configured_ephemeral_root");
     assert_eq!(
         location.target_path,

@@ -1,8 +1,13 @@
 use super::*;
 use flate2::read::GzDecoder;
+use object::Object as _;
 use std::io::{Cursor, Read};
 use tar::Archive as TarArchive;
 use zip::ZipArchive;
+
+#[cfg(test)]
+#[path = "python_wheel_fixture.rs"]
+mod python_wheel_fixture;
 
 const FAMILY_PACKAGE_CONTRACT: &str = "ait.release.family.package/v1";
 const FAMILY_PACKAGE_CONTENT_CONTRACT: &str = "ait.release.family.package-content/v1";
@@ -902,21 +907,32 @@ fn read_wheel_entries(bytes: &[u8]) -> Result<PackageEntries, String> {
     let mut entries = PackageEntries::new();
     let mut total_bytes = 0_u64;
     for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|error| {
-            format!("Frozen Python wheel member {index} cannot be opened: {error}")
-        })?;
+        let mut entry = archive
+            .by_index_with_options(
+                index,
+                zip::read::ZipReadOptions::new().enforce_header_consistency(true),
+            )
+            .map_err(|error| {
+                format!("Frozen Python wheel member {index} cannot be opened: {error}")
+            })?;
+        let path = entry
+            .name()
+            .map_err(|error| {
+                format!("Frozen Python wheel member {index} has an invalid name: {error}")
+            })?
+            .into_owned();
         if entry.is_dir() {
             return Err(format!(
                 "Frozen Python wheel contains directory member {:?}; normalized wheels contain files only.",
-                entry.name()
+                path
             ));
         }
-        if entry.name_raw() != entry.name().as_bytes() {
+        if entry.name_raw() != path.as_bytes() {
             return Err("Frozen Python wheel contains a non-UTF-8 member name.".to_string());
         }
-        let path = entry.name().to_string();
         safe_relative_path(&path, "Frozen Python wheel member")?;
-        if !entry.comment().is_empty() || !entry.extra_data().is_empty() {
+        if !entry.comment().is_empty() || entry.extra_data().is_some_and(|extra| !extra.is_empty())
+        {
             return Err(format!(
                 "Frozen Python wheel member {path:?} contains ZIP comment or extra data."
             ));
@@ -1724,6 +1740,13 @@ fn assemble_apt(
         );
     }
     let version = debian_version(&input.version)?;
+    // The 1.2 package contract uses the qualified glibc 2.35 bootstrap baseline.
+    let libc_dependency = if super::family_release::language_cli_bindings_required(&input.version)?
+    {
+        "libc6 (>= 2.35)"
+    } else {
+        "libc6 (>= 2.28)"
+    };
     let suite = if input.release_channel == "rc" {
         "testing"
     } else {
@@ -1816,9 +1839,9 @@ fn assemble_apt(
             };
             let homepage = format!("https://github.com/{}", github_source_identity(input)?);
             let dependencies = if transitional_runner_alias {
-                format!("ait-native (= {version}), libc6 (>= 2.28)")
+                format!("ait-native (= {version}), {libc_dependency}")
             } else {
-                "libc6 (>= 2.28)".to_string()
+                libc_dependency.to_string()
             };
             let runner_ownership_transition =
                 product_includes_runner && distribution.role == "product";
@@ -2286,6 +2309,7 @@ fn rewrite_python_metadata(
     license_files: &[String],
     source_url: &str,
     documentation_url: &str,
+    language_cli: bool,
 ) -> Result<Vec<u8>, String> {
     let text = std::str::from_utf8(source)
         .map_err(|_| "Frozen Python wheel METADATA must be UTF-8.".to_string())?;
@@ -2366,11 +2390,17 @@ fn rewrite_python_metadata(
     output.push(format!(
         "Project-URL: Migration, {documentation_url}#public-0x-to-10-transition"
     ));
+    let package_boundary = if language_cli {
+        "This wheel installs the Python `ait` CLI and the admitted PyO3 binding.\nThe Python entrypoint calls named Rust domain APIs through the extension.\nStandalone native CLI, Server and Runner executables are separate products."
+    } else {
+        "This wheel installs the language-neutral `ait` CLI, the inactive-by-default\n`ait-server` command, and the admitted `ait-python` binding. The server starts\nonly when explicitly requested."
+    };
+    let closeout_path = if language_cli { "finish" } else { "land" };
     let description = format!(
         r#"# ait-native
 
 AIT turns an ordinary coding request into an isolated, sprint-bound repository
-change with validation evidence and a recoverable land path. It is for
+change with validation evidence and a recoverable {closeout_path} path. It is for
 individual developers and maintainers who use coding agents and want the work
 to remain reviewable without inventing a workflow for every repository.
 
@@ -2391,16 +2421,14 @@ other verified installation routes, use the [official quickstart]({OFFICIAL_QUIC
 
 ## What initialization provides
 
-`ait init` creates repository-local authority, defaults to `solo_local` with
+`ait init` creates repository-local authority, defaults to local operation with
 sprint mode on, creates the sprint directory, and writes the effective workflow
 router to `AGENTS.md`. Local work uses bound Task worktrees, Snapshots, and
 atomic Task finish. The server remains off.
 
 ## Package boundary
 
-This wheel installs the language-neutral `ait` CLI, the inactive-by-default
-`ait-server` command, and the admitted `ait-python` binding. The server starts
-only when explicitly requested.
+{package_boundary}
 
 ## Local and reviewed closeout
 
@@ -2535,6 +2563,119 @@ fn pypi_wheel_identity(
     ))
 }
 
+fn validate_python_language_cli(entries: &PackageEntries, dist_info: &str) -> Result<(), String> {
+    let entry_points = entries
+        .get(&format!("{dist_info}/entry_points.txt"))
+        .ok_or("Python language wheel requires console-script metadata.")?;
+    let text = std::str::from_utf8(&entry_points.0)
+        .map_err(|_| "Python console-script metadata must be UTF-8.")?;
+    let mut console_scripts = false;
+    let mut ait_entries = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            console_scripts = line == "[console_scripts]";
+        } else if console_scripts {
+            if let Some((name, target)) = line.split_once('=') {
+                if name.trim() == "ait" {
+                    ait_entries.push(target.trim());
+                }
+            }
+        }
+    }
+    if ait_entries != ["ait_python.cli:main"] || !entries.contains_key("ait_python/cli.py") {
+        return Err(
+            "Python language wheel requires the ait_python.cli:main console entry and frontend."
+                .into(),
+        );
+    }
+    let mut found_extension = false;
+    for (path, (bytes, _)) in entries {
+        let extension = path.strip_prefix("ait_py/ait_py.").is_some_and(|suffix| {
+            !suffix.contains('/') && (path.ends_with(".so") || path.ends_with(".pyd"))
+        });
+        if extension {
+            let format = validate_python_extension_image(bytes).map_err(|error| {
+                format!("Python language wheel has an invalid extension at {path:?}: {error}")
+            })?;
+            if (format == object::BinaryFormat::Pe) != path.ends_with(".pyd") {
+                return Err(format!(
+                    "Python extension format does not match its suffix at {path:?}."
+                ));
+            }
+            found_extension = true;
+        }
+        let native_image = bytes.starts_with(b"\x7fELF")
+            || bytes.starts_with(b"MZ")
+            || [
+                [0xfe, 0xed, 0xfa, 0xce],
+                [0xce, 0xfa, 0xed, 0xfe],
+                [0xfe, 0xed, 0xfa, 0xcf],
+                [0xcf, 0xfa, 0xed, 0xfe],
+                [0xca, 0xfe, 0xba, 0xbe],
+                [0xbe, 0xba, 0xfe, 0xca],
+                [0xca, 0xfe, 0xba, 0xbf],
+                [0xbf, 0xba, 0xfe, 0xca],
+            ]
+            .iter()
+            .any(|magic| bytes.starts_with(magic));
+        // Installers generate platform launchers from the console metadata.
+        // A Python companion does not establish the identity of an executable.
+        if native_image && !extension {
+            return Err(format!(
+                "Python language wheel contains a standalone native executable at {path:?}."
+            ));
+        }
+        let filename = path.rsplit('/').next().unwrap_or(path);
+        if matches!(
+            filename,
+            "ait-server" | "ait-server.exe" | "ait-runner" | "ait-runner.exe"
+        ) {
+            return Err(format!(
+                "Python language wheel contains a standalone native command at {path:?}."
+            ));
+        }
+    }
+    if !found_extension {
+        return Err("Python language wheel requires a loadable ait_py extension.".into());
+    }
+    Ok(())
+}
+
+fn validate_python_extension_image(bytes: &[u8]) -> Result<object::BinaryFormat, String> {
+    let image = object::File::parse(bytes)
+        .map_err(|error| format!("invalid native shared image: {error}"))?;
+    let mach_o_bundle = match &image {
+        object::File::MachO32(file) => {
+            file.macho_header().filetype.get(file.endian()) == object::macho::MH_BUNDLE
+        }
+        object::File::MachO64(file) => {
+            file.macho_header().filetype.get(file.endian()) == object::macho::MH_BUNDLE
+        }
+        _ => false,
+    };
+    if !matches!(
+        image.format(),
+        object::BinaryFormat::Elf | object::BinaryFormat::MachO | object::BinaryFormat::Pe
+    ) || (image.kind() != object::ObjectKind::Dynamic && !mach_o_bundle)
+        // ELF PIE executables share ET_DYN with libraries, but have a process entrypoint.
+        || (image.format() == object::BinaryFormat::Elf && image.entry() != 0)
+    {
+        return Err("expected a native shared extension, not an executable.".into());
+    }
+    let exports = image
+        .exports()
+        .map_err(|error| format!("invalid native extension exports: {error}"))?;
+    let initializer = if image.format() == object::BinaryFormat::MachO {
+        b"_PyInit_ait_py".as_slice()
+    } else {
+        b"PyInit_ait_py".as_slice()
+    };
+    if !exports.iter().any(|export| export.name() == initializer) {
+        return Err("native shared extension does not export PyInit_ait_py.".into());
+    }
+    Ok(image.format())
+}
+
 fn assemble_pypi(
     repo: &RepoRuntime,
     input: &FamilyPackageInput,
@@ -2543,11 +2684,16 @@ fn assemble_pypi(
     if distribution.role != "product" || distribution.identity != "ait-native" {
         return Err("PyPI distribution must be the ait-native product.".to_string());
     }
-    require_distribution_components(distribution, &["ait", "ait-server", "ait-python"])?;
+    let language_cli = super::family_release::language_cli_bindings_required(&input.version)?;
+    if language_cli {
+        require_distribution_components(distribution, &["ait-python"])?;
+    } else {
+        require_distribution_components(distribution, &["ait", "ait-server", "ait-python"])?;
+        required_component(input, "ait-server", "native")?;
+    }
     require_registry_targets(distribution)?;
     let python_component = required_component(input, "ait-python", "python")?;
     required_component(input, "ait", "native")?;
-    required_component(input, "ait-server", "native")?;
     let license_expression = winget_license_expression(input, distribution)?;
     let mut generated = Vec::new();
     for target in &distribution.targets {
@@ -2590,6 +2736,9 @@ fn assemble_pypi(
                 "Frozen ait-python wheel contains more than one dist-info root.".to_string(),
             );
         }
+        if language_cli {
+            validate_python_language_cli(&source_entries, &source_dist_info)?;
+        }
         let source_metadata = source_entries
             .get(&format!("{source_dist_info}/METADATA"))
             .map(|entry| entry.0.clone())
@@ -2618,6 +2767,12 @@ fn assemble_pypi(
                         continue;
                     }
                     format!("{output_dist_info}/{relative}")
+                } else if language_cli {
+                    path.strip_prefix(&format!("ait_python-{}.data/", python_component.version))
+                        .map(|relative| {
+                            format!("ait_native-{}.data/{relative}", python_component.version)
+                        })
+                        .unwrap_or(path)
                 } else {
                     path
                 };
@@ -2628,7 +2783,14 @@ fn assemble_pypi(
             }
         }
 
-        let materials = material_for_components(input, &distribution.components)?;
+        // The extension contains Core code even when the native CLI component is
+        // excluded from this channel's payload selectors.
+        let material_components = if language_cli {
+            vec!["ait".to_string(), "ait-python".to_string()]
+        } else {
+            distribution.components.clone()
+        };
+        let materials = material_for_components(input, &material_components)?;
         let mut material_projections = Vec::new();
         let mut license_files = Vec::new();
         for material in materials {
@@ -2670,6 +2832,7 @@ fn assemble_pypi(
                         github_source_identity(input)?,
                         input.tag
                     ),
+                    language_cli,
                 )?,
                 0o644,
             ),
@@ -2683,7 +2846,12 @@ fn assemble_pypi(
             source: source_wheel.clone(),
             destination: output_filename.clone(),
         }];
-        for component in ["ait", "ait-server"] {
+        let native_commands: &[&str] = if language_cli {
+            &[]
+        } else {
+            &["ait", "ait-server"]
+        };
+        for &component in native_commands {
             let source = component_artifact(input, component, target, "native-executable")?;
             let command = component_command(component, target)?;
             let destination = format!(
@@ -2750,7 +2918,7 @@ fn assemble_pypi(
                     "source_wheel_size_bytes": source_wheel.size_bytes,
                     "binding_member_count": binding_member_count,
                     "wheel_record_regenerated": true,
-                    "native_script_count": 2,
+                    "native_script_count": native_commands.len(),
                     "server_activation": "inactive",
                 }),
                 input,
@@ -2939,7 +3107,8 @@ fn validate_npm_envelope(
     entries: &PackageEntries,
     node_materials: &[(FrozenLicenseMaterial, Vec<u8>)],
 ) -> Result<Vec<NpmAddonDefinition>, String> {
-    let expected_paths = BTreeSet::from([
+    let language_cli = super::family_release::language_cli_bindings_required(&input.version)?;
+    let mut expected_paths = BTreeSet::from([
         "package/LICENSE".to_string(),
         "package/NOTICE".to_string(),
         "package/README.md".to_string(),
@@ -2953,6 +3122,12 @@ fn validate_npm_envelope(
         "package/src/index.js".to_string(),
         "package/src/runtime.js".to_string(),
     ]);
+    if language_cli {
+        expected_paths.extend([
+            "package/src/terminal.js".to_string(),
+            "package/src/terminal-help.js".to_string(),
+        ]);
+    }
     if entries.keys().cloned().collect::<BTreeSet<_>>() != expected_paths {
         return Err(
             "Frozen npm envelope inventory differs from the direct Node-API contract.".to_string(),
@@ -3110,7 +3285,7 @@ fn validate_npm_envelope(
         );
     }
 
-    let runtime_paths = [
+    let mut runtime_paths = vec![
         "package/bin/ait.mjs",
         "package/src/agent.js",
         "package/src/contract.js",
@@ -3119,12 +3294,22 @@ fn validate_npm_envelope(
         "package/src/index.js",
         "package/src/runtime.js",
     ];
+    if language_cli {
+        runtime_paths.extend(["package/src/terminal.js", "package/src/terminal-help.js"]);
+    }
     let mut runtime_text = String::new();
+    let mut runtime_members = BTreeMap::new();
     for path in runtime_paths {
         let text = std::str::from_utf8(&entries[path].0)
             .map_err(|_| format!("Frozen npm runtime member {path:?} must be UTF-8."))?;
         runtime_text.push_str(text);
         runtime_text.push('\n');
+        runtime_members.insert(
+            path,
+            text.split_whitespace()
+                .collect::<String>()
+                .to_ascii_lowercase(),
+        );
     }
     let runtime = runtime_text.to_ascii_lowercase();
     for forbidden in [
@@ -3158,19 +3343,58 @@ fn validate_npm_envelope(
             ));
         }
     }
+    let compact_runtime = runtime.split_whitespace().collect::<String>();
     for required in [
         "native/ait_napi.node",
         "require(addonpath)",
-        "new nativeruntime().runcli",
-        "export { nativeruntime",
         "agentclient",
-        "interface nativeaddon",
-        "runcli(args: string[]): number",
+        "interfacenativeaddon",
     ] {
-        if !runtime.contains(required) {
+        if !compact_runtime.contains(required) {
             return Err(format!(
                 "Frozen npm runtime lacks required direct Node-API marker {required:?}."
             ));
+        }
+    }
+    let exports_runtime = runtime_members["package/src/index.js"]
+        .split("export{")
+        .skip(1)
+        .filter_map(|export| export.split_once("}from"))
+        .any(|(names, module)| {
+            names.split(',').any(|name| name == "nativeruntime")
+                && ["'./runtime.js'", "\"./runtime.js\""]
+                    .iter()
+                    .any(|expected| module.starts_with(expected))
+        });
+    if !exports_runtime {
+        return Err(
+            "Frozen npm root API must re-export NativeRuntime from runtime.js.".to_string(),
+        );
+    }
+    if language_cli {
+        let required_members: &[(&str, &[&str])] = &[
+            (
+                "package/bin/ait.mjs",
+                &["newnativeruntime()", "runterminal(process.argv.slice(2),"],
+            ),
+            ("package/src/runtime.js", &["exportclassnativeruntime"]),
+            ("package/src/index.d.ts", &["exportclassnativeruntime"]),
+            ("package/src/terminal.js", &["exportfunctionrunterminal("]),
+        ];
+        for &(path, markers) in required_members {
+            for &marker in markers {
+                if !runtime_members[path].contains(marker) {
+                    return Err(format!("Frozen npm language frontend {path:?} lacks required direct Node-API marker {marker:?}."));
+                }
+            }
+        }
+    } else {
+        for required in ["newnativeruntime().runcli", "runcli(args:string[]):number"] {
+            if !compact_runtime.contains(required) {
+                return Err(format!(
+                    "Frozen npm runtime lacks required direct Node-API marker {required:?}."
+                ));
+            }
         }
     }
     Ok(addons)
@@ -4091,6 +4315,231 @@ mod tests {
         ])
     }
 
+    fn npm_language_validation_fixture() -> (FamilyPackageInput, PackageEntries) {
+        let mut input = npm_validation_input();
+        input.version = "1.2.0".to_string();
+        input.release_channel = "stable".to_string();
+        input.tag = "v1.2.0".to_string();
+        for component in input.components.values_mut() {
+            component.version.clone_from(&input.version);
+        }
+        let mut entries = npm_validation_entries();
+        for path in [
+            "package/package.json",
+            "package/lib/npm-payload-contract.json",
+            "package/README.md",
+        ] {
+            let bytes = &mut entries.get_mut(path).unwrap().0;
+            *bytes = String::from_utf8(bytes.clone())
+                .unwrap()
+                .replace("1.0.0-rc.2", "1.2.0")
+                .into_bytes();
+        }
+        for (path, text) in [
+            ("package/bin/ait.mjs", "import { NativeRuntime } from '../src/index.js';\nimport { runTerminal } from '../src/terminal.js';\nconst runtime = new NativeRuntime();\nprocess.exitCode = runTerminal(process.argv.slice(2), { runtime });\n"),
+            ("package/src/index.js", "export {\n  requiredAddonExports,\n  NativeRuntime,\n} from \"./runtime.js\";\n"),
+            ("package/src/runtime.js", "const addonPath = 'native/ait_napi.node';\nconst addon = require(addonPath);\nexport class NativeRuntime {\n  resolveCallable(name) { return addon[name]; }\n  version() { return this.resolveCallable('version')(); }\n}\n"),
+            ("package/src/index.d.ts", "export interface NativeAddon { version(): string; }\nexport class NativeRuntime {\n  version(): string;\n  resolveCallable(name: keyof NativeAddon | string): (...args: unknown[]) => unknown;\n}\n"),
+            ("package/src/terminal.js", "export function runTerminal(args, { runtime }) {\n  if (args[0] === '--version') process.stdout.write(runtime.version());\n  return 0;\n}\n"),
+            ("package/src/terminal-help.js", "export function terminalHelp() { return 'Usage: ait'; }\n"),
+        ] {
+            let mode = if path == "package/bin/ait.mjs" { 0o755 } else { 0o644 };
+            entries.insert(path.to_string(), (text.as_bytes().to_vec(), mode));
+        }
+        (input, entries)
+    }
+
+    #[test]
+    fn npm_language_envelope_requires_exact_inventory_and_scans_terminal_members() {
+        let (input, entries) = npm_language_validation_fixture();
+        let materials = npm_validation_materials();
+        assert_npm_language_inventory_controls(&input, &entries, &materials);
+    }
+
+    fn assert_npm_language_inventory_controls(
+        input: &FamilyPackageInput,
+        entries: &PackageEntries,
+        materials: &[(FrozenLicenseMaterial, Vec<u8>)],
+    ) {
+        assert_eq!(entries.len(), 14);
+        assert_eq!(
+            validate_npm_envelope(input, entries, materials)
+                .unwrap()
+                .len(),
+            6
+        );
+        for path in ["package/src/terminal.js", "package/src/terminal-help.js"] {
+            let mut missing = entries.clone();
+            missing.remove(path);
+            assert!(validate_npm_envelope(input, &missing, materials)
+                .unwrap_err()
+                .contains("inventory differs"));
+            for marker in ["node:child_process", "https://example.invalid/addon"] {
+                let mut forbidden = entries.clone();
+                forbidden
+                    .get_mut(path)
+                    .unwrap()
+                    .0
+                    .extend_from_slice(format!("\n// {marker}\n").as_bytes());
+                assert!(validate_npm_envelope(input, &forbidden, materials)
+                    .unwrap_err()
+                    .contains("forbidden subprocess, download, build, or project-detection"));
+            }
+            let mut invalid_utf8 = entries.clone();
+            invalid_utf8.get_mut(path).unwrap().0.push(0xff);
+            assert!(validate_npm_envelope(input, &invalid_utf8, materials)
+                .unwrap_err()
+                .contains("must be UTF-8"));
+        }
+        for path in [
+            "package/src/unknown.js",
+            "package/bin/ait",
+            "package/bin/ait.exe",
+        ] {
+            let mut surplus = entries.clone();
+            surplus.insert(path.to_string(), (b"unexpected".to_vec(), 0o755));
+            assert!(validate_npm_envelope(input, &surplus, materials)
+                .unwrap_err()
+                .contains("inventory differs"));
+        }
+        let mut wrong_license = entries.clone();
+        wrong_license
+            .get_mut("package/LICENSE")
+            .unwrap()
+            .0
+            .push(b'!');
+        assert!(validate_npm_envelope(input, &wrong_license, materials)
+            .unwrap_err()
+            .contains("exact ait-node license bytes"));
+    }
+
+    #[test]
+    fn npm_language_envelope_requires_named_runtime_and_direct_frontend_shape() {
+        let (input, entries) = npm_language_validation_fixture();
+        let materials = npm_validation_materials();
+        assert_npm_language_frontend_controls(&input, &entries, &materials);
+    }
+
+    fn assert_npm_language_frontend_controls(
+        input: &FamilyPackageInput,
+        entries: &PackageEntries,
+        materials: &[(FrozenLicenseMaterial, Vec<u8>)],
+    ) {
+        for (path, original, replacement, expected) in [
+            (
+                "package/src/index.js",
+                "NativeRuntime,",
+                "OtherRuntime,",
+                "root API must re-export",
+            ),
+            (
+                "package/src/index.js",
+                "./runtime.js",
+                "./errors.js",
+                "root API must re-export",
+            ),
+            (
+                "package/bin/ait.mjs",
+                "runTerminal(process.argv",
+                "runCli(process.argv",
+                "language frontend",
+            ),
+            (
+                "package/src/runtime.js",
+                "class NativeRuntime",
+                "class OtherRuntime",
+                "language frontend",
+            ),
+            (
+                "package/src/index.d.ts",
+                "class NativeRuntime",
+                "class OtherRuntime",
+                "language frontend",
+            ),
+            (
+                "package/src/terminal.js",
+                "function runTerminal",
+                "function runCli",
+                "language frontend",
+            ),
+        ] {
+            let mut invalid = entries.clone();
+            let bytes = &mut invalid.get_mut(path).unwrap().0;
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            assert!(text.contains(original));
+            *bytes = text.replace(original, replacement).into_bytes();
+            assert!(validate_npm_envelope(input, &invalid, materials)
+                .unwrap_err()
+                .contains(expected));
+        }
+        let mut wrong_version = entries.clone();
+        let mut package: JsonValue =
+            serde_json::from_slice(&wrong_version["package/package.json"].0).unwrap();
+        package["version"] = json!("1.2.1");
+        wrong_version.get_mut("package/package.json").unwrap().0 =
+            serde_json::to_vec(&package).unwrap();
+        assert!(validate_npm_envelope(input, &wrong_version, materials)
+            .unwrap_err()
+            .contains("one portable direct Node-API product"));
+        let mut wrong_authority = entries.clone();
+        let mut contract: JsonValue =
+            serde_json::from_slice(&wrong_authority["package/lib/npm-payload-contract.json"].0)
+                .unwrap();
+        contract["payloads"][0]["binding_snapshot"] = json!("SNP-FFFFFFFFFFFF");
+        wrong_authority
+            .get_mut("package/lib/npm-payload-contract.json")
+            .unwrap()
+            .0 = serde_json::to_vec(&contract).unwrap();
+        assert!(validate_npm_envelope(input, &wrong_authority, materials)
+            .unwrap_err()
+            .contains("family binding/target mapping"));
+    }
+
+    #[test]
+    #[ignore = "requires AIT_FAMILY_TEST_ROOT, AIT_FAMILY_TEST_RELEASE_ID and AIT_FAMILY_TEST_PUBLIC_SOURCE from the selected artifact freeze"]
+    fn npm_language_envelope_validates_selected_artifact_and_controls() {
+        let root = PathBuf::from(
+            std::env::var_os("AIT_FAMILY_TEST_ROOT").expect("selected frozen family workspace"),
+        );
+        let repo = RepoRuntime::discover_from_path(&root).unwrap();
+        let release_id =
+            std::env::var("AIT_FAMILY_TEST_RELEASE_ID").expect("selected frozen family release");
+        let public_source = PathBuf::from(
+            std::env::var_os("AIT_FAMILY_TEST_PUBLIC_SOURCE")
+                .expect("selected public source authority"),
+        );
+        let input =
+            parse_family_package_input(&repo, &release_id, "npm", Some(&public_source)).unwrap();
+        let envelope =
+            portable_component_artifact(&input, "ait-node", "npm-napi-envelope").unwrap();
+        let bytes = read_frozen_bytes(
+            &repo,
+            &envelope.path,
+            envelope.size_bytes,
+            &envelope.sha256,
+            "Selected frozen npm envelope",
+        )
+        .unwrap();
+        let entries = read_npm_envelope_entries(&bytes).unwrap();
+        let materials = material_for_components(&input, &["ait-node".to_string()])
+            .unwrap()
+            .into_iter()
+            .map(|material| {
+                let bytes = read_frozen_bytes(
+                    &repo,
+                    &material.path,
+                    material.size_bytes,
+                    &material.sha256,
+                    "Selected frozen npm legal material",
+                )
+                .unwrap();
+                (material, bytes)
+            })
+            .collect::<Vec<_>>();
+        assert_npm_language_inventory_controls(&input, &entries, &materials);
+        assert_npm_language_frontend_controls(&input, &entries, &materials);
+    }
+
     #[test]
     fn npm_envelope_rejects_subprocess_hooks_and_downloads() {
         let input = npm_validation_input();
@@ -4261,6 +4710,16 @@ mod tests {
     }
 
     #[test]
+    fn registry_archive_reader_rejects_mismatched_local_header_name() {
+        let entries = BTreeMap::from([("module.py".to_string(), (b"pass\n".to_vec(), 0o644))]);
+        let mut wheel = zip_bytes(&entries).unwrap();
+        assert_eq!(&wheel[..4], b"PK\x03\x04");
+        assert_eq!(&wheel[30..39], b"module.py");
+        wheel[30] = b'n';
+        assert!(read_wheel_entries(&wheel).is_err());
+    }
+
+    #[test]
     fn debian_data_archive_rejects_unsafe_paths_and_file_directory_collisions() {
         let unsafe_entries = BTreeMap::from([("../escape".to_string(), (Vec::new(), 0o644))]);
         assert!(tar_gz_bytes_with_parent_directories(&unsafe_entries, 1)
@@ -4302,5 +4761,275 @@ mod tests {
                 .unwrap_err()
                 .contains("cp311-abi3")
         );
+    }
+
+    fn language_wheel_validation_entries(extension: Vec<u8>, windows: bool) -> PackageEntries {
+        PackageEntries::from([
+            (
+                "ait_python/cli.py".into(),
+                (b"def main(): pass\n".to_vec(), 0o644),
+            ),
+            (
+                "ait_native-1.2.0rc1.dist-info/entry_points.txt".into(),
+                (
+                    b"[console_scripts]\nait = ait_python.cli:main\n".to_vec(),
+                    0o644,
+                ),
+            ),
+            (
+                if windows {
+                    "ait_py/ait_py.pyd"
+                } else {
+                    "ait_py/ait_py.abi3.so"
+                }
+                .into(),
+                (extension, 0o755),
+            ),
+        ])
+    }
+
+    #[test]
+    fn python_language_wheel_requires_shared_image_types_and_initializer_exports() {
+        for target in REGISTRY_TARGETS {
+            let image = python_wheel_fixture::extension_image(target);
+            validate_python_extension_image(&image).unwrap();
+            let entries =
+                language_wheel_validation_entries(image.clone(), target.ends_with("windows-msvc"));
+            validate_python_language_cli(&entries, "ait_native-1.2.0rc1.dist-info").unwrap();
+            let mut no_initializer = image.clone();
+            let offset = no_initializer
+                .windows(b"PyInit_ait_py".len())
+                .position(|bytes| bytes == b"PyInit_ait_py")
+                .unwrap();
+            no_initializer[offset] = b'X';
+            assert!(validate_python_extension_image(&no_initializer)
+                .unwrap_err()
+                .contains("does not export PyInit_ait_py"));
+            if target.ends_with("linux-gnu") {
+                let mut pie = image;
+                pie[24..32].copy_from_slice(&0x1000_u64.to_le_bytes());
+                assert!(validate_python_extension_image(&pie)
+                    .unwrap_err()
+                    .contains("not an executable"));
+            } else if target.ends_with("apple-darwin") {
+                let mut bundle = image;
+                bundle[12..16].copy_from_slice(&object::macho::MH_BUNDLE.to_le_bytes());
+                validate_python_extension_image(&bundle).unwrap();
+            }
+        }
+        for bytes in [b"fixture extension bytes".as_slice(), b"\x7fELF", b"MZ"] {
+            assert!(validate_python_extension_image(bytes).is_err());
+        }
+    }
+
+    fn assert_language_wheel_rejects_native_disguises(entries: &PackageEntries, executable: &[u8]) {
+        for path in [
+            "renamed-payload",
+            "ait_py/ait_py_extra.so",
+            "ait_py/ait_py.abi3.so",
+            "ait_py/ait_py.pyd",
+            "ait_native-1.2.0rc1.data/scripts/ait.exe",
+        ] {
+            let mut invalid = entries.clone();
+            invalid.insert(path.into(), (executable.to_vec(), 0o755));
+            invalid.insert(
+                "ait_native-1.2.0rc1.data/scripts/ait-script.py".into(),
+                (b"from ait_python.cli import main\nmain()\n".to_vec(), 0o755),
+            );
+            assert!(
+                validate_python_language_cli(&invalid, "ait_native-1.2.0rc1.dist-info").is_err(),
+                "accepted a native executable at {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn python_language_wheel_rejects_actual_executable_disguises() {
+        let executable = fs::read(std::env::current_exe().unwrap()).unwrap();
+        let entries = language_wheel_validation_entries(
+            python_wheel_fixture::extension_image("x86_64-pc-windows-msvc"),
+            true,
+        );
+        validate_python_language_cli(&entries, "ait_native-1.2.0rc1.dist-info").unwrap();
+        assert_language_wheel_rejects_native_disguises(&entries, &executable);
+    }
+
+    #[test]
+    #[ignore = "requires AIT_PY_TEST_EXTENSION and AIT_CLI_TEST_BINARY from the selected producer build"]
+    fn python_language_wheel_validates_selected_artifacts() {
+        let extension =
+            fs::read(std::env::var_os("AIT_PY_TEST_EXTENSION").expect("selected PyO3 artifact"))
+                .unwrap();
+        let format = validate_python_extension_image(&extension).unwrap();
+        let entries =
+            language_wheel_validation_entries(extension, format == object::BinaryFormat::Pe);
+        validate_python_language_cli(&entries, "ait_native-1.2.0rc1.dist-info").unwrap();
+        let executable = fs::read(
+            std::env::var_os("AIT_CLI_TEST_BINARY").expect("selected native CLI artifact"),
+        )
+        .unwrap();
+        assert_language_wheel_rejects_native_disguises(&entries, &executable);
+    }
+
+    #[test]
+    fn pypi_language_wheel_preserves_entrypoint_binding_and_core_legal_material() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        crate::init_surface::init_repo(&crate::init_surface::InitRequest {
+            root: root.clone(),
+            name: None,
+            default_line: "main".into(),
+            policy_profile: "prototype".into(),
+            default_author_mode: "ai_only_experimental".into(),
+            default_model: None,
+            repair_existing: false,
+        })
+        .unwrap();
+        let repo = RepoRuntime::discover_from_path(&root).unwrap();
+        let mut input = npm_validation_input();
+        input.version = "1.2.0-rc.1".into();
+        input.tag = "v1.2.0-rc.1".into();
+        input.components.remove("ait-node");
+        input.components.insert(
+            "ait-python".into(),
+            ComponentDefinition {
+                id: "ait-python".into(),
+                source_repository: "ait-python".into(),
+                source_snapshot: "SNP-333333333333".into(),
+                ecosystem: "python".into(),
+                license: "Apache-2.0".into(),
+                version: "1.2.0rc1".into(),
+            },
+        );
+        let targets = REGISTRY_TARGETS
+            .iter()
+            .map(|target| (*target).to_string())
+            .collect::<Vec<_>>();
+        input.distributions.push(DistributionDefinition {
+            channel: "pypi".into(),
+            role: "product".into(),
+            identity: "ait-native".into(),
+            components: vec!["ait-python".into()],
+            targets: targets.clone(),
+        });
+        for repository in ["ait-core", "ait-python"] {
+            for (role, declared_path) in [("license", "LICENSE"), ("notice", "NOTICE")] {
+                let bytes = format!("{repository}:{role}\n").into_bytes();
+                let path = format!("{repository}-{declared_path}");
+                fs::write(root.join(&path), &bytes).unwrap();
+                input.license_material.push(FrozenLicenseMaterial {
+                    source_repository: repository.into(),
+                    source_snapshot: "SNP-111111111111".into(),
+                    material_role: role.into(),
+                    declared_path: declared_path.into(),
+                    path,
+                    sha256: sha256_hex(&bytes),
+                    size_bytes: bytes.len() as u64,
+                });
+            }
+        }
+        let dist_info = "ait_python-1.2.0rc1.dist-info";
+        let record = format!("{dist_info}/RECORD");
+        for target in &targets {
+            let platform = match target.as_str() {
+                "aarch64-apple-darwin" => "macosx_11_0_arm64",
+                "x86_64-apple-darwin" => "macosx_10_12_x86_64",
+                "aarch64-unknown-linux-gnu" => "manylinux_2_28_aarch64",
+                "x86_64-unknown-linux-gnu" => "manylinux_2_28_x86_64",
+                "aarch64-pc-windows-msvc" => "win_arm64",
+                "x86_64-pc-windows-msvc" => "win_amd64",
+                _ => panic!("unknown fixture target"),
+            };
+            let tags = format!("cp311-abi3-{platform}");
+            let mut entries = PackageEntries::from([
+                ("ait_python/cli.py".into(), (b"def main(): pass\n".to_vec(), 0o644)),
+                (format!("{dist_info}/entry_points.txt"), (b"[console_scripts]\nait = ait_python.cli:main\n".to_vec(), 0o644)),
+                (format!("{dist_info}/METADATA"), (b"Metadata-Version: 2.4\nName: ait-python\nVersion: 1.2.0rc1\nSummary: fixture\nLicense-Expression: Apache-2.0\n\nfixture\n".to_vec(), 0o644)),
+                (format!("{dist_info}/WHEEL"), (format!("Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: false\nTag: {tags}\n").into_bytes(), 0o644)),
+            ]);
+            let extension = if target.ends_with("windows-msvc") {
+                "ait_py/ait_py.pyd"
+            } else {
+                "ait_py/ait_py.abi3.so"
+            };
+            entries.insert(
+                extension.into(),
+                (python_wheel_fixture::extension_image(target), 0o755),
+            );
+            let script =
+                b"#!/usr/bin/env python\nfrom ait_python.cli import main\nmain()\n".to_vec();
+            let script_root = "ait_python-1.2.0rc1.data/scripts";
+            if target.ends_with("windows-msvc") {
+                entries.insert(format!("{script_root}/ait-script.py"), (script, 0o755));
+            } else {
+                entries.insert(format!("{script_root}/ait"), (script, 0o755));
+            }
+            let record_bytes = generated_wheel_record(&entries, &record).unwrap();
+            entries.insert(record.clone(), (record_bytes, 0o644));
+            let bytes = wheel_zip_bytes(&entries, &record).unwrap();
+            let path = format!("ait_python-1.2.0rc1-{tags}.whl");
+            fs::write(root.join(&path), &bytes).unwrap();
+            input.artifacts.push(FrozenComponentArtifact {
+                component: "ait-python".into(),
+                kind: "python-wheel".into(),
+                target: Some(target.clone()),
+                path,
+                sha256: sha256_hex(&bytes),
+                size_bytes: bytes.len() as u64,
+            });
+        }
+        let generated = assemble_pypi(&repo, &input).unwrap();
+        assert_eq!(generated.len(), targets.len());
+        for artifact in generated {
+            let entries = read_wheel_entries(&artifact.bytes).unwrap();
+            let output_info = "ait_native-1.2.0rc1.dist-info";
+            validate_wheel_record(&entries, &format!("{output_info}/RECORD")).unwrap();
+            validate_python_language_cli(&entries, output_info).unwrap();
+            assert!(entries
+                .keys()
+                .any(|path| path.starts_with("ait_native-1.2.0rc1.data/scripts/")));
+            assert!(!entries
+                .keys()
+                .any(|path| path.starts_with("ait_python-1.2.0rc1.data/")));
+            assert!(entries.keys().any(|path| path.starts_with("ait_py/ait_py")));
+            for repository in ["ait-core", "ait-python"] {
+                assert!(
+                    entries.contains_key(&format!("{output_info}/licenses/{repository}/LICENSE"))
+                );
+                assert!(
+                    entries.contains_key(&format!("{output_info}/licenses/{repository}/NOTICE"))
+                );
+            }
+            let metadata =
+                String::from_utf8(entries[&format!("{output_info}/METADATA")].0.clone()).unwrap();
+            assert!(metadata.contains("Python `ait` CLI"));
+            assert!(!metadata.contains("inactive-by-default"));
+            assert_eq!(artifact.evidence["metadata"]["native_script_count"], 0);
+            let mut invalid = entries.clone();
+            invalid.insert(
+                "renamed-payload".into(),
+                (b"\x7fELFnative executable".to_vec(), 0o755),
+            );
+            assert!(validate_python_language_cli(&invalid, output_info)
+                .unwrap_err()
+                .contains("standalone native executable"));
+            let mut invalid = entries.clone();
+            invalid.remove("ait_python/cli.py");
+            assert!(validate_python_language_cli(&invalid, output_info).is_err());
+            let mut invalid = entries.clone();
+            invalid.insert(
+                format!("{output_info}/entry_points.txt"),
+                (
+                    b"[console_scripts]\nait = old_native_relay:main\n".to_vec(),
+                    0o644,
+                ),
+            );
+            assert!(validate_python_language_cli(&invalid, output_info).is_err());
+            assert!(!entries.contains_key("ait_native-1.2.0rc1.data/scripts/ait.exe"));
+            assert_eq!(
+                entries[&format!("{output_info}/entry_points.txt")].0,
+                b"[console_scripts]\nait = ait_python.cli:main\n"
+            );
+        }
     }
 }

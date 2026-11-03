@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 use std::{io::ErrorKind, path::PathBuf, sync::OnceLock};
 
 const BINARY_DB_V0_SHA256: &str =
-    "5c2f0255af1b7d17117bbf6d4654757550d942e78f047296fcbedb6695d1b63c";
+    "fc2b3183ff1ffbb86699534e506867e9749769d98a3385a9f8dfcd6c562fb70c";
 const PATCHSET_RECORD_LAYOUT: &str = r#"SERVER_PATCHSET_RECORD_SIZE = 65
 
 ServerPatchsetRecord — patchset.bin:

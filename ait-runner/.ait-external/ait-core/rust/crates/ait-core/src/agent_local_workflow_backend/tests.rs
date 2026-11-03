@@ -9,7 +9,6 @@ use super::*;
 fn repository_target(root: &Path) -> JsonValue {
     json!({
         "mode": "local",
-        "workflow_mode": "solo_local",
         "repo_root": root.to_string_lossy(),
         "repo_name": "fixture-repo",
     })
@@ -70,7 +69,6 @@ fn agent_local_workflow_backend_validates_operation_target_and_arguments() {
         "operation": "read_task_queue",
         "target": {
             "mode": "remote",
-            "workflow_mode": "solo_remote",
             "repo_root": temp.path().to_string_lossy(),
             "repo_name": "fixture-repo",
         },
@@ -111,4 +109,22 @@ fn agent_local_workflow_backend_source_has_no_retired_authority_dependencies() {
             "forbidden dependency: {forbidden}"
         );
     }
+}
+
+#[test]
+fn retired_execution_modes_are_rejected_without_opening_local_authority() {
+    let temp = tempdir().unwrap();
+    fs::create_dir(temp.path().join(".ait")).unwrap();
+    for operation in ["read_task_queue", "read_current_workflow"] {
+        for mode in ["solo_local", "solo_remote", "team_remote"] {
+            let mut retired = request(temp.path(), operation, json!({}));
+            retired["target"]["workflow_mode"] = json!(mode);
+            let error = agent_local_workflow_backend_execute_json(&retired).unwrap_err();
+            assert!(error.contains("Retired execution field `workflow_mode`"));
+        }
+    }
+    assert!(fs::read_dir(temp.path().join(".ait"))
+        .unwrap()
+        .next()
+        .is_none());
 }

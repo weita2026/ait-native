@@ -673,6 +673,12 @@ enum WorktreeRemovalWorkspaceStatusPolicy {
     SkipForAbandonedTask,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum WorktreeRemovalCwdPolicy {
+    Preserve,
+    ReleaseCliOwned,
+}
+
 fn read_worktree_removal_workspace_status(
     worktree_repo: &RepoRuntime,
 ) -> Result<JsonValue, String> {
@@ -791,6 +797,22 @@ pub(in crate::primitives) fn preflight_worktree_removal(
     )
 }
 
+pub(in crate::primitives) fn remove_one_worktree_after_local_task_finish(
+    repo: &RepoRuntime,
+    name: &str,
+) -> Result<JsonValue, String> {
+    // A local receipt does not waive workspace inspection. CLI process
+    // context is released independently, after that inspection and locking.
+    remove_one_worktree_with_policy(
+        repo,
+        name,
+        true,
+        false,
+        WorktreeRemovalWorkspaceStatusPolicy::Inspect,
+        WorktreeRemovalCwdPolicy::ReleaseCliOwned,
+    )
+}
+
 pub(in crate::primitives) fn remove_one_worktree(
     repo: &RepoRuntime,
     name: &str,
@@ -803,6 +825,7 @@ pub(in crate::primitives) fn remove_one_worktree(
         delete_path,
         force,
         WorktreeRemovalWorkspaceStatusPolicy::Inspect,
+        WorktreeRemovalCwdPolicy::Preserve,
     )
 }
 
@@ -816,6 +839,7 @@ pub(in crate::primitives) fn remove_one_worktree_after_authoritative_task_land(
         true,
         true,
         WorktreeRemovalWorkspaceStatusPolicy::SkipForAuthoritativeTaskLand,
+        WorktreeRemovalCwdPolicy::ReleaseCliOwned,
     )
 }
 
@@ -829,7 +853,10 @@ pub(in crate::primitives) fn remove_one_worktree_after_task_abandon(
         name,
         true,
         true,
-        WorktreeRemovalWorkspaceStatusPolicy::SkipForAbandonedTask,
+        (
+            WorktreeRemovalWorkspaceStatusPolicy::SkipForAbandonedTask,
+            WorktreeRemovalCwdPolicy::Preserve,
+        ),
         configuration,
         |_| {},
     )
@@ -901,6 +928,13 @@ pub(in crate::primitives) fn cleanup_registered_worktree_cargo_build_dir(
     )
 }
 
+fn worktree_lock_is_contended(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::WouldBlock
+        || error
+            .raw_os_error()
+            .is_some_and(|code| Some(code) == fs2::lock_contended_error().raw_os_error())
+}
+
 fn cleanup_worktree_cargo_dirs(
     worktree_name: &str,
     cache_paths: Vec<PathBuf>,
@@ -962,7 +996,7 @@ fn cleanup_worktree_cargo_dirs(
         };
         match FileExt::try_lock_exclusive(&file) {
             Ok(()) => locks.push(file),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(error) if worktree_lock_is_contended(&error) => {
                 return Err(format!(
                     "Refusing to close Task worktree {worktree_name} while its Cargo target/build state is active through {}.",
                     lock_path.display()
@@ -1051,6 +1085,7 @@ fn remove_one_worktree_with_policy(
     delete_path: bool,
     force: bool,
     workspace_status_policy: WorktreeRemovalWorkspaceStatusPolicy,
+    cwd_policy: WorktreeRemovalCwdPolicy,
 ) -> Result<JsonValue, String> {
     let mut configuration = crate::config_surface::begin_root_config_mutation(repo)?;
     remove_one_worktree_with_policy_observed(
@@ -1058,9 +1093,28 @@ fn remove_one_worktree_with_policy(
         name,
         delete_path,
         force,
-        workspace_status_policy,
+        (workspace_status_policy, cwd_policy),
         &mut configuration,
         |_| {},
+    )
+}
+
+fn worktree_cleanup_error(operation: &str, path: &Path, error: impl std::fmt::Display) -> String {
+    #[cfg(all(windows, debug_assertions))]
+    {
+        use std::io::Write;
+        // Observe the original failure while this process and its locks are
+        // still alive. Diagnostics must not replace or retry that operation.
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "worktree-cleanup-failure operation={operation:?} path={path:?} pid={} cwd={:?} error={error}",
+            std::process::id(),
+            std::env::current_dir()
+        );
+    }
+    format!(
+        "Worktree cleanup {operation} failed for {}: {error}",
+        path.display()
     )
 }
 
@@ -1069,10 +1123,15 @@ fn remove_one_worktree_with_policy_observed(
     name: &str,
     delete_path: bool,
     force: bool,
-    workspace_status_policy: WorktreeRemovalWorkspaceStatusPolicy,
+    (workspace_status_policy, cwd_policy): (
+        WorktreeRemovalWorkspaceStatusPolicy,
+        WorktreeRemovalCwdPolicy,
+    ),
     configuration: &mut crate::config_surface::RootConfigMutation,
     mut observe_retirement: impl FnMut(bool),
 ) -> Result<JsonValue, String> {
+    #[cfg(not(windows))]
+    let _ = cwd_policy;
     let removal =
         preflight_worktree_removal_with_policy(repo, name, force, workspace_status_policy)?;
     let worktree_name = required_string_field(&removal, "name")?;
@@ -1113,19 +1172,31 @@ fn remove_one_worktree_with_policy_observed(
     )
     .map_err(|error| error.to_string())?;
     observe_retirement(false);
+    #[cfg(windows)]
+    if delete_path
+        && cwd_policy == WorktreeRemovalCwdPolicy::ReleaseCliOwned
+        && worktree_path.exists()
+    {
+        crate::closeout_context::release_owned_worktree_cwd(
+            &repo.authoritative_repo_root(),
+            &worktree_path,
+        )?;
+    }
     if !abandoned && marker_path.exists() {
-        fs::remove_file(&marker_path).map_err(|err| err.to_string())?;
+        fs::remove_file(&marker_path)
+            .map_err(|err| worktree_cleanup_error("remove_file", &marker_path, err))?;
     }
     if !abandoned && path_exists_or_directory_link(&ait_link) {
-        remove_path_entry(&ait_link)?;
+        remove_path_entry(&ait_link)
+            .map_err(|err| worktree_cleanup_error("remove_path_entry", &ait_link, err))?;
     }
     if delete_path && worktree_path.exists() {
         let mut children = fs::read_dir(&worktree_path)
-            .map_err(|err| err.to_string())?
+            .map_err(|err| worktree_cleanup_error("read_dir", &worktree_path, err))?
             .map(|entry| {
                 entry
                     .map(|value| value.path())
-                    .map_err(|err| err.to_string())
+                    .map_err(|err| worktree_cleanup_error("read_dir_entry", &worktree_path, err))
             })
             .collect::<Result<Vec<_>, _>>()?;
         children.sort_by(|left, right| right.cmp(left));
@@ -1133,25 +1204,30 @@ fn remove_one_worktree_with_policy_observed(
             if abandoned && (child == marker_path || child == ait_link) {
                 continue;
             }
-            remove_tree_force(&child)?;
+            remove_tree_force(&child)
+                .map_err(|err| worktree_cleanup_error("remove_tree_force", &child, err))?;
         }
         // Retain owner evidence until only the overlay/link remain. Interrupted
         // abandonment can then verify and resume without a new receipt.
         if abandoned {
             if path_exists_or_directory_link(&ait_link) {
-                remove_path_entry(&ait_link)?;
+                remove_path_entry(&ait_link)
+                    .map_err(|err| worktree_cleanup_error("remove_path_entry", &ait_link, err))?;
             }
             if marker_path.exists() {
-                fs::remove_file(&marker_path).map_err(|err| err.to_string())?;
+                fs::remove_file(&marker_path)
+                    .map_err(|err| worktree_cleanup_error("remove_file", &marker_path, err))?;
             }
         }
         if worktree_path.exists() {
-            fs::remove_dir(&worktree_path).map_err(|err| err.to_string())?;
+            fs::remove_dir(&worktree_path)
+                .map_err(|err| worktree_cleanup_error("remove_dir", &worktree_path, err))?;
         }
     }
     if let Some(alias_path) = alias_path.as_ref() {
         if path_exists_or_directory_link(alias_path) {
-            remove_path_entry(alias_path)?;
+            remove_path_entry(alias_path)
+                .map_err(|err| worktree_cleanup_error("remove_path_entry", alias_path, err))?;
         }
     }
     let mut clear_root_binding = || {
@@ -1170,7 +1246,9 @@ fn remove_one_worktree_with_policy_observed(
     if abandoned {
         clear_root_binding()?;
     }
-    fs::remove_file(worktree_registry_path(repo, &worktree_name)).map_err(|err| err.to_string())?;
+    let registry_path = worktree_registry_path(repo, &worktree_name);
+    fs::remove_file(&registry_path)
+        .map_err(|err| worktree_cleanup_error("remove_file", &registry_path, err))?;
     observe_retirement(true);
     if !abandoned {
         clear_root_binding()?;
@@ -1442,6 +1520,104 @@ mod tests {
     }
 
     #[test]
+    fn local_finish_inspects_workspace_before_releasing_cli_cwd() {
+        const ROOT: &str = "AIT_TEST_LOCAL_FINISH_CWD_ROOT";
+        if let Some(root) = std::env::var_os(ROOT) {
+            let root = resolve_path_strict_false(&PathBuf::from(root));
+            let authority = root.join("repo");
+            fs::create_dir(&authority).unwrap();
+            std::env::set_current_dir(&authority).unwrap();
+            let run = |args: &[&str]| {
+                let argv = std::iter::once("ait")
+                    .chain(args.iter().copied())
+                    .map(std::ffi::OsString::from)
+                    .collect();
+                assert_eq!(crate::main_app::entry_with_args(argv), 0, "{args:?}");
+            };
+            run(&["init", "--json"]);
+            run(&[
+                "config",
+                "set",
+                "--user-name",
+                "closeout-regression",
+                "--json",
+            ]);
+            run(&["config", "set", "--sprint", "off", "--json"]);
+            let repo = RepoRuntime::discover_from_path(&authority).unwrap();
+            let edit_root = root.join("edit");
+            let started = crate::binding_services::start_task(
+                &repo,
+                &crate::binding_services::TaskStartRequest {
+                    title: Some("Local finish CWD".into()),
+                    source: None,
+                    intent: "Preserve inspection before releasing the finishing CLI CWD".into(),
+                    local: true,
+                    remote_name: None,
+                    edit_root: Some(edit_root.clone()),
+                },
+                None,
+            )
+            .unwrap();
+            let task_id = required_string_field(&started, "task_id").unwrap();
+            let name = required_string_field(&started["worktree"], "name").unwrap();
+            fs::write(edit_root.join("closeout.rs"), "fn closeout() {}\n").unwrap();
+            std::env::set_current_dir(&edit_root).unwrap();
+            let before = std::env::current_dir().unwrap();
+            let refused = crate::closeout_context::with_cli_closeout(|| {
+                remove_one_worktree_after_local_task_finish(&repo, &name)
+            })
+            .expect_err("local closeout must inspect and protect unsaved changes");
+            assert!(refused.contains("unsaved changes"), "{refused}");
+            assert_eq!(std::env::current_dir().unwrap(), before);
+            assert!(edit_root.join(WORKTREE_CONFIG_NAME).is_file());
+            assert!(worktree_registry_path(&repo, &name).is_file());
+
+            // Exercise real dispatch and the receipted local finish caller once.
+            run(&[
+                "task",
+                "finish",
+                &task_id,
+                "--message",
+                "CWD closeout",
+                "--local",
+                "--json",
+                "--full",
+            ]);
+            #[cfg(windows)]
+            assert_eq!(
+                std::env::current_dir().unwrap().canonicalize().unwrap(),
+                authority.canonicalize().unwrap()
+            );
+            // Other platforms allow unlinking their CWD; keep this isolated
+            // test process valid before it returns to the harness.
+            std::env::set_current_dir(&authority).unwrap();
+            assert!(!edit_root.exists());
+            assert!(!worktree_registry_path(&repo, &name).exists());
+            assert_eq!(
+                fs::read_to_string(authority.join("closeout.rs")).unwrap(),
+                "fn closeout() {}\n"
+            );
+            return;
+        }
+        let temp = tempdir().unwrap();
+        let case = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &case, "--nocapture"])
+            .env(ROOT, temp.path())
+            .env("CODEX_HOME", temp.path().join("native-home"))
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "status={:?}\nstdout={}\nstderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn current_admission_and_finish_or_abandon_cursor_retirement_are_exclusive() {
         use ait_core::binary_db_generation::admit_activated_binary_db_generation_for_runtime;
         use std::sync::mpsc;
@@ -1485,15 +1661,15 @@ mod tests {
                 name,
                 true,
                 true,
-                policy,
+                (policy, WorktreeRemovalCwdPolicy::Preserve),
                 &mut configuration,
                 |retired| {
                     observations += 1;
                     let probe = fs::File::open(&lock_path).expect("open metadata lock");
-                    assert_eq!(
-                        FileExt::try_lock_shared(&probe).unwrap_err().kind(),
-                        std::io::ErrorKind::WouldBlock,
-                        "admission reader must be excluded throughout destructive cleanup"
+                    let contention = FileExt::try_lock_shared(&probe).unwrap_err();
+                    assert!(
+                        worktree_lock_is_contended(&contention),
+                        "admission reader must be excluded throughout destructive cleanup: {contention}"
                     );
                     assert_eq!(worktree_registry_path(&repo, name).exists(), !retired);
                     assert_eq!(worktree.join(".ait-worktree/cursor.bin").exists(), !retired);

@@ -667,10 +667,6 @@ mod tests {
             serde_json::json!(false)
         );
         assert_eq!(
-            protocol["product_boundary"]["workflow_mode"],
-            serde_json::json!("solo_local")
-        );
-        assert_eq!(
             protocol["mixed_workflow_metrics"]["weighted_composite_score_allowed"],
             serde_json::json!(false)
         );

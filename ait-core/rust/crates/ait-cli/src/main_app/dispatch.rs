@@ -1,5 +1,5 @@
 fn dispatch_with_args(args: Vec<OsString>) -> ExitCode {
-    match run(args) {
+    match crate::closeout_context::with_cli_closeout(|| run(args)) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("{}", crate::render::domain_error_text(&err));

@@ -2,6 +2,12 @@
 //! `ait task quick`, Plan-backed Markdown materialization after a local
 //! finish, and exact repair commands for deleted Plan-backed Markdown.
 
+#[path = "support/cli_binary.rs"]
+mod cli_binary;
+#[path = "support/native_home.rs"]
+mod native_home;
+#[path = "support/workflow_process.rs"]
+mod workflow_process;
 use ait_core::json_support::{JsonCodec, JsonValue};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,7 +15,8 @@ use std::process::{Command, Output};
 use tempfile::TempDir;
 
 fn run(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ait-cli"))
+    Command::new(cli_binary::selected(env!("CARGO_BIN_EXE_ait-cli")))
+        .env("CODEX_HOME", native_home::path())
         .current_dir(root)
         .args(args)
         .output()
@@ -91,6 +98,219 @@ fn finish_local(edit_root: &Path, task_id: &str, message: &str) -> Output {
 
 fn finished_payload(output: &Output) -> JsonValue {
     JsonCodec::parse_slice_with_error_prefix(&output.stdout, "Invalid finish JSON").unwrap()
+}
+
+fn abandon_explicit_root(root: &Path, task_id: &str, edit_root: &Path) {
+    let output = run(root, &["task", "abandon", task_id, "--local", "--json"]);
+    assert!(!output.status.success(), "{}", text(&output));
+    let rendered = text(&output);
+    assert!(rendered.contains("cleanup is incomplete"), "{rendered}");
+    assert!(rendered.contains("supplied explicitly"), "{rendered}");
+    assert!(edit_root.is_dir(), "explicit roots remain caller-owned");
+    let shown = json(root, &["task", "show", task_id, "--local", "--json"]);
+    assert_eq!(shown["status"], "abandoned");
+}
+
+#[cfg(unix)]
+#[test]
+fn abandon_removes_owned_roots_from_target_cwd_and_retries_without_workflow_mutation() {
+    for from_target in [false, true] {
+        for dirty in [false, true] {
+            let (temp, root) = initialized();
+            json(&root, &["config", "set", "--sprint", "off", "--json"]);
+            let managed = scratch(&temp).join("managed");
+            fs::create_dir(&managed).unwrap();
+            let config_path = root.join(".ait/config.json");
+            let mut config = JsonCodec::parse_slice_with_error_prefix(
+                &fs::read(&config_path).unwrap(),
+                "Invalid fixture config",
+            )
+            .unwrap();
+            let mut worktree_config = JsonCodec::parse_slice_with_error_prefix(
+                br#"{"ephemeral_root":""}"#,
+                "Invalid fixture root",
+            )
+            .unwrap();
+            worktree_config["ephemeral_root"] =
+                JsonValue::String(managed.to_string_lossy().to_string());
+            config["task_worktree"] = worktree_config;
+            fs::write(config_path, config.to_string()).unwrap();
+            fs::create_dir_all(root.join("docs")).unwrap();
+            fs::write(root.join("docs/shared.txt"), "shared data\n").unwrap();
+            let started = json(
+                &root,
+                &[
+                    "task",
+                    "start",
+                    "--local",
+                    "--title",
+                    "Owned abandon",
+                    "--intent",
+                    "Verify owned cleanup",
+                    "--json",
+                    "--full",
+                ],
+            );
+            let task = started["task_id"].as_str().unwrap();
+            let edit_root = PathBuf::from(started["worktree"]["path"].as_str().unwrap());
+            assert!(edit_root.starts_with(&managed), "{started}");
+            let name = task.to_ascii_lowercase();
+            let registry = root.join(".ait/worktrees").join(format!("{name}.json"));
+            let alias = root.join(".ait-worktree-links").join(&name);
+            assert!(registry.is_file());
+            assert!(alias.is_symlink());
+            if dirty {
+                fs::write(
+                    edit_root.join("uncaptured.txt"),
+                    "discard on explicit abandon\n",
+                )
+                .unwrap();
+            }
+            let abandoned = json(
+                if from_target { &edit_root } else { &root },
+                &["task", "abandon", task, "--local", "--json"],
+            );
+            assert_eq!(abandoned["status"], "abandoned");
+            assert_eq!(abandoned["bound_worktree_cleanup"]["status"], "removed");
+            assert!(!edit_root.exists());
+            assert!(!registry.exists());
+            assert!(!alias.is_symlink());
+            assert_eq!(
+                fs::read_to_string(root.join("docs/shared.txt")).unwrap(),
+                "shared data\n"
+            );
+            let before = json(&root, &["task", "show", task, "--local", "--json"]);
+            let receipts = root.join(".ait/reconciliation/v1/receipts");
+            let receipt_names = || {
+                let mut names = fs::read_dir(&receipts)
+                    .into_iter()
+                    .flatten()
+                    .map(|entry| entry.unwrap().file_name())
+                    .collect::<Vec<_>>();
+                names.sort();
+                names
+            };
+            let before_receipts = receipt_names();
+            let repeated = json(&root, &["task", "abandon", task, "--local", "--json"]);
+            assert_eq!(repeated["already_abandoned"], true);
+            assert_eq!(
+                repeated["bound_worktree_cleanup"]["status"],
+                "already_removed"
+            );
+            assert_eq!(repeated["automatic_reconciliation"]["status"], "skipped");
+            assert_eq!(repeated["automatic_reconciliation"]["mutated"], false);
+            assert_eq!(before_receipts, receipt_names());
+            assert_eq!(
+                before,
+                json(&root, &["task", "show", task, "--local", "--json"])
+            );
+        }
+    }
+}
+
+#[test]
+fn dirty_and_clean_finish_close_the_bound_plan_once_and_preserve_siblings() {
+    for dirty in [true, false] {
+        let (temp, root) = initialized();
+        let artifact = "docs/sprints/automatic-closeout.md";
+        let original = "# Closeout [plan-ref: finish/root]\n\n- [ ] Finish [ref: finish/run]\n- [ ] Keep open [ref: finish/other]\n";
+        fs::create_dir_all(root.join("docs/sprints")).unwrap();
+        fs::write(root.join(artifact), original).unwrap();
+        let edit_root = scratch(&temp).join("edit");
+        let started = json(
+            &root,
+            &[
+                "task",
+                "start",
+                "--from",
+                "docs/sprints/automatic-closeout.md#finish/run",
+                "--local",
+                "--intent",
+                "Verify native bound Plan finish",
+                "--edit-root",
+                edit_root.to_str().unwrap(),
+                "--json",
+                "--full",
+            ],
+        );
+        let task = started["task_id"].as_str().unwrap();
+        fs::write(edit_root.join("finished.txt"), "apply once\n").unwrap();
+        let baseline = workflow_process::cli_json(&root, &["line", "show", "main", "--json"])
+            ["head_snapshot_id"]
+            .clone();
+        let checkpoint = if !dirty {
+            workflow_process::cli_json(
+                &edit_root,
+                &[
+                    "snapshot",
+                    "create",
+                    task,
+                    "--message",
+                    "Clean candidate",
+                    "--json",
+                ],
+            )["snapshot_id"]
+                .clone()
+        } else {
+            baseline.clone()
+        };
+        let args = if dirty {
+            vec![
+                "task",
+                "finish",
+                task,
+                "--local",
+                "--message",
+                "Dirty bound finish",
+                "--json",
+                "--full",
+            ]
+        } else {
+            vec!["task", "finish", task, "--local", "--json", "--full"]
+        };
+        let finished = workflow_process::finish_from_edit(
+            &workflow_process::FinishContext {
+                task,
+                root: &root,
+                edit: &edit_root,
+                baseline: &baseline,
+                checkpoint: &checkpoint,
+                dirty,
+            },
+            &args,
+        );
+        assert_eq!(finished["closeout_status"], "complete", "{finished}");
+        assert_eq!(finished["plan_checklist_closeout"]["status"], "synced");
+        assert_eq!(
+            fs::read_to_string(root.join(artifact)).unwrap(),
+            original.replacen("- [ ] Finish", "- [x] Finish", 1)
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("finished.txt")).unwrap(),
+            "apply once\n"
+        );
+        let plan_id = finished["plan_checklist_closeout"]["plan_id"]
+            .as_str()
+            .unwrap();
+        let shown = json(&root, &["plan", "show", plan_id, "--local", "--json"]);
+        assert_eq!(shown["head_revision"]["items"][0]["checkbox_state"], "done");
+        assert_eq!(shown["head_revision"]["items"][1]["checkbox_state"], "open");
+        let snapshots = json(&root, &["snapshot", "list", "--all", "--json"]);
+        let retry = json(
+            &root,
+            &["task", "finish", task, "--local", "--json", "--full"],
+        );
+        assert_eq!(retry["execution_status"], "already_landed");
+        assert_eq!(
+            retry["landed_snapshot_id"].as_str(),
+            finished["landed_snapshot_id"].as_str()
+        );
+        assert_eq!(
+            json(&root, &["snapshot", "list", "--all", "--json"]),
+            snapshots
+        );
+        assert!(!edit_root.exists());
+    }
 }
 
 #[test]
@@ -194,7 +414,7 @@ fn task_quick_text_output_names_the_generated_card_and_reuses_it_on_rerun() {
         .unwrap()
         .trim()
         .to_string();
-    json(&root, &["task", "abandon", &task_id, "--local", "--json"]);
+    abandon_explicit_root(&root, &task_id, &edit_root);
     // The card is Plan-tracked and byte-identical, so a rerun reuses it.
     let second_root = scratch(&temp).join("quick-text-2");
     let (_, started) = quick_start(
@@ -332,7 +552,12 @@ fn post_finish_hook_fail_policy_keeps_the_finish_but_changes_the_exit_code() {
             "--local",
         ],
     );
-    assert_eq!(finished.status.code(), Some(3), "{}", text(&finished));
+    assert_eq!(
+        finished.status.code(),
+        Some(3),
+        "{}",
+        workflow_process::failure_output(&finished)
+    );
     let stdout = String::from_utf8_lossy(&finished.stdout);
     assert!(
         stdout.contains("hooks: failed (1 configured, 1 failed)"),
@@ -544,7 +769,7 @@ fn deleted_plan_backed_markdown_reports_the_exact_prune_command() {
     );
     let edit_root = scratch(&temp).join("unblocked");
     let (task_id, _) = quick_start(&root, &edit_root, "Unblocked after prune", "prune");
-    json(&root, &["task", "abandon", &task_id, "--local", "--json"]);
+    abandon_explicit_root(&root, &task_id, &edit_root);
 }
 
 #[test]
@@ -622,6 +847,317 @@ fn plan_sync_from_a_worktree_accepts_the_shared_docs_link() {
         "{}",
         payload["plan_checklist_closeout"]
     );
+}
+
+#[test]
+fn concurrent_plan_items_reject_contention_and_preserve_shared_docs_closeout() {
+    use workflow_process::{cli_json, reply_json, request, write_request, Fixture, Workers};
+    if workflow_process::run_worker() {
+        return;
+    }
+    let fixture = Fixture::new(false);
+    let root = &fixture.root;
+    let card = "docs/sprints/concurrent.md";
+    let initial = "# Concurrent Plan [plan-ref: concurrent/root]\n\nKeep the other author's notes.\n\n- [ ] First item [ref: concurrent/first]\n- [ ] Second item [ref: concurrent/second]\n- [ ] Future item [ref: concurrent/future]\n";
+    fs::create_dir_all(root.join("docs/sprints")).unwrap();
+    fs::write(root.join(card), initial).unwrap();
+    let edits = (0..3)
+        .map(|i| fixture.edit(&format!("plan-author-{i}")))
+        .collect::<Vec<_>>();
+    let refs = ["concurrent/first", "concurrent/first", "concurrent/second"];
+    let mut workers = Workers::spawn(
+        "concurrent_plan_items_reject_contention_and_preserve_shared_docs_closeout",
+        3,
+    );
+    let starts = workers.together(
+        (0..3)
+            .map(|i| {
+                (
+                    i,
+                    request(
+                        root,
+                        &[
+                            "task",
+                            "start",
+                            "--local",
+                            "--from",
+                            &format!("{card}#{}", refs[i]),
+                            "--intent",
+                            "Verify independent Plan item ownership",
+                            "--edit-root",
+                            edits[i].to_str().unwrap(),
+                            "--json",
+                            "--full",
+                        ],
+                    ),
+                )
+            })
+            .collect(),
+    );
+    let winners = starts
+        .iter()
+        .filter(|(_, reply)| reply["ok"] == true)
+        .map(|(i, reply)| (*i, reply_json(reply)))
+        .collect::<Vec<_>>();
+    assert_eq!(winners.len(), 2, "{starts:?}");
+    assert!(
+        winners.iter().any(|(i, _)| *i == 2),
+        "different Plan items must coexist"
+    );
+    let loser = starts
+        .iter()
+        .find(|(_, reply)| reply["ok"] == false)
+        .unwrap();
+    assert!(loser.0 < 2);
+    let rejected = loser.1["stderr"].as_str().unwrap();
+    let owner = winners.iter().find(|(i, _)| *i < 2).unwrap().0;
+    assert!(
+        (rejected.contains("concurrent/first") && rejected.contains("linked_task_exists"))
+            || (rejected.contains("already bound to explicit edit root")
+                && rejected.contains(edits[owner].to_str().unwrap())
+                && rejected.contains(edits[loser.0].to_str().unwrap())),
+        "{rejected}"
+    );
+    assert!(
+        !edits[loser.0].exists(),
+        "conflicting start must not create another worktree"
+    );
+    let tasks = winners
+        .iter()
+        .map(|(i, payload)| (*i, payload["task_id"].as_str().unwrap().to_string()))
+        .collect::<Vec<_>>();
+    assert_ne!(tasks[0].1, tasks[1].1);
+    let plan = winners[0].1["plan_source"]["plan_id"].as_str().unwrap();
+    assert_eq!(winners[1].1["plan_source"]["plan_id"], plan);
+    for (_, reply) in workers.together(
+        tasks
+            .iter()
+            .map(|(i, _)| {
+                (
+                    *i,
+                    write_request(
+                        &edits[*i].join(format!("item-{i}.txt")),
+                        &format!("accepted item {i}\n"),
+                        false,
+                    ),
+                )
+            })
+            .collect(),
+    ) {
+        assert_eq!(reply["ok"], true);
+    }
+    let notes = tasks
+        .iter()
+        .map(|(i, _)| format!("\nNote from worker {i}.\n"))
+        .collect::<Vec<_>>();
+    for (_, reply) in workers.together(
+        tasks
+            .iter()
+            .enumerate()
+            .map(|(n, (i, _))| (*i, write_request(&edits[*i].join(card), &notes[n], true)))
+            .collect(),
+    ) {
+        assert_eq!(reply["ok"], true);
+    }
+    let shared = fs::read_to_string(root.join(card)).unwrap();
+    assert!(
+        shared == format!("{initial}{}{}", notes[0], notes[1])
+            || shared == format!("{initial}{}{}", notes[1], notes[0])
+    );
+    for (i, _) in &tasks {
+        assert_eq!(fs::read_to_string(edits[*i].join(card)).unwrap(), shared);
+    }
+    let synced = reply_json(&workers.one(
+        tasks[0].0,
+        request(
+            &edits[tasks[0].0],
+            &["plan", "sync", card, "--local", "--json"],
+        ),
+    ));
+    assert_eq!(synced["results"][0]["plan_id"], plan);
+    let mut checkpoints = std::collections::BTreeMap::new();
+    for (i, reply) in workers.together(
+        tasks
+            .iter()
+            .map(|(i, task)| {
+                (
+                    *i,
+                    request(
+                        &edits[*i],
+                        &[
+                            "snapshot",
+                            "create",
+                            task,
+                            "--message",
+                            "Plan author checkpoint",
+                            "--json",
+                        ],
+                    ),
+                )
+            })
+            .collect(),
+    ) {
+        let expected_task = &tasks.iter().find(|(worker, _)| *worker == i).unwrap().1;
+        let checkpoint = reply_json(&reply);
+        assert_eq!(checkpoint["task_id"], expected_task.as_str());
+        checkpoints.insert(i, checkpoint["snapshot_id"].clone());
+    }
+    let baseline = cli_json(root, &["line", "show", "main", "--json"])["head_snapshot_id"].clone();
+    let finishes = workers.together(
+        tasks
+            .iter()
+            .map(|(i, task)| {
+                (
+                    *i,
+                    request(
+                        &edits[*i],
+                        &["task", "finish", task, "--local", "--json", "--full"],
+                    ),
+                )
+            })
+            .collect(),
+    );
+    let mut applied = Vec::new();
+    let mut pending = Vec::new();
+    for (i, reply) in finishes {
+        let task = &tasks.iter().find(|(worker, _)| *worker == i).unwrap().1;
+        let context = workflow_process::FinishContext {
+            task,
+            root,
+            edit: &edits[i],
+            baseline: &baseline,
+            checkpoint: &checkpoints[&i],
+            dirty: false,
+        };
+        if let Some((value, identity)) = workflow_process::finish_reply(&context, &reply) {
+            applied.push((i, value, identity));
+        } else {
+            pending.push(i);
+        }
+    }
+    assert_eq!(applied.len(), 1, "one common-base Plan item may apply");
+    let (first, value, identity) = applied.pop().unwrap();
+    let task = &tasks.iter().find(|(worker, _)| *worker == first).unwrap().1;
+    workflow_process::finish_closeout(
+        &workflow_process::FinishContext {
+            task,
+            root,
+            edit: &edits[first],
+            baseline: &baseline,
+            checkpoint: &checkpoints[&first],
+            dirty: false,
+        },
+        value,
+        &identity,
+        None,
+    );
+    let first_line = if refs[first] == "concurrent/first" {
+        "- [ ] First item"
+    } else {
+        "- [ ] Second item"
+    };
+    let first_closed = shared.replacen(first_line, &first_line.replace("[ ]", "[x]"), 1);
+    assert_eq!(fs::read_to_string(root.join(card)).unwrap(), first_closed);
+    for i in pending {
+        let rebased = reply_json(&workers.one(
+            i,
+            request(
+                &edits[i],
+                &["worktree", "rebase", "--onto", "main", "--json"],
+            ),
+        ));
+        assert_eq!(rebased["clean"], true);
+        let task = &tasks.iter().find(|(worker, _)| *worker == i).unwrap().1;
+        let reply = workers.one(
+            i,
+            request(
+                &edits[i],
+                &["task", "finish", task, "--local", "--json", "--full"],
+            ),
+        );
+        let context = workflow_process::FinishContext {
+            task,
+            root,
+            edit: &edits[i],
+            baseline: &rebased["rebase"]["new_base_snapshot_id"],
+            checkpoint: &rebased["rebase"]["new_head_snapshot_id"],
+            dirty: false,
+        };
+        let (value, identity) =
+            workflow_process::finish_reply(&context, &reply).expect("rebased Plan item must apply");
+        workflow_process::finish_closeout(&context, value, &identity, None);
+    }
+    let expected = shared
+        .replace("- [ ] First item", "- [x] First item")
+        .replace("- [ ] Second item", "- [x] Second item");
+    assert_eq!(fs::read_to_string(root.join(card)).unwrap(), expected);
+    let shown = cli_json(root, &["plan", "show", plan, "--local", "--json"]);
+    assert_eq!(shown["head_revision"]["items"][0]["checkbox_state"], "done");
+    assert_eq!(shown["head_revision"]["items"][1]["checkbox_state"], "done");
+    assert_eq!(shown["head_revision"]["items"][2]["checkbox_state"], "open");
+    let closed_retry = workers.one(
+        loser.0,
+        request(
+            root,
+            &[
+                "task",
+                "start",
+                "--local",
+                "--from",
+                &format!("{card}#concurrent/first"),
+                "--intent",
+                "Reject stale completed work",
+                "--edit-root",
+                edits[loser.0].to_str().unwrap(),
+                "--json",
+            ],
+        ),
+    );
+    assert_eq!(closed_retry["ok"], false);
+    assert!(
+        closed_retry["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("already complete"),
+        "{closed_retry}"
+    );
+    assert!(!edits[loser.0].exists());
+    let receipts = fs::read(root.join(".ait/binary-db/land.bin")).unwrap();
+    let head = cli_json(root, &["line", "show", "main", "--json"])["head_snapshot_id"].clone();
+    for (_, reply) in workers.together(
+        tasks
+            .iter()
+            .map(|(i, task)| {
+                (
+                    *i,
+                    request(root, &["task", "finish", task, "--local", "--json"]),
+                )
+            })
+            .collect(),
+    ) {
+        reply_json(&reply);
+    }
+    assert_eq!(
+        fs::read(root.join(".ait/binary-db/land.bin")).unwrap(),
+        receipts
+    );
+    assert_eq!(
+        cli_json(root, &["line", "show", "main", "--json"])["head_snapshot_id"],
+        head
+    );
+    assert_eq!(fs::read_to_string(root.join(card)).unwrap(), expected);
+    for (i, task) in &tasks {
+        assert!(!edits[*i].exists());
+        assert_eq!(
+            cli_json(root, &["task", "show", task, "--local", "--json"])["status"],
+            "completed"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join(format!("item-{i}.txt"))).unwrap(),
+            format!("accepted item {i}\n")
+        );
+    }
+    workers.finish();
 }
 
 #[test]
@@ -708,7 +1244,7 @@ fn task_quick_names_plan_backed_markdown_and_plan_list_reports_head_match() {
         &root,
         &["plan", "sync", "notes/tracked.md", "--local", "--json"],
     );
-    json(&root, &["task", "abandon", &task_id, "--local", "--json"]);
+    abandon_explicit_root(&root, &task_id, &edit_root);
 }
 
 #[test]
@@ -759,7 +1295,11 @@ fn compact_payloads_carry_read_only_evidence_commands() {
         &edit_root,
         &["task", "finish", &task_id, "--local", "--json"],
     );
-    assert!(finished.status.success(), "{}", text(&finished));
+    assert!(
+        finished.status.success(),
+        "{}",
+        workflow_process::failure_output(&finished)
+    );
     let finished = finished_payload(&finished);
     assert_eq!(
         finished["evidence"]["command"].as_str(),

@@ -18,6 +18,8 @@ where
     }
 
     pub fn new_for_scope(db: &'a B, read_scope: BinaryDbReadScope) -> Self {
+        #[cfg(test)]
+        crate::binary_db::read_profile::note("read_transactions", 0);
         Self {
             db,
             read_lock: db.acquire_read_lock_for_scope(read_scope),

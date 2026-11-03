@@ -30,7 +30,7 @@ function Invoke-Clippy {
 }
 
 function Invoke-Tests {
-    Invoke-Checked "cargo" @("test", "--locked", "--workspace", "--all-targets")
+    Invoke-Checked "cargo" @("test", "--locked", "--workspace", "--all-targets", "--no-fail-fast")
 }
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
@@ -67,9 +67,18 @@ try {
         "clippy" { Invoke-Clippy }
         "test" { Invoke-Tests }
         default {
-            Invoke-Format
-            Invoke-Clippy
-            Invoke-Tests
+            $failures = @()
+            foreach ($check in @("Invoke-Format", "Invoke-Clippy", "Invoke-Tests")) {
+                try {
+                    & $check
+                } catch {
+                    $failures += "${check}: $($_.Exception.Message)"
+                    Write-Warning $failures[-1]
+                }
+            }
+            if ($failures.Count -gt 0) {
+                throw ($failures -join [Environment]::NewLine)
+            }
         }
     }
 } finally {

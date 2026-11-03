@@ -1,13 +1,3 @@
-const WORKTREE_DESTRUCTIVE_CONFIRMATION_ERROR: &str =
-    "Pass --yes to apply this destructive worktree operation, or use --dry-run to preview it.";
-
-fn require_worktree_destructive_confirmation(dry_run: bool, yes: bool) -> Result<(), String> {
-    if !dry_run && !yes {
-        return Err(WORKTREE_DESTRUCTIVE_CONFIRMATION_ERROR.to_string());
-    }
-    Ok(())
-}
-
 fn run_worktree(repo: RepoRuntime, command: WorktreeCommand) -> Result<ExitCode, String> {
     match command {
         WorktreeCommand::Status(args) => {
@@ -21,40 +11,32 @@ fn run_worktree(repo: RepoRuntime, command: WorktreeCommand) -> Result<ExitCode,
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Restore(args) => {
-            let payload = run_locked_workspace_command(&repo, "ait-cli worktree restore", || {
-                worktree_restore(
-                    &repo,
-                    args.name.as_deref(),
-                    args.snapshot_id.as_deref(),
-                    args.line_name.as_deref(),
-                    &args.paths,
-                    args.force,
-                    args.dry_run,
-                )
-            })?;
-            emit_result(
-                "ait-cli worktree restore",
+            let payload = crate::binding_worktrees::restore_worktree(
+                &repo,
+                &crate::binding_worktrees::WorktreeRestoreRequest {
+                    name: args.name,
+                    snapshot_id: args.snapshot_id,
+                    line_name: args.line_name,
+                    paths: args.paths,
+                    force: args.force,
+                    dry_run: args.dry_run,
+                },
+            )?;
+            emit_worktree_operation_result(
                 &payload,
                 args.json,
-                &[
-                    "worktree_name",
-                    "workspace_root",
-                    "current_line",
-                    "line_name",
-                    "line_head_snapshot_id",
-                    "target_snapshot_id",
-                    "applied",
-                ],
+                crate::binding_output::format_worktree_restore,
             )?;
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Show(args) => {
-            let payload = worktree_get(&repo, args.name.as_deref(), true)?;
+            let payload = crate::binding_worktrees::show_worktree(&repo, args.name.as_deref())?;
             emit_worktree_show_result(&payload, args.json)?;
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Path(args) => {
-            let payload = touch_worktree_payload(&repo, args.name.as_deref())?;
+            let payload =
+                crate::binding_worktrees::open_worktree_path(&repo, args.name.as_deref())?;
             if args.json {
                 print_json(&worktree_path_payload(&payload)?)?;
             } else if args.shell_output {
@@ -84,23 +66,23 @@ fn run_worktree(repo: RepoRuntime, command: WorktreeCommand) -> Result<ExitCode,
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Cleanup(args) => {
-            require_worktree_destructive_confirmation(args.dry_run, args.yes)?;
-            let payload = run_locked_workspace_command(&repo, "ait-cli worktree cleanup", || {
-                worktree_cleanup(
-                    &repo,
-                    Some(args.older_than.as_str()),
-                    args.cleanup_policy.as_deref(),
-                    args.allow_manual_only,
-                    args.limit,
-                    args.dry_run,
-                )
-            })?;
+            let payload = crate::binding_worktrees::cleanup_worktrees(
+                &repo,
+                &crate::binding_worktrees::WorktreeCleanupRequest {
+                    older_than: Some(args.older_than),
+                    cleanup_policy: args.cleanup_policy,
+                    allow_manual_only: args.allow_manual_only,
+                    limit: args.limit,
+                    dry_run: args.dry_run,
+                    yes: args.yes,
+                },
+            )?;
             emit_worktree_cleanup_report_result(&payload, args.json)?;
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::PruneStale(args) => {
-            require_worktree_destructive_confirmation(args.dry_run, args.yes)?;
-            let payload = worktree_prune_stale(&repo, args.dry_run)?;
+            let payload =
+                crate::binding_worktrees::prune_stale_worktrees(&repo, args.dry_run, args.yes)?;
             emit_worktree_prune_result(&payload, args.json)?;
             Ok(ExitCode::SUCCESS)
         }
@@ -110,218 +92,119 @@ fn run_worktree(repo: RepoRuntime, command: WorktreeCommand) -> Result<ExitCode,
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Sync(args) => {
-            if args.all_worktrees && args.name.is_some() {
-                return Err("Choose either a worktree name or --all".to_string());
-            }
-            if args.all_worktrees && args.line_name.is_some() {
-                return Err(
-                    "--line cannot be combined with --all; each worktree syncs to its own current line"
-                        .to_string(),
-                );
-            }
-            let payload = run_locked_workspace_command(&repo, "ait-cli worktree sync", || {
-                if args.all_worktrees {
-                    worktree_sync_all(&repo, args.force, args.dry_run)
-                } else {
-                    worktree_sync(
-                        &repo,
-                        args.name.as_deref(),
-                        args.line_name.as_deref(),
-                        args.force,
-                        args.dry_run,
-                    )
-                }
-            })?;
+            let payload = crate::binding_worktrees::sync_worktree(
+                &repo,
+                &crate::binding_worktrees::WorktreeSyncRequest {
+                    name: args.name,
+                    line_name: args.line_name,
+                    all_worktrees: args.all_worktrees,
+                    force: args.force,
+                    dry_run: args.dry_run,
+                },
+            )?;
             emit_worktree_sync_result(&payload, args.json)?;
-            let exit = if args.all_worktrees
-                && !payload
-                    .get("ok")
-                    .and_then(JsonValue::as_bool)
-                    .unwrap_or(true)
-            {
-                ExitCode::from(2)
-            } else {
-                ExitCode::SUCCESS
-            };
-            Ok(exit)
+            Ok(ExitCode::from(
+                crate::binding_worktrees::worktree_sync_exit_code(&payload, args.all_worktrees),
+            ))
         }
         WorktreeCommand::Recreate(args) => {
-            let payload = run_locked_workspace_command(&repo, "ait-cli worktree recreate", || {
-                worktree_recreate(&repo, args.name.as_deref(), args.dry_run)
-            })?;
-            emit_result(
-                "ait-cli worktree recreate",
+            let payload = crate::binding_worktrees::recreate_worktree(
+                &repo,
+                args.name.as_deref(),
+                args.dry_run,
+            )?;
+            emit_worktree_operation_result(
                 &payload,
                 args.json,
-                &[
-                    "name",
-                    "path",
-                    "status",
-                    "current_line",
-                    "target_base_line",
-                    "fork_snapshot_id",
-                ],
+                crate::binding_output::format_worktree_recreate,
             )?;
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::RecoverTask(args) => {
-            let change_ref = match args.change.as_deref() {
-                Some(change_ref) => change_ref.to_string(),
-                None => resolve_task_remote_change_input(
-                    &repo,
-                    &args.task_id,
-                    args.remote.as_deref(),
-                )?,
-            };
-            let payload =
-                run_locked_workspace_command(&repo, "ait-cli worktree recover-task", || {
-                    worktree_recover_task(
-                        &repo,
-                        &args.task_id,
-                        &change_ref,
-                        args.remote.as_deref(),
-                        args.dry_run,
-                    )
-                })?;
-            emit_result(
-                "ait-cli worktree recover-task",
+            let payload = crate::binding_worktrees::recover_task_worktree(
+                &repo,
+                &args.task_id,
+                args.change.as_deref(),
+                args.remote.as_deref(),
+                args.dry_run,
+            )?;
+            emit_worktree_operation_result(
                 &payload,
                 args.json,
-                &[
-                    "status",
-                    "task_id",
-                    "name",
-                    "path",
-                    "current_line",
-                ],
+                crate::binding_output::format_worktree_recover_task,
             )?;
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::RestoreOwnedHead(args) => {
-            let payload =
-                run_locked_workspace_command(&repo, "ait-cli worktree restore-owned-head", || {
-                    worktree_restore_owned_head(&repo, args.name.as_deref(), args.dry_run)
-                })?;
-            emit_result(
-                "ait-cli worktree restore-owned-head",
+            let payload = crate::binding_worktrees::restore_worktree_owned_head(
+                &repo,
+                args.name.as_deref(),
+                args.dry_run,
+            )?;
+            emit_worktree_operation_result(
                 &payload,
                 args.json,
-                &[
-                    "name",
-                    "path",
-                    "status",
-                    "restored_snapshot_id",
-                    "owned_head_snapshot_id",
-                    "current_line",
-                ],
+                crate::binding_output::format_worktree_restore_owned_head,
             )?;
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Rebase(args) => {
-            if args.continue_rebase && args.abort_rebase {
-                return Err("Choose either --continue or --abort".to_string());
-            }
-            if args.dry_run && (args.continue_rebase || args.abort_rebase) {
-                return Err("--dry-run cannot be combined with --continue or --abort".to_string());
-            }
-            let payload = if args.continue_rebase {
-                run_locked_workspace_command(&repo, "ait-cli worktree rebase --continue", || {
-                    worktree_continue_rebase(&repo, args.name.as_deref())
-                })?
-            } else if args.abort_rebase {
-                run_locked_workspace_command(&repo, "ait-cli worktree rebase --abort", || {
-                    worktree_abort_rebase(&repo, args.name.as_deref())
-                })?
-            } else {
-                run_locked_workspace_command(&repo, "ait-cli worktree rebase", || {
-                    if args.dry_run {
-                        worktree_preview_rebase(
-                            &repo,
-                            args.name.as_deref(),
-                            args.onto_line.as_deref(),
-                        )
-                    } else {
-                        worktree_rebase(&repo, args.name.as_deref(), args.onto_line.as_deref())
-                    }
-                })?
-            };
-            emit_result(
-                "ait-cli worktree rebase",
+            let payload = crate::binding_worktrees::rebase_worktree(
+                &repo,
+                &crate::binding_worktrees::WorktreeRebaseRequest {
+                    name: args.name,
+                    onto_line: args.onto_line,
+                    continue_rebase: args.continue_rebase,
+                    abort_rebase: args.abort_rebase,
+                    dry_run: args.dry_run,
+                },
+            )?;
+            emit_worktree_operation_result(
                 &payload,
                 args.json,
-                &[
-                    "name",
-                    "path",
-                    "status",
-                    "current_line",
-                    "target_base_line",
-                    "rebase_state",
-                    "conflict_count",
-                ],
+                crate::binding_output::format_worktree_rebase,
             )?;
             Ok(ExitCode::SUCCESS)
         }
         WorktreeCommand::Remove(args) => {
-            if args.all_stale && !args.names.is_empty() {
-                return Err("Choose either one or more worktree names or --all-stale".to_string());
-            }
-            if !args.all_stale && args.names.is_empty() {
-                return Err("Provide one or more worktree names or use --all-stale".to_string());
-            }
-            if args.all_stale && args.delete_path {
-                return Err("--delete-path cannot be combined with --all-stale".to_string());
-            }
-            if args.all_stale && args.force {
-                return Err("--force cannot be combined with --all-stale".to_string());
-            }
-            require_worktree_destructive_confirmation(args.dry_run, args.yes)?;
-            let payload = run_locked_workspace_command(&repo, "ait-cli worktree remove", || {
-                if args.all_stale {
-                    worktree_prune_stale(&repo, args.dry_run)
-                } else {
-                    worktree_remove(
-                        &repo,
-                        &args.names,
-                        false,
-                        args.delete_path,
-                        args.force,
-                        args.dry_run,
-                    )
-                }
-            })?;
-            if args.all_stale {
-                emit_worktree_prune_result(&payload, args.json)?;
-            } else if args.json {
+            let payload = crate::binding_worktrees::remove_worktrees(
+                &repo,
+                &crate::binding_worktrees::WorktreeRemoveRequest {
+                    names: args.names.clone(),
+                    all_stale: args.all_stale,
+                    delete_path: args.delete_path,
+                    force: args.force,
+                    dry_run: args.dry_run,
+                    yes: args.yes,
+                },
+            )?;
+            if args.json {
                 print_json(&payload)?;
-            } else if args.dry_run || args.names.len() > 1 {
-                emit_worktree_cleanup_rows(
-                    "ait-cli worktree remove",
-                    &payload,
-                    "planned_count",
-                    "planned_rows",
-                    "removed_count",
-                    "removed_rows",
-                )?;
             } else {
-                let row = payload
-                    .get("removed_rows")
-                    .and_then(JsonValue::as_array)
-                    .and_then(|rows| rows.first())
-                    .ok_or("worktree remove payload is missing removed_rows[0].")?;
-                emit_result(
-                    "ait-cli worktree remove",
-                    row,
-                    false,
-                    &[
-                        "name",
-                        "path",
-                        "deleted_path",
-                        "alias_path",
-                        "target_base_line",
-                    ],
-                )?;
+                println!(
+                    "{}",
+                    crate::binding_output::format_worktree_remove(
+                        &payload,
+                        args.all_stale,
+                        args.dry_run,
+                        args.names.len() > 1
+                    )?
+                );
             }
             Ok(ExitCode::SUCCESS)
         }
+    }
+}
+
+fn emit_worktree_operation_result(
+    payload: &JsonValue,
+    json_output: bool,
+    formatter: fn(&JsonValue) -> Result<String, String>,
+) -> Result<(), String> {
+    if json_output {
+        print_json(payload)
+    } else {
+        println!("{}", formatter(payload)?);
+        Ok(())
     }
 }

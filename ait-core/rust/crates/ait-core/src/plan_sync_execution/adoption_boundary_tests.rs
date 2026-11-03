@@ -285,6 +285,53 @@ fn boundary_artifact() -> SyncArtifact {
     }
 }
 
+#[test]
+fn artifact_resolution_preserves_authored_utf8_bytes_and_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("card.md");
+    let mut request = boundary_request(false);
+    request.root_path = root.path().to_string_lossy().into_owned();
+    request.target = "card.md".to_string();
+    let fixture = "# Fixture [plan-ref: binding/fixture]\n\n\
+                   - [ ] Finish fixture. [ref: binding/finish]\n\
+                   - [ ] Preserve sibling. [ref: binding/sibling]\n";
+    for (body, allow_generic) in [(fixture, false), ("# Café\n\nUnicode: 螃蟹 🦀\n", true)] {
+        for newline in ["\n", "\r\n", "\r"] {
+            let authored = body.replace('\n', newline);
+            std::fs::write(&path, authored.as_bytes()).unwrap();
+            let artifact = resolve_plan_artifact(&request, &path, None, allow_generic).unwrap();
+            assert_eq!(artifact.artifact_body.as_bytes(), authored.as_bytes());
+            assert_eq!(artifact.artifact_blob_id, artifact_blob_id(&authored));
+            assert_eq!(std::fs::read(&path).unwrap(), authored.as_bytes());
+            assert_eq!(read_utf8_text_file(path.to_str().unwrap()).unwrap(), body);
+            if allow_generic {
+                assert_eq!(artifact.artifact_heading, "Café");
+                assert!(artifact.artifact_selector.is_none());
+            } else {
+                assert_eq!(
+                    artifact.artifact_selector.as_deref(),
+                    Some("binding/fixture")
+                );
+                assert_eq!(artifact.items.len(), 2);
+                if newline == "\r\n" {
+                    assert_eq!(artifact.artifact_blob_id, "BLB-18816dea439a8564f7e8");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn artifact_resolution_rejects_invalid_utf8() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("invalid.md");
+    std::fs::write(&path, [0xff]).unwrap();
+    let mut request = boundary_request(false);
+    request.root_path = root.path().to_string_lossy().into_owned();
+    let error = resolve_plan_artifact(&request, &path, None, true).unwrap_err();
+    assert!(error.contains("File is not valid UTF-8"), "{error}");
+}
+
 fn duplicate_current_plan(
     plan_id: &str,
     updated_at: JsonValue,

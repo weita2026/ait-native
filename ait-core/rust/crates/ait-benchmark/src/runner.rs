@@ -1,5 +1,7 @@
 use std::fs::{self, File};
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Write};
+#[cfg(unix)]
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -643,12 +645,55 @@ mod tests {
     use super::*;
     use crate::model::{CommandSpec, SampleClass, SubjectSpec, Temperature};
 
+    #[cfg(windows)]
+    const FIXTURE_EXIT: &str = "AIT_BENCHMARK_TEST_PROCESS_EXIT";
+    #[cfg(windows)]
+    const FIXTURE_ROOT: &str = "AIT_BENCHMARK_TEST_PROCESS_ROOT";
+
+    #[cfg(windows)]
+    fn exit_fixture_child_if_requested() {
+        let Some(exit) = std::env::var_os(FIXTURE_EXIT) else {
+            return;
+        };
+        let root = PathBuf::from(std::env::var_os(FIXTURE_ROOT).expect("fixture root"));
+        assert_eq!(
+            std::env::current_dir().unwrap().canonicalize().unwrap(),
+            root.canonicalize().unwrap(),
+            "the measured child must run in the expanded workspace"
+        );
+        let exit: i32 = exit.to_str().unwrap().parse().unwrap();
+        assert!(matches!(exit, 0 | 7));
+        std::process::exit(exit);
+    }
+
     fn fixture_subject(root: &Path) -> (CellSpec, SubjectSpec) {
         let command = CommandSpec {
+            #[cfg(not(windows))]
             program: "/bin/sh".to_string(),
+            #[cfg(windows)]
+            program: std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            #[cfg(not(windows))]
             args: vec!["-c".to_string(), "test -d {workspace}".to_string()],
+            #[cfg(windows)]
+            args: vec![
+                "--exact".to_string(),
+                std::thread::current()
+                    .name()
+                    .expect("fixture test name")
+                    .to_owned(),
+                "--nocapture".to_string(),
+            ],
             cwd: None,
+            #[cfg(not(windows))]
             env: BTreeMap::new(),
+            #[cfg(windows)]
+            env: BTreeMap::from([
+                (FIXTURE_EXIT.to_string(), "0".to_string()),
+                (FIXTURE_ROOT.to_string(), "{workspace}".to_string()),
+            ]),
             expected_exit_codes: vec![0],
         };
         let subject = SubjectSpec {
@@ -689,10 +734,25 @@ mod tests {
 
     #[test]
     fn timed_external_subject_records_resource_and_exit_contract() {
+        #[cfg(windows)]
+        exit_fixture_child_if_requested();
         let root = tempfile::tempdir().unwrap();
         let (cell, subject) = fixture_subject(root.path());
         let measurement = execute_timed_command(&subject.command, &cell, &subject, 3).unwrap();
-        assert!(measurement.success);
+        assert!(
+            measurement.success,
+            "program={} args={:?} cwd={} exit_code={:?} failure={:?}",
+            subject.command.program,
+            subject
+                .command
+                .args
+                .iter()
+                .map(|arg| expand(arg, &cell, &subject, 3))
+                .collect::<Vec<_>>(),
+            subject.workspace_root.display(),
+            measurement.exit_code,
+            measurement.failure,
+        );
         assert_eq!(measurement.exit_code, Some(0));
         assert!(measurement.wall_time_ns > 0);
         #[cfg(unix)]
@@ -701,9 +761,21 @@ mod tests {
 
     #[test]
     fn unexpected_exit_is_retained_as_failure_evidence() {
+        #[cfg(windows)]
+        exit_fixture_child_if_requested();
         let root = tempfile::tempdir().unwrap();
         let (cell, mut subject) = fixture_subject(root.path());
-        subject.command.args = vec!["-c".to_string(), "exit 7".to_string()];
+        #[cfg(not(windows))]
+        {
+            subject.command.args = vec!["-c".to_string(), "exit 7".to_string()];
+        }
+        #[cfg(windows)]
+        {
+            subject
+                .command
+                .env
+                .insert(FIXTURE_EXIT.to_string(), "7".to_string());
+        }
         let measurement = execute_timed_command(&subject.command, &cell, &subject, 0).unwrap();
         assert!(!measurement.success);
         assert_eq!(measurement.exit_code, Some(7));

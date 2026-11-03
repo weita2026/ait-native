@@ -7,7 +7,6 @@ AIT receives security fixes on the newest maintained release line.
 | Release line | Security support |
 | --- | --- |
 | Latest `1.x` stable release | Supported once published |
-| Latest `1.0.0-rc.x` release candidate | Supported until `1.0.0` is published |
 | Older release candidates and superseded releases | Not supported |
 
 If a report affects an older version, reproduce it against the newest

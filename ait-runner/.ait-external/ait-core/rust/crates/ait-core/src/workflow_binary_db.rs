@@ -25,7 +25,15 @@ use crate::workflow_primitives::{
 use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
 use std::collections::BTreeMap;
 
+pub(crate) mod legacy_snapshot_links;
+mod local_receipts;
+mod package_publication;
+mod snapshot_link_codec;
 mod snapshot_links;
+pub use snapshot_link_codec::{
+    RemoteMirrorSnapshotLinkRecord, SnapshotLinkRecord, AUTHORITATIVE_SNAPSHOT_LINK_RECORD_SIZE,
+    REMOTE_MIRROR_SNAPSHOT_LINK_RECORD_SIZE, SNAPSHOT_LINK_LAYOUT_ID,
+};
 pub use snapshot_links::SnapshotWorkflowBinding;
 
 pub const BINARY_DB_WORKFLOW_LAYOUT_ID: u32 = 1;
@@ -34,6 +42,7 @@ pub const LOCAL_TASK_RECORD_SIZE: u32 = 64;
 pub const LOCAL_CHANGE_RECORD_SIZE: u32 = 68;
 pub const TASK_CHANGE_INDEX_RECORD_SIZE: u32 = 8;
 pub const LOCAL_LAND_RECORD_SIZE: u32 = 44;
+pub const LOCAL_LAND_LAYOUT_ID: u32 = 2;
 pub const TASK_LAND_INDEX_RECORD_SIZE: u32 = 8;
 pub const CHANGE_LAND_INDEX_RECORD_SIZE: u32 = 8;
 
@@ -256,8 +265,11 @@ impl TaskLandIndexRecord {
             land_count: u16::from_le_bytes(raw[4..6].try_into().unwrap()),
             reserved0: u16::from_le_bytes(raw[6..8].try_into().unwrap()),
         };
-        if record.reserved0 != 0 {
-            return Err("TaskLandIndexRecord.reserved0 must be zero".into());
+        if record.reserved0 != 0
+            || record.land_count > 1
+            || (record.land_count == 0) != (record.latest_land_index_plus1 == 0)
+        {
+            return Err("TaskLandIndexRecord must contain zero or one exact receipt".into());
         }
         Ok(record)
     }
@@ -299,9 +311,9 @@ impl ChangeLandIndexRecord {
 pub(crate) struct LocalLandRecord {
     pub land_meta: u8,
     pub land_ordinal: u8,
-    pub change_ordinal: u8,
+    pub change_ordinal_plus1: u8,
     pub failure_kind: u8,
-    pub change_index: u32,
+    pub task_index: u32,
     pub previous_task_land_index_plus1: u32,
     pub previous_change_land_index_plus1: u32,
     pub pre_land_target_snapshot_index_plus1: u32,
@@ -317,9 +329,9 @@ impl LocalLandRecord {
         let mut out = Vec::with_capacity(LOCAL_LAND_RECORD_SIZE as usize);
         out.push(self.land_meta);
         out.push(self.land_ordinal);
-        out.push(self.change_ordinal);
+        out.push(self.change_ordinal_plus1);
         out.push(self.failure_kind);
-        out.extend_from_slice(&self.change_index.to_le_bytes());
+        out.extend_from_slice(&self.task_index.to_le_bytes());
         out.extend_from_slice(&self.previous_task_land_index_plus1.to_le_bytes());
         out.extend_from_slice(&self.previous_change_land_index_plus1.to_le_bytes());
         out.extend_from_slice(&self.pre_land_target_snapshot_index_plus1.to_le_bytes());
@@ -336,9 +348,9 @@ impl LocalLandRecord {
         let record = Self {
             land_meta: raw[0],
             land_ordinal: raw[1],
-            change_ordinal: raw[2],
+            change_ordinal_plus1: raw[2],
             failure_kind: raw[3],
-            change_index: u32::from_le_bytes(raw[4..8].try_into().unwrap()),
+            task_index: u32::from_le_bytes(raw[4..8].try_into().unwrap()),
             previous_task_land_index_plus1: u32::from_le_bytes(raw[8..12].try_into().unwrap()),
             previous_change_land_index_plus1: u32::from_le_bytes(raw[12..16].try_into().unwrap()),
             pre_land_target_snapshot_index_plus1: u32::from_le_bytes(
@@ -385,6 +397,7 @@ pub struct BinaryDbWorkflowStore<B: BinaryDb, const WRITE_LAYOUT: u32> {
     db: B,
     repo_name: String,
     id_namespace_prefix: String,
+    legacy_land_reader: bool,
 }
 
 impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbWorkflowStore<B, WRITE_LAYOUT> {
@@ -401,11 +414,50 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbWorkflowStore<B, WRITE_LAYOUT
             db,
             repo_name: repo_name.into(),
             id_namespace_prefix: id_namespace_prefix.into().trim().to_ascii_uppercase(),
+            legacy_land_reader: false,
         }
     }
 
     pub fn db(&self) -> &B {
         &self.db
+    }
+
+    /// Explicit current-layout-1 source admission for the bounded offline upgrade.
+    pub(crate) fn for_local_land_upgrade(mut self) -> Self {
+        self.legacy_land_reader = true;
+        self
+    }
+
+    fn land_file_for_read(&self) -> BinaryFileId {
+        BinaryFileId::new(
+            LAND_RECORD_BIN,
+            if self.legacy_land_reader {
+                1
+            } else {
+                LOCAL_LAND_LAYOUT_ID
+            },
+            LOCAL_LAND_RECORD_SIZE,
+        )
+    }
+
+    fn read_land<A: WorkflowReadAccess>(
+        &self,
+        access: &A,
+        index: u32,
+    ) -> StoreResult<LocalLandRecord> {
+        let mut raw = access.read_record(self.land_file_for_read(), index)?;
+        if self.legacy_land_reader {
+            let change_index = u32::from_le_bytes(raw[4..8].try_into().unwrap());
+            let change = LocalChangeRecord::decode(
+                &access.read_record(Self::change_record_file(), change_index)?,
+            )?;
+            if raw[2] != change.change_ordinal {
+                return Err("Legacy local receipt disagrees with its exact Change ordinal".into());
+            }
+            raw[2] = change.change_ordinal + 1;
+            raw[4..8].copy_from_slice(&change.task_index.to_le_bytes());
+        }
+        LocalLandRecord::decode(&raw)
     }
 
     pub fn task_record_file() -> BinaryFileId {
@@ -437,7 +489,11 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbWorkflowStore<B, WRITE_LAYOUT
     }
 
     pub fn land_record_file() -> BinaryFileId {
-        fixed_file::<WRITE_LAYOUT>(LAND_RECORD_BIN, LOCAL_LAND_RECORD_SIZE)
+        BinaryFileId::new(
+            LAND_RECORD_BIN,
+            LOCAL_LAND_LAYOUT_ID,
+            LOCAL_LAND_RECORD_SIZE,
+        )
     }
 
     fn local_namespace(&self) -> PlanStoreResult<String> {
@@ -522,7 +578,11 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbWorkflowStore<B, WRITE_LAYOUT
             change_count,
             CHANGE_LAND_INDEX_BIN,
         )?;
-        let land_count = access.record_count(Self::land_record_file())?;
+        let land_count = access.record_count(self.land_file_for_read()).map_err(|error| {
+            if !self.legacy_land_reader && self.db.layout_id(Self::land_record_file()).ok() == Some(1) {
+                crate::binary_db::BinaryDbError::invalid_domain_data("Local finish receipts must upgrade through existing native repository admission before writes")
+            } else { error }
+        })?;
 
         let mut rows = WorkflowRows::default();
         for task_index in 0..task_count {
@@ -609,9 +669,10 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbWorkflowStore<B, WRITE_LAYOUT
             "published_remote_name": if record.is_published() { json!("origin") } else { JsonValue::Null },
             "published_task_id": option_string(published_task_id),
             "published_at": timestamp_json(record.published_at_s)?,
-            "closed_at": timestamp_json(record.closed_at_s)?,
+            "closed_at": if record.is_terminal() { timestamp_json(record.closed_at_s)? } else { JsonValue::Null },
             "created_at": timestamp_required(record.created_at_s, "Task.created_at_s")?,
             "updated_at": timestamp_required(record.updated_at_s, "Task.updated_at_s")?,
+            "local_finish": self.project_receipt(access, task_index)?,
         }))
     }
 
@@ -792,6 +853,9 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbWorkflowStore<B, WRITE_LAYOUT
         access: &A,
         change_index: u32,
     ) -> StoreResult<Option<LocalLandRecord>> {
+        let change = LocalChangeRecord::decode(
+            &access.read_record(Self::change_record_file(), change_index)?,
+        )?;
         let head = ChangeLandIndexRecord::decode(
             &access.read_record(Self::change_land_index_file(), change_index)?,
         )?;
@@ -799,13 +863,13 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbWorkflowStore<B, WRITE_LAYOUT
         let mut visited = 0_u16;
         let mut best: Option<LocalLandRecord> = None;
         while let Some(land_index) = cursor.checked_sub(1) {
-            let land = LocalLandRecord::decode(
-                &access.read_record(Self::land_record_file(), land_index)?,
-            )?;
-            if land.change_index != change_index {
+            let land = self.read_land(access, land_index)?;
+            if land.task_index != change.task_index
+                || land.change_ordinal_plus1 != change.change_ordinal + 1
+            {
                 return Err(format!(
                     "Change {change_index} Land chain contains Land {land_index} owned by {}",
-                    land.change_index
+                    land.task_index
                 )
                 .into());
             }
@@ -875,20 +939,33 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> BinaryDbWorkflowStore<B, WRITE_LAYOUT
                 return Err(format!("Task {task_index} Change index is inconsistent").into());
             }
         }
+        let mut receipt_by_task = BTreeMap::new();
         for land_index in 0..land_count {
-            let land = LocalLandRecord::decode(
-                &access.read_record(Self::land_record_file(), land_index)?,
+            let land = self.read_land(access, land_index)?;
+            if land.task_index >= task_count
+                || receipt_by_task
+                    .insert(land.task_index, land_index)
+                    .is_some()
+            {
+                return Err("Local receipt has missing or duplicate Task ownership".into());
+            }
+            if let Some(ordinal) = land.change_ordinal_plus1.checked_sub(1) {
+                if !changes.iter().any(|change| {
+                    change.task_index == land.task_index && change.change_ordinal == ordinal
+                }) {
+                    return Err("Local receipt references an unknown revision Change".into());
+                }
+            }
+        }
+        for task_index in 0..task_count {
+            let head = TaskLandIndexRecord::decode(
+                &access.read_record(Self::task_land_index_file(), task_index)?,
             )?;
-            let change = changes.get(land.change_index as usize).ok_or_else(|| {
-                format!(
-                    "Land {land_index} references missing Change {}",
-                    land.change_index
-                )
-            })?;
-            if land.change_ordinal != change.change_ordinal {
-                return Err(
-                    format!("Land {land_index} Change ordinal disagrees with owner").into(),
-                );
+            let expected = receipt_by_task
+                .get(&task_index)
+                .map_or(0, |index| index + 1);
+            if head.latest_land_index_plus1 != expected {
+                return Err("Task receipt index differs from exact receipt ownership".into());
             }
         }
         Ok(())
@@ -1201,31 +1278,20 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> TaskStore for BinaryDbWorkflowStore<B
 
     fn list_completed_tasks_with_landed_changes(&self) -> PlanStoreResult<Vec<JsonValue>> {
         let rows = self.read_rows()?;
-        let landed = rows
-            .changes
-            .values()
-            .filter(|change| string_value(change, "status").as_deref() == Some("landed"))
-            .filter_map(|change| string_value(change, "task_id"))
-            .collect::<Vec<_>>();
         Ok(rows
             .tasks
             .into_values()
             .filter(|task| string_value(task, "status").as_deref() == Some("completed"))
             .filter(|task| {
-                string_value(task, "task_id")
-                    .map(|id| landed.contains(&id))
-                    .unwrap_or(false)
+                task.get("local_finish")
+                    .is_some_and(|value| !value.is_null())
             })
             .collect())
     }
 
     fn get_task(&self, task_id: &str) -> PlanStoreResult<JsonValue> {
         let task_id = required_text(task_id, "task_id")?;
-        self.read_rows()?
-            .tasks
-            .get(&task_id)
-            .cloned()
-            .ok_or_else(|| unknown_row("task", &task_id))
+        self.point_task(&task_id)
     }
 
     fn allocate_task_identity(
@@ -1383,11 +1449,34 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> TaskStore for BinaryDbWorkflowStore<B
     fn close_task(&self, task_id: &str, status: &str) -> PlanStoreResult<JsonValue> {
         let mut write = BinaryDbWriteTxn::begin(&self.db, BinaryDbCommandScope::General)
             .map_err(storage_error)?;
-        let rows = self.read_rows_with_access(&write).map_err(storage_error)?;
-        let task_index = self.task_index_for_id(&rows, task_id)?;
+        let task_index = self
+            .point_task_index(&write, task_id)
+            .map_err(storage_error)?;
         let mut record = self
             .read_task_record(&write, task_index)
             .map_err(storage_error)?;
+        if record.is_terminal() {
+            let same = (status == "completed" && record.task_meta & 0x40 != 0)
+                || (status == "canceled" && record.task_meta & 0x80 != 0)
+                || (status == "abandoned" && record.local_meta & 2 != 0);
+            if !same {
+                return Err(PlanStoreError::Invalid(
+                    "Closed Tasks never reopen or change terminal outcome".into(),
+                ));
+            }
+            drop(write);
+            return TaskStore::get_task(self, task_id);
+        }
+        if status != "completed"
+            && self
+                .receipt_at(&write, task_index)
+                .map_err(storage_error)?
+                .is_some()
+        {
+            return Err(PlanStoreError::Invalid(
+                "Task apply already succeeded; resume its completion instead of canceling".into(),
+            ));
+        }
         let now = now_s()?;
         record.task_meta &= !(0b0100_0000 | 0b1000_0000);
         record.local_meta &= !0b10;
@@ -1502,6 +1591,32 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> ChangeStore for BinaryDbWorkflowStore
     }
 
     fn get_change(&self, change_id: &str) -> PlanStoreResult<JsonValue> {
+        if let Some((task_id, suffix)) = change_id.rsplit_once('/') {
+            let ordinal = suffix
+                .strip_prefix("C-")
+                .and_then(|s| s.parse::<u8>().ok())
+                .and_then(|n| n.checked_sub(1))
+                .filter(|n| *n < 64)
+                .ok_or_else(|| {
+                    PlanStoreError::Invalid("Invalid Task-scoped Change identity".into())
+                })?;
+            let read = BinaryDbReadTxn::new(&self.db);
+            let task = self
+                .point_task_index(&read, task_id)
+                .map_err(storage_error)?;
+            let index = self
+                .change_index_in_task(&read, task, ordinal)
+                .map_err(storage_error)?;
+            let record = LocalChangeRecord::decode(
+                &read
+                    .read_record(Self::change_record_file(), index)
+                    .map_err(storage_error)?,
+            )
+            .map_err(storage_error)?;
+            return self
+                .project_change(&read, index, &record)
+                .map_err(storage_error);
+        }
         let rows = self.read_rows()?;
         let key = resolve_change_key(&rows.changes, &required_text(change_id, "change_id")?)?;
         rows.changes
@@ -1538,6 +1653,19 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> ChangeStore for BinaryDbWorkflowStore
             .map_err(storage_error)?;
         let rows = self.read_rows_with_access(&write).map_err(storage_error)?;
         let task_index = self.task_index_for_id(&rows, task_id)?;
+        if self
+            .read_task_record(&write, task_index)
+            .map_err(storage_error)?
+            .is_terminal()
+            || self
+                .receipt_at(&write, task_index)
+                .map_err(storage_error)?
+                .is_some()
+        {
+            return Err(PlanStoreError::Invalid(
+                "A finished or closed Task cannot start another revision".into(),
+            ));
+        }
         let (change_index, record) = self.create_change_record(
             &mut write,
             task_index,
@@ -1671,142 +1799,19 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> ChangeStore for BinaryDbWorkflowStore
         landed_snapshot_id: &str,
         pre_land_target_snapshot_id: Option<&str>,
     ) -> PlanStoreResult<JsonValue> {
-        let target_line = required_text(target_line, "target_line")?;
-        let landed_snapshot_id = required_text(landed_snapshot_id, "landed_snapshot_id")?;
-        let existing = ChangeStore::get_change(self, change_id)?;
-        if string_value(&existing, "status").as_deref() == Some("landed") {
-            if string_value(&existing, "target_line").as_deref() == Some(target_line.as_str())
-                && string_value(&existing, "landed_snapshot_id").as_deref()
-                    == Some(landed_snapshot_id.as_str())
-            {
-                return Ok(existing);
-            }
-            return Err(PlanStoreError::Invalid(format!(
-                "Change {change_id} is already landed at a different Snapshot"
-            )));
-        }
-        if string_value(&existing, "publication_state").as_deref() == Some("published") {
-            return Err(PlanStoreError::Invalid(format!(
-                "Published Change {change_id} cannot be landed through local authority"
-            )));
-        }
-        let mut write = BinaryDbWriteTxn::begin(&self.db, BinaryDbCommandScope::General)
-            .map_err(storage_error)?;
-        let rows = self.read_rows_with_access(&write).map_err(storage_error)?;
-        let change_index = self.change_index_for_id(&rows, change_id)?;
-        let mut change = LocalChangeRecord::decode(
-            &write
-                .read_record(Self::change_record_file(), change_index)
-                .map_err(storage_error)?,
-        )
-        .map_err(storage_error)?;
-        let target_line_index = line_index_by_name(&write, &target_line)
-            .map_err(storage_error)?
-            .ok_or_else(|| PlanStoreError::NotFound(format!("Unknown line: {target_line}")))?;
-        let landed_snapshot_index = snapshot_index_by_id(&write, &landed_snapshot_id)
-            .map_err(storage_error)?
-            .ok_or_else(|| {
-                PlanStoreError::NotFound(format!("Unknown Snapshot: {landed_snapshot_id}"))
-            })?;
-        let pre_land_plus1 = match nonempty(pre_land_target_snapshot_id) {
-            None => 0,
-            Some(id) => snapshot_index_by_id(&write, id)
-                .map_err(storage_error)?
-                .ok_or_else(|| PlanStoreError::NotFound(format!("Unknown Snapshot: {id}")))?
-                .checked_add(1)
-                .ok_or_else(|| PlanStoreError::Storage("Snapshot index overflow".to_string()))?,
-        };
-        let mut change_owner = ChangeLandIndexRecord::decode(
-            &write
-                .read_record(Self::change_land_index_file(), change_index)
-                .map_err(storage_error)?,
-        )
-        .map_err(storage_error)?;
-        if change_owner.next_land_ordinal > MAX_LAND_ORDINAL {
-            return Err(PlanStoreError::Invalid(format!(
-                "Change {change_id} already owns the maximum 64 Land attempts"
-            )));
-        }
-        let mut task_owner = TaskLandIndexRecord::decode(
-            &write
-                .read_record(Self::task_land_index_file(), change.task_index)
-                .map_err(storage_error)?,
-        )
-        .map_err(storage_error)?;
-        let now = now_s()?;
-        let land = LocalLandRecord {
-            land_meta: 2
-                | LAND_META_HAS_LANDED
-                | if pre_land_plus1 != 0 {
-                    LAND_META_HAS_PRE_LAND
-                } else {
-                    0
-                },
-            land_ordinal: change_owner.next_land_ordinal,
-            change_ordinal: change.change_ordinal,
-            failure_kind: 0,
-            change_index,
-            previous_task_land_index_plus1: task_owner.latest_land_index_plus1,
-            previous_change_land_index_plus1: change_owner.latest_land_index_plus1,
-            pre_land_target_snapshot_index_plus1: pre_land_plus1,
-            landed_snapshot_index_plus1: landed_snapshot_index
-                .checked_add(1)
-                .ok_or_else(|| PlanStoreError::Storage("Snapshot index overflow".to_string()))?,
-            submitted_at_s: now,
-            updated_at_s: now,
-            target_line_index_plus1: target_line_index
-                .checked_add(1)
-                .ok_or_else(|| PlanStoreError::Storage("Line index overflow".to_string()))?,
-        };
-        let land_index = write
-            .append_record(
-                Self::land_record_file(),
-                &land.encode().map_err(storage_error)?,
-            )
-            .map_err(storage_error)?;
-        let land_plus1 = land_index
-            .checked_add(1)
-            .ok_or_else(|| PlanStoreError::Storage("Land index overflow".to_string()))?;
-        change_owner.latest_land_index_plus1 = land_plus1;
-        change_owner.land_count = change_owner
-            .land_count
-            .checked_add(1)
-            .ok_or_else(|| PlanStoreError::Storage("Land count overflow".to_string()))?;
-        change_owner.next_land_ordinal = change_owner
-            .next_land_ordinal
-            .checked_add(1)
-            .ok_or_else(|| PlanStoreError::Storage("Land ordinal overflow".to_string()))?;
-        task_owner.latest_land_index_plus1 = land_plus1;
-        task_owner.land_count = task_owner
-            .land_count
-            .checked_add(1)
-            .ok_or_else(|| PlanStoreError::Storage("Task Land count overflow".to_string()))?;
-        write
-            .overwrite_record(
-                Self::change_land_index_file(),
-                change_index,
-                &change_owner.encode(),
-            )
-            .map_err(storage_error)?;
-        write
-            .overwrite_record(
-                Self::task_land_index_file(),
-                change.task_index,
-                &task_owner.encode(),
-            )
-            .map_err(storage_error)?;
-        change.change_meta = (change.change_meta & !CHANGE_META_LIFECYCLE_MASK) | 2;
-        change.change_state = 0;
-        change.updated_at_s = now;
-        write
-            .overwrite_record(
-                Self::change_record_file(),
-                change_index,
-                &change.encode().map_err(storage_error)?,
-            )
-            .map_err(storage_error)?;
-        write.commit().map_err(storage_error)?;
-        ChangeStore::get_change(self, change_id)
+        let change = ChangeStore::get_change(self, change_id)?;
+        let task_id = required_row_text(&change, "task_id", "Change").map_err(storage_error)?;
+        let reference =
+            required_row_text(&change, "change_ref", "Change").map_err(storage_error)?;
+        self.finish_local_task(
+            &task_id,
+            landed_snapshot_id,
+            target_line,
+            pre_land_target_snapshot_id,
+            Some(&reference),
+            None,
+        )?;
+        ChangeStore::get_change(self, &reference)
     }
 
     fn mark_change_published(
@@ -1938,6 +1943,10 @@ impl<B: BinaryDb, const WRITE_LAYOUT: u32> TaskWorkflowChangeLister
 {
     fn list_changes(&self) -> PlanStoreResult<Vec<JsonValue>> {
         ChangeStore::list_changes(self)
+    }
+
+    fn list_task_changes(&self, task_id: &str) -> PlanStoreResult<Vec<JsonValue>> {
+        self.changes_for_task(task_id)
     }
 }
 
@@ -2134,8 +2143,6 @@ fn validate_local_task_record(record: &LocalTaskRecord) -> StoreResult<()> {
     }
     if record.is_terminal() {
         // Zero is the bounded legacy unknown-close-time representation.
-    } else if record.closed_at_s != 0 {
-        return Err("non-terminal LocalTaskRecord has closed_at_s".into());
     }
     if record.created_at_s == 0 || record.updated_at_s < record.created_at_s {
         return Err("LocalTaskRecord has invalid event times".into());
@@ -2188,8 +2195,9 @@ fn validate_local_land_record(record: &LocalLandRecord) -> StoreResult<()> {
     if status == 7
         || mode == 3
         || record.land_ordinal > MAX_LAND_ORDINAL
-        || record.change_ordinal > MAX_CHANGE_ORDINAL
-        || record.failure_kind > 7
+        || record.change_ordinal_plus1 > 64
+        || record.failure_kind != 0
+        || !record.is_succeeded()
         || record.target_line_index_plus1 == 0
     {
         return Err("LocalLandRecord has reserved or invalid fields".into());
@@ -2604,6 +2612,18 @@ mod tests {
                 )
                 .unwrap();
         }
+        let file = BinaryLineCodec::<1>::record_file();
+        let mut record =
+            BinaryLineCodec::<1>::decode_record(&write.read_record(file.clone(), 0).unwrap())
+                .unwrap();
+        record.head_snapshot_index_plus1 = 1;
+        write
+            .overwrite_record(
+                file,
+                0,
+                &BinaryLineCodec::<1>::encode_record(&record).unwrap(),
+            )
+            .unwrap();
         write.commit().unwrap();
         (first, second)
     }
@@ -2649,9 +2669,9 @@ mod tests {
         let land = LocalLandRecord {
             land_meta: 2 | LAND_META_HAS_LANDED,
             land_ordinal: 0,
-            change_ordinal: 0,
+            change_ordinal_plus1: 1,
             failure_kind: 0,
-            change_index: 0,
+            task_index: 0,
             previous_task_land_index_plus1: 0,
             previous_change_land_index_plus1: 0,
             pre_land_target_snapshot_index_plus1: 0,
@@ -2716,15 +2736,15 @@ mod tests {
             assert_eq!(LocalChangeRecord::decode(&change_bytes).unwrap(), change);
 
             let land = LocalLandRecord {
-                land_meta: 0,
+                land_meta: 2 | LAND_META_HAS_LANDED,
                 land_ordinal: 0,
-                change_ordinal: 0,
+                change_ordinal_plus1: 1,
                 failure_kind: 0,
-                change_index: 0,
+                task_index: 0,
                 previous_task_land_index_plus1: 0,
                 previous_change_land_index_plus1: 0,
                 pre_land_target_snapshot_index_plus1: 0,
-                landed_snapshot_index_plus1: 0,
+                landed_snapshot_index_plus1: 1,
                 submitted_at_s: seconds,
                 updated_at_s: seconds,
                 target_line_index_plus1: 1,
@@ -2764,6 +2784,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(change["change_ref"], json!("LCT-0001/C-01"));
+        let mut write =
+            BinaryDbWriteTxn::begin(store.db(), BinaryDbCommandScope::SnapshotWrite).unwrap();
+        store
+            .record_snapshot_link_in_write(
+                &mut write,
+                &SnapshotWorkflowBinding {
+                    task_id: "LCT-0001".into(),
+                    change_id: "C-01".into(),
+                    line_name: "main".into(),
+                },
+                &landed,
+                1,
+            )
+            .unwrap();
+        write.commit().unwrap();
         let landed_change =
             ChangeStore::land_change(&store, "LCT-0001/C-01", "main", &landed, Some(&base))
                 .unwrap();

@@ -101,4 +101,36 @@ for required in \
   grep -F -- "${required}" "${launcher}" >/dev/null
 done
 
+mkdir -p "${temporary_root}/bin" "${canonical_root}/ci"
+cat >"${temporary_root}/bin/cargo" <<'EOF'
+#!/bin/sh
+printf '%s %s\n' "$1" "${PYO3_BUILD_EXTENSION_MODULE-unset}" >>"$LINKAGE_PROBE_LOG"
+EOF
+chmod +x "${temporary_root}/bin/cargo"
+(
+  # shellcheck source=../ait.sh
+  source "${launcher}"
+  ROOT_DIR=${canonical_root}
+  resolve_cargo() { printf '%s\n' "${temporary_root}/bin/cargo"; }
+  resolve_rust_tool() { :; }
+  export LINKAGE_PROBE_LOG=${temporary_root}/launcher-linkage.log
+  unset PYO3_BUILD_EXTENSION_MODULE
+  run_cargo build --workspace
+  test "${PYO3_BUILD_EXTENSION_MODULE+set}" != set
+  export PYO3_BUILD_EXTENSION_MODULE=ambient
+  run_cargo test --workspace
+  test "${PYO3_BUILD_EXTENSION_MODULE}" = ambient
+)
+printf 'build 1\ntest unset\n' >"${temporary_root}/expected-launcher-linkage.log"
+cmp "${temporary_root}/expected-launcher-linkage.log" "${temporary_root}/launcher-linkage.log"
+
+cp "${repo_root}/ci/run.sh" "${canonical_root}/ci/run.sh"
+PYO3_BUILD_EXTENSION_MODULE=ambient \
+  LINKAGE_PROBE_LOG=${temporary_root}/ci-linkage.log \
+  PATH="${temporary_root}/bin:${PATH}" \
+  AIT_RUNNER_ATTEMPT_ROOT=${temporary_root}/ci-attempt \
+  sh "${canonical_root}/ci/run.sh" repo
+printf 'fmt unset\ntest unset\n' >"${temporary_root}/expected-ci-linkage.log"
+cmp "${temporary_root}/expected-ci-linkage.log" "${temporary_root}/ci-linkage.log"
+
 printf 'ait.sh canonical Cargo policy contract: pass\n'

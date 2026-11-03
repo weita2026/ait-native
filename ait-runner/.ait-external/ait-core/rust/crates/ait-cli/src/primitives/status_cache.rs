@@ -9,8 +9,58 @@ fn managed_cargo_projection_matches_baseline(
         |expected| {
             expected.as_bytes() == projection
                 || generated_worktree_cargo_config_text(workspace_root).as_bytes() == projection
+                || std::str::from_utf8(projection)
+                    .ok()
+                    .and_then(|actual| {
+                        upgrade_generated_worktree_cargo_config_text(workspace_root, actual)
+                    })
+                    .is_some_and(|actual| {
+                        actual == expected
+                            || actual == generated_worktree_cargo_config_text(workspace_root)
+                    })
         },
     )
+}
+
+pub(super) fn workspace_file_state_for_entry(
+    path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<Option<WorkspaceFileState>, String> {
+    let is_symlink = metadata.file_type().is_symlink();
+    let data = if is_symlink {
+        let target = fs::read_link(path).map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        {
+            target.as_os_str().as_bytes().to_vec()
+        }
+        #[cfg(windows)]
+        {
+            target
+                .to_str()
+                .ok_or_else(|| {
+                    format!(
+                        "Windows symlink target is not valid Unicode: {}",
+                        target.display()
+                    )
+                })?
+                .as_bytes()
+                .to_vec()
+        }
+    } else if metadata.is_file() {
+        fs::read(path).map_err(|error| error.to_string())?
+    } else {
+        return Ok(None);
+    };
+    let permissions = portable_mode(metadata, 0o644);
+    let mode = if is_symlink {
+        0o120000 | permissions
+    } else {
+        permissions
+    };
+    Ok(Some(WorkspaceFileState {
+        sha256: sha256_hex_bytes(&data),
+        mode: format!("{mode:#o}"),
+    }))
 }
 
 pub(super) fn workspace_state(
@@ -32,18 +82,10 @@ pub(super) fn workspace_state(
             continue;
         }
         let abs_path = workspace_root.join(&rel);
-        let metadata = abs_path.metadata().map_err(|err| err.to_string())?;
-        if !metadata.is_file() {
-            continue;
+        let metadata = fs::symlink_metadata(&abs_path).map_err(|err| err.to_string())?;
+        if let Some(entry) = workspace_file_state_for_entry(&abs_path, &metadata)? {
+            state.insert(rel, entry);
         }
-        let data = fs::read(&abs_path).map_err(|err| err.to_string())?;
-        state.insert(
-            rel,
-            WorkspaceFileState {
-                sha256: sha256_hex_bytes(&data),
-                mode: format!("{:#o}", portable_mode(&metadata, 0o644)),
-            },
-        );
     }
     Ok(state)
 }
@@ -60,23 +102,14 @@ pub(super) fn workspace_state_for_exact_paths(
             continue;
         }
         let abs_path = workspace_root.join(rel);
-        let metadata = match abs_path.metadata() {
+        let metadata = match fs::symlink_metadata(&abs_path) {
             Ok(metadata) => metadata,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => return Err(format!("Failed to read metadata for {rel}: {err}")),
         };
-        if !metadata.is_file() {
-            continue;
+        if let Some(entry) = workspace_file_state_for_entry(&abs_path, &metadata)? {
+            state.insert(rel.clone(), entry);
         }
-        let data = fs::read(&abs_path)
-            .map_err(|err| format!("Failed to read exact workspace path {rel}: {err}"))?;
-        state.insert(
-            rel.clone(),
-            WorkspaceFileState {
-                sha256: sha256_hex_bytes(&data),
-                mode: format!("{:#o}", portable_mode(&metadata, 0o644)),
-            },
-        );
     }
     Ok(state)
 }

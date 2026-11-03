@@ -8,9 +8,7 @@ pub trait TaskWorkflowAttestationWriter {
         &mut self,
         patchset_id: &str,
         author_mode: &str,
-        evaluation_summary: &Value,
-        provenance_summary: &Value,
-        detail: &Value,
+        statement: &crate::attest_json::RemoteAttestationStatement,
         repo_name: Option<&str>,
         exact_id: bool,
     ) -> TaskWorkflowHttpClientResult<Value>;

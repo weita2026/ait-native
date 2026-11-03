@@ -337,6 +337,7 @@ fn zstd_pull_manifest_rejects_child_before_missing_parent() {
 fn zstd_import_manifest_matches_zstd_bulk_commit_row_shapes() {
     let manifest = sample_zstd_import_manifest_payload();
     let commit = ZstdBulkCommitRequest {
+        capture_binding: None,
         contract: Some("ait.remote_sync.zstd_bulk.commit.v1".to_string()),
         generation_key: None,
         object_packs: manifest.object_packs.clone(),

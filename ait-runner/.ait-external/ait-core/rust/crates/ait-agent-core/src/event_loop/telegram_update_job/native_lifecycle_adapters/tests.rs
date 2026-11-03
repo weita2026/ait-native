@@ -152,7 +152,6 @@ fn native_runtime_projects_manifest_local_reply_into_the_gateway_request() {
         temp.path().join("state.json"),
         AgentRuntimeTarget {
             mode: AgentRuntimeMode::Local,
-            workflow_mode: crate::transport_config::AgentWorkflowMode::SoloLocal,
             repo_name: "fixture".to_string(),
             repo_root: temp.path().to_path_buf(),
             remote_name: None,

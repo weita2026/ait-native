@@ -1,242 +1,241 @@
 fn run_review(repo: RepoRuntime, command: ReviewCommand) -> Result<(), String> {
+    use crate::binding_review as service;
     match command {
         ReviewCommand::Show(args) => {
-            let change_ref =
-                resolve_task_remote_change_input(&repo, &args.change_id, args.remote.as_deref())?;
-            let payload = review_show(&repo, &change_ref, args.remote.as_deref(), None)?;
+            let payload = service::inspect_review(&repo, &args.change_id, args.remote.as_deref())?;
             emit_review_show_result(&payload, args.json)
         }
-        ReviewCommand::Team { command } => {
-            if !repo.team_review_enabled() {
-                return Err(
-                    "`ait review team ...` is only available when `workflow_mode=team_remote`."
-                        .to_string(),
-                );
-            }
-            match command {
-                ReviewTeamCommand::Request(args) => {
-                    let (change_ref, patchset_id) = resolve_task_remote_revision_input(
-                        &repo,
-                        &args.change_id,
-                        args.patchset_id.as_deref(),
-                        args.remote.as_deref(),
-                    )?;
-                    let payload = review_request(
-                        &repo,
-                        &change_ref,
-                        Some(&patchset_id),
-                        &args.reviewer_groups,
-                        args.note.as_deref(),
-                        args.remote.as_deref(),
-                    )?;
-                    emit_result(
-                        "ait-cli review team request",
-                        &payload,
-                        args.json,
-                        &["patchset_id", "requested_groups", "status"],
-                    )?;
-                    Ok(())
-                }
-                ReviewTeamCommand::Approve(args) => {
-                    let (change_ref, patchset_id) = resolve_task_remote_revision_input(
-                        &repo,
-                        &args.change_id,
-                        args.patchset_id.as_deref(),
-                        args.remote.as_deref(),
-                    )?;
-                    let payload = review_team_approve(
-                        &repo,
-                        &change_ref,
-                        Some(&patchset_id),
-                        args.reviewer.as_deref(),
-                        args.message.as_deref(),
-                        args.remote.as_deref(),
-                    )?;
-                    emit_result(
-                        "ait-cli review team approve",
-                        &payload,
-                        args.json,
-                        &["patchset_id", "reviewer", "action"],
-                    )?;
-                    Ok(())
-                }
-                ReviewTeamCommand::RequestChanges(args) => {
-                    let (change_ref, patchset_id) = resolve_task_remote_revision_input(
-                        &repo,
-                        &args.change_id,
-                        args.patchset_id.as_deref(),
-                        args.remote.as_deref(),
-                    )?;
-                    emit_review_record_result(
-                    "ait-cli review team request-changes",
-                    review_record(
-                        &repo,
-                        &change_ref,
-                        "request_changes",
-                        true,
-                        Some(&patchset_id),
-                        args.reviewer.as_deref(),
-                        args.message.as_deref(),
-                        args.remote.as_deref(),
-                    )?,
-                    args.json,
-                )
-                }
-                ReviewTeamCommand::Comment(args) => {
-                    let (change_ref, patchset_id) = resolve_task_remote_revision_input(
-                        &repo,
-                        &args.change_id,
-                        args.patchset_id.as_deref(),
-                        args.remote.as_deref(),
-                    )?;
-                    emit_review_record_result(
-                    "ait-cli review team comment",
-                    review_record(
-                        &repo,
-                        &change_ref,
-                        "comment",
-                        false,
-                        Some(&patchset_id),
-                        args.reviewer.as_deref(),
-                        args.message.as_deref(),
-                        args.remote.as_deref(),
-                    )?,
-                    args.json,
-                )
-                }
-                ReviewTeamCommand::Defer(args) => {
-                    let (change_ref, patchset_id) = resolve_task_remote_revision_input(
-                        &repo,
-                        &args.change_id,
-                        args.patchset_id.as_deref(),
-                        args.remote.as_deref(),
-                    )?;
-                    emit_review_record_result(
-                    "ait-cli review team defer",
-                    review_record(
-                        &repo,
-                        &change_ref,
-                        "defer",
-                        false,
-                        Some(&patchset_id),
-                        args.reviewer.as_deref(),
-                        args.message.as_deref(),
-                        args.remote.as_deref(),
-                    )?,
-                    args.json,
-                )
-                }
-            }
-        }
-        ReviewCommand::Task { command } => match command {
-            ReviewTaskCommand::Approve(args) => {
-                let (change_ref, patchset_id) = resolve_task_remote_revision_input(
+        ReviewCommand::Team { command } => match command {
+            ReviewTeamCommand::Request(args) => {
+                let payload = service::request_team_review(
                     &repo,
                     &args.change_id,
-                    Some(args.patchset_id.as_str()),
-                    args.remote.as_deref(),
+                    &args.reviewer_groups,
+                    &service::ReviewRequestOptions {
+                        patchset_id: args.patchset_id,
+                        note: args.note,
+                        remote_name: args.remote,
+                    },
                 )?;
-                let payload = review_task_approve(
+                if args.json {
+                    print_json(&payload)
+                } else {
+                    println!(
+                        "{}",
+                        crate::binding_output::format_review_team_request(&payload)?
+                    );
+                    Ok(())
+                }
+            }
+            ReviewTeamCommand::Approve(args) => {
+                let payload = service::approve_team_review(
                     &repo,
-                    &change_ref,
-                    &patchset_id,
+                    &args.change_id,
+                    &service::TeamReviewOptions {
+                        patchset_id: args.patchset_id,
+                        reviewer: args.reviewer,
+                        message: args.message,
+                        remote_name: args.remote,
+                    },
+                )?;
+                if args.json {
+                    print_json(&payload)
+                } else {
+                    println!(
+                        "{}",
+                        crate::binding_output::format_review_team_approve(&payload)?
+                    );
+                    Ok(())
+                }
+            }
+            ReviewTeamCommand::RequestChanges(args) => {
+                let payload = service::request_team_changes(
+                    &repo,
+                    &args.change_id,
+                    &service::TeamReviewOptions {
+                        patchset_id: args.patchset_id,
+                        reviewer: args.reviewer,
+                        message: args.message,
+                        remote_name: args.remote,
+                    },
+                )?;
+                if args.json {
+                    print_json(&payload)
+                } else {
+                    println!(
+                        "{}",
+                        crate::binding_output::format_review_team_request_changes(&payload)?
+                    );
+                    Ok(())
+                }
+            }
+            ReviewTeamCommand::Comment(args) => {
+                let payload = service::comment_team_review(
+                    &repo,
+                    &args.change_id,
+                    &service::TeamReviewOptions {
+                        patchset_id: args.patchset_id,
+                        reviewer: args.reviewer,
+                        message: args.message,
+                        remote_name: args.remote,
+                    },
+                )?;
+                if args.json {
+                    print_json(&payload)
+                } else {
+                    println!(
+                        "{}",
+                        crate::binding_output::format_review_team_comment(&payload)?
+                    );
+                    Ok(())
+                }
+            }
+            ReviewTeamCommand::Defer(args) => {
+                let payload = service::defer_team_review(
+                    &repo,
+                    &args.change_id,
+                    &service::TeamReviewOptions {
+                        patchset_id: args.patchset_id,
+                        reviewer: args.reviewer,
+                        message: args.message,
+                        remote_name: args.remote,
+                    },
+                )?;
+                if args.json {
+                    print_json(&payload)
+                } else {
+                    println!(
+                        "{}",
+                        crate::binding_output::format_review_team_defer(&payload)?
+                    );
+                    Ok(())
+                }
+            }
+        },
+        ReviewCommand::Task { command } => match command {
+            ReviewTaskCommand::Approve(args) => {
+                let operation = service::approve_task_review(
+                    &repo,
+                    &args.change_id,
+                    &args.patchset_id,
                     &args.message,
                     args.remote.as_deref(),
                 )?;
-                emit_result(
-                    "ait-cli review task approve",
-                    &payload,
-                    args.json,
-                    &["patchset_id", "reviewer", "action"],
-                )?;
-                Ok(())
+                if args.json {
+                    print_json(&crate::binding_output::project_review_task_operation(
+                        &operation,
+                    )?)
+                } else {
+                    println!(
+                        "{}",
+                        crate::binding_output::format_review_task_approve(&operation)?
+                    );
+                    Ok(())
+                }
             }
             ReviewTaskCommand::RequestChanges(args) => {
-                let (change_ref, patchset_id) = resolve_task_remote_revision_input(
+                let operation = service::request_task_changes(
                     &repo,
                     &args.change_id,
-                    args.patchset_id.as_deref(),
-                    args.remote.as_deref(),
+                    &service::TaskReviewOptions {
+                        patchset_id: args.patchset_id,
+                        message: args.message,
+                        remote_name: args.remote,
+                    },
                 )?;
-                emit_review_record_result(
-                "ait-cli review task request-changes",
-                review_task_record(
-                    &repo,
-                    &change_ref,
-                    "task_request_changes",
-                    true,
-                    Some(&patchset_id),
-                    args.message.as_deref(),
-                    args.remote.as_deref(),
-                )?,
-                args.json,
-            )
+                if args.json {
+                    print_json(&crate::binding_output::project_review_task_operation(
+                        &operation,
+                    )?)
+                } else {
+                    println!(
+                        "{}",
+                        crate::binding_output::format_review_task_request_changes(&operation)?
+                    );
+                    Ok(())
+                }
             }
             ReviewTaskCommand::Comment(args) => {
-                let (change_ref, patchset_id) = resolve_task_remote_revision_input(
+                let operation = service::comment_task_review(
                     &repo,
                     &args.change_id,
-                    args.patchset_id.as_deref(),
-                    args.remote.as_deref(),
+                    &service::TaskReviewOptions {
+                        patchset_id: args.patchset_id,
+                        message: args.message,
+                        remote_name: args.remote,
+                    },
                 )?;
-                emit_review_record_result(
-                "ait-cli review task comment",
-                review_task_record(
-                    &repo,
-                    &change_ref,
-                    "task_comment",
-                    false,
-                    Some(&patchset_id),
-                    args.message.as_deref(),
-                    args.remote.as_deref(),
-                )?,
-                args.json,
-            )
+                if args.json {
+                    print_json(&crate::binding_output::project_review_task_operation(
+                        &operation,
+                    )?)
+                } else {
+                    println!(
+                        "{}",
+                        crate::binding_output::format_review_task_comment(&operation)?
+                    );
+                    Ok(())
+                }
             }
             ReviewTaskCommand::Defer(args) => {
-                let (change_ref, patchset_id) = resolve_task_remote_revision_input(
+                let operation = service::defer_task_review(
                     &repo,
                     &args.change_id,
-                    args.patchset_id.as_deref(),
-                    args.remote.as_deref(),
+                    &service::TaskReviewOptions {
+                        patchset_id: args.patchset_id,
+                        message: args.message,
+                        remote_name: args.remote,
+                    },
                 )?;
-                emit_review_record_result(
-                "ait-cli review task defer",
-                review_task_record(
-                    &repo,
-                    &change_ref,
-                    "task_defer",
-                    false,
-                    Some(&patchset_id),
-                    args.message.as_deref(),
-                    args.remote.as_deref(),
-                )?,
-                args.json,
-            )
+                if args.json {
+                    print_json(&crate::binding_output::project_review_task_operation(
+                        &operation,
+                    )?)
+                } else {
+                    println!(
+                        "{}",
+                        crate::binding_output::format_review_task_defer(&operation)?
+                    );
+                    Ok(())
+                }
             }
         },
         ReviewCommand::Code { command } => match command {
             ReviewCodeCommand::Submit(args) => {
-                let (change_ref, patchset_id) = resolve_task_remote_revision_input(
+                let payload = service::submit_code_review(
                     &repo,
                     &args.change_id,
-                    Some(args.patchset_id.as_str()),
-                    args.remote.as_deref(),
-                )?;
-                let payload = review_code_submit(
-                    &repo,
-                    &change_ref,
-                    &patchset_id,
+                    &args.patchset_id,
                     &args.message,
+                    args.reviewer.as_deref(),
                     args.remote.as_deref(),
                 )?;
-                emit_review_code_submit_result(&payload, args.json)?;
-                Ok(())
+                emit_review_code_submit_result(&payload, args.json)
             }
             ReviewCodeCommand::Template(args) => {
                 let payload = review_code_template(Some(args.style.as_str()))?;
                 emit_review_code_template_result(&payload, args.json)
             }
         },
+    }
+}
+
+pub(crate) fn read_package_review_identity(
+    selector: &str,
+) -> Result<Option<ait_core::workflow_expected_identity::PackageWorkflowExpectedIdentity>, String> {
+    let Some(path) = selector.strip_prefix('@') else {
+        return Ok(None);
+    };
+    if !std::path::Path::new(path).is_absolute() {
+        return Err("Package review selector path must be absolute".into());
+    }
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|error| format!("Resolve package review identity: {error}"))?;
+    use ait_core::workflow_expected_identity::WorkflowExpectedIdentityInput as Expected;
+    match read_workflow_expected_identity_input(Some(&resolved))? {
+        Some(Expected::Package(identity)) => Ok(Some(identity)),
+        _ => Err(
+            "Package review selector requires only the exact five-field package identity".into(),
+        ),
     }
 }

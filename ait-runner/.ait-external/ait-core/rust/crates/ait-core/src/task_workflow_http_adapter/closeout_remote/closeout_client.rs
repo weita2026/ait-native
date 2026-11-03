@@ -1,6 +1,122 @@
 use super::*;
 
 impl HttpWorkflowCloseoutRemote {
+    #[cfg(test)]
+    pub(crate) fn with_resolved_test_actor(mut self, actor: u32) -> Self {
+        self.manager.actor_context = self
+            .manager
+            .config
+            .repository_index
+            .map(|index| (index, actor));
+        self
+    }
+    pub fn set_actor_registration(
+        &mut self,
+        repo_name: &str,
+        identity: Result<crate::plan_http_client::RemoteActorIdentity, String>,
+        namespace: Option<&str>,
+    ) {
+        self.manager
+            .set_actor_registration(repo_name, identity, namespace);
+    }
+    pub(super) fn current_task_candidate(
+        &mut self,
+        owner: &str,
+        repo_name: Option<&str>,
+    ) -> TaskWorkflowHttpClientResult<(String, Value, Option<Value>)> {
+        let task_id = self.expected_task_id_for_change(owner).ok_or_else(|| {
+            PlanHttpClientError::Invalid(
+                "Candidate operation requires an exact Task or Change reference".into(),
+            )
+        })?;
+        let task = self.manager.get_task(&task_id, repo_name)?;
+        crate::land_json::LandJson::stateless()
+            .task_successful_receipt(
+                &task,
+                &task_id,
+                self.manager
+                    .config
+                    .repository_index
+                    .map(|index| index.get()),
+            )
+            .map_err(PlanHttpClientError::Invalid)?;
+        let current = match task.get("current_patchset_id") {
+            Some(Value::Null) => None,
+            Some(Value::String(id)) if !id.is_empty() && id.trim() == id => Some(id.clone()),
+            _ => {
+                return Err(PlanHttpClientError::Invalid(
+                    "Task requires nullable current_patchset_id".into(),
+                ))
+            }
+        };
+        let patchset = current
+            .as_deref()
+            .map(|id| self.manager.get_patchset(id, repo_name, None))
+            .transpose()?;
+        if let Some(row) = patchset.as_ref() {
+            crate::workflow_expected_identity::validate_patchset_owner_fields(row, &task_id)
+                .map_err(PlanHttpClientError::Invalid)?;
+            let identity = crate::workflow_expected_identity::WorkflowExpectedIdentity {
+                repository_index: self
+                    .manager
+                    .config
+                    .repository_index
+                    .map(|index| index.get())
+                    .unwrap_or_default(),
+                patchset_id: current.clone().expect("candidate has current reference"),
+                base_snapshot_id: row["base_snapshot_id"].as_str().unwrap_or_default().into(),
+                revision_snapshot_id: row["revision_snapshot_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .into(),
+            };
+            identity
+                .validate()
+                .and_then(|()| identity.validate_patchset_reference(row))
+                .map_err(PlanHttpClientError::Invalid)?;
+        }
+        Ok((task_id, task, patchset))
+    }
+
+    pub(super) fn matching_current_candidate(
+        &mut self,
+        owner: &str,
+        repo_name: Option<&str>,
+        base: &str,
+        revision: &str,
+    ) -> TaskWorkflowHttpClientResult<Option<Value>> {
+        let (_, task, current) = self.current_task_candidate(owner, repo_name)?;
+        if task["status"].as_str() != Some("active") || !task["successful_land"].is_null() {
+            return Err(PlanHttpClientError::Invalid(
+                "Publication requires an active Task without a successful receipt".into(),
+            ));
+        }
+        let Some(row) = current else {
+            return Ok(None);
+        };
+        let expected_change = (!crate::public_references::is_task_id(owner)).then_some(owner);
+        if row["change_ref"].as_str() != expected_change
+            || row["base_snapshot_id"].as_str() != Some(base)
+            || row["revision_snapshot_id"].as_str() != Some(revision)
+        {
+            return Ok(None);
+        }
+        let index = self
+            .manager
+            .config
+            .repository_index
+            .map(|index| index.get())
+            .unwrap_or_default();
+        crate::workflow_expected_identity::WorkflowExpectedIdentity {
+            repository_index: index,
+            patchset_id: task["current_patchset_id"].as_str().unwrap().into(),
+            base_snapshot_id: base.into(),
+            revision_snapshot_id: revision.into(),
+        }
+        .validate_patchset(index, &row)
+        .map_err(PlanHttpClientError::Invalid)?;
+        Ok(Some(row))
+    }
     pub fn new(config: TaskWorkflowHttpClientConfig) -> TaskWorkflowHttpClientResult<Self> {
         Ok(Self {
             manager: TaskWorkflowHttpClientManager::new(config)?,
@@ -59,6 +175,9 @@ impl HttpWorkflowCloseoutRemote {
 
     pub(super) fn wire_change_id(&self, change_id: &str) -> TaskWorkflowHttpClientResult<String> {
         let requested = change_id.trim();
+        if crate::public_references::is_task_id(requested) {
+            return Ok(requested.to_string());
+        }
         let canonical = ChangeJson::stateless()
             .canonical_change_id(requested)
             .map_err(PlanHttpClientError::Invalid)?;
@@ -83,6 +202,9 @@ impl HttpWorkflowCloseoutRemote {
 
     pub(super) fn expected_task_id_for_change(&self, change_id: &str) -> Option<String> {
         let requested = change_id.trim();
+        if crate::public_references::is_task_id(requested) {
+            return Some(requested.to_string());
+        }
         if let Some((task_id, child)) = requested.rsplit_once('/') {
             if ChangeJson::stateless()
                 .canonical_change_id(requested)
@@ -107,6 +229,9 @@ impl HttpWorkflowCloseoutRemote {
         repo_name: Option<&str>,
         exact_id: bool,
     ) -> TaskWorkflowHttpClientResult<String> {
+        if crate::public_references::is_task_id(change_id) {
+            return self.wire_change_id(change_id);
+        }
         if repo_name.is_some() && !exact_id {
             let change = self.resolve_change_row(change_id, repo_name)?;
             return change
@@ -147,6 +272,22 @@ impl HttpWorkflowCloseoutRemote {
         payload: Value,
         change_id: &str,
     ) -> TaskWorkflowHttpClientResult<Value> {
+        if crate::public_references::is_task_id(change_id) {
+            if payload["task_id"].as_str() != Some(change_id) {
+                return Err(PlanHttpClientError::Invalid(
+                    "Task operation returned another owner".into(),
+                ));
+            }
+            if let Some(id) = payload["patchset_id"].as_str() {
+                crate::workflow_expected_identity::validate_patchset_reference_owner(
+                    id,
+                    change_id,
+                    payload["change_ref"].as_str(),
+                )
+                .map_err(PlanHttpClientError::Invalid)?;
+            }
+            return Ok(payload);
+        }
         if payload.get("change_id").is_none() {
             return Ok(payload);
         }

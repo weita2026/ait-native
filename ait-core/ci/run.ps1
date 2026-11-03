@@ -7,31 +7,52 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Invoke-Checked {
+$script:ciFailed = $false
+$script:stageExitCode = 0
+
+function Write-Blocked {
+    param([string]$Stage)
+    $script:ciFailed = $true
+    Write-Output "CI BLOCKED $Stage"
+}
+
+function Invoke-Collect {
     param(
-        [Parameter(Mandatory = $true)]
+        [string]$Stage,
         [string]$Program,
-        [Parameter(Mandatory = $true)]
         [string[]]$Arguments
     )
 
-    & $Program @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "command failed with exit code ${LASTEXITCODE}: $Program"
+    # Native nonzero exits are collected even when the caller enables this setting.
+    $PSNativeCommandUseErrorActionPreference = $false
+    Write-Output "CI RUN $Stage"
+    try {
+        & $Program @Arguments
+        $script:stageExitCode = $LASTEXITCODE
+    } catch {
+        Write-Output $_
+        $script:stageExitCode = 1
+    }
+    if ($script:stageExitCode -eq 0) {
+        Write-Output "CI PASS $Stage"
+    } else {
+        $script:ciFailed = $true
+        Write-Output "CI FAIL $Stage (exit $script:stageExitCode)"
     }
 }
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $cleanupOwnedRoot = $false
-if ([string]::IsNullOrWhiteSpace($env:AIT_RUNNER_ATTEMPT_ROOT)) {
-    $ownedRoot = Join-Path ([IO.Path]::GetTempPath()) ("ait-core-ci-" + [guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $ownedRoot | Out-Null
-    $cleanupOwnedRoot = $true
-} else {
-    $ownedRoot = $env:AIT_RUNNER_ATTEMPT_ROOT
-}
-
+$ownedRoot = $null
 try {
+    if ([string]::IsNullOrWhiteSpace($env:AIT_RUNNER_ATTEMPT_ROOT)) {
+        $ownedRoot = Join-Path ([IO.Path]::GetTempPath()) ("ait-core-ci-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $ownedRoot | Out-Null
+        $cleanupOwnedRoot = $true
+    } else {
+        $ownedRoot = $env:AIT_RUNNER_ATTEMPT_ROOT
+    }
+
     $tmpRoot = Join-Path $ownedRoot "tmp"
     $cargoTargetRoot = Join-Path $ownedRoot "cargo-target"
     $cargoBuildRoot = Join-Path $ownedRoot "cargo-build"
@@ -49,7 +70,7 @@ try {
     Remove-Item Env:\PYO3_BUILD_EXTENSION_MODULE -ErrorAction SilentlyContinue
 
     Set-Location -LiteralPath $repoRoot
-    Invoke-Checked "cargo" @("fmt", "--manifest-path", "rust/Cargo.toml", "--all", "--", "--check")
+    Invoke-Collect "format" "cargo" @("fmt", "--manifest-path", "rust/Cargo.toml", "--all", "--", "--check")
 
     $pythonFile = Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Filter "*.py" |
         Where-Object {
@@ -66,7 +87,7 @@ try {
     }
 
     function Invoke-PatchsetTests {
-        Invoke-Checked "cargo" @(
+        Invoke-Collect "patchset-build" "cargo" @(
             "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
             "--locked", "--all-features",
             "-p", "ait-core", "-p", "ait-cli", "-p", "ait-agent-core",
@@ -77,47 +98,77 @@ try {
             "--test", "patchset_ci_runner", "--test", "workflow_recovery_cli",
             "--test", "snapshot_task_binding_cli", "--test", "workflow_friction_cli",
             "--test", "plan_cli", "--test", "workflow_package_frozen_candidate_cli",
-            "--test", "workflow_package_accepted_retry_cli", "--no-run"
+            "--test", "workflow_package_accepted_retry_cli", "--test", "team_session_cli", "--no-run"
         )
-        Invoke-Checked "cargo" @(
-            "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-            "--locked", "--all-features",
-            "-p", "ait-core", "-p", "ait-cli", "-p", "ait-agent-core",
-            "-p", "ait-agent-worker", "-p", "ait-benchmark", "-p", "ait-napi",
-            "-p", "ait-py", "--lib"
-        )
-        Invoke-Checked "cargo" @(
-            "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-            "--locked", "--all-features",
-            "-p", "ait-core", "-p", "ait-cli",
-            "--test", "server_source_ownership",
-            "--test", "patchset_ci_runner", "--test", "workflow_recovery_cli",
-            "--test", "snapshot_task_binding_cli", "--test", "workflow_friction_cli",
-            "--test", "plan_cli", "--test", "workflow_package_frozen_candidate_cli",
-            "--test", "workflow_package_accepted_retry_cli"
-        )
+        if ($script:stageExitCode -eq 0) {
+            Invoke-Collect "patchset-libraries" "cargo" @(
+                "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+                "--locked", "--all-features",
+                "-p", "ait-core", "-p", "ait-cli", "-p", "ait-agent-core",
+                "-p", "ait-agent-worker", "-p", "ait-benchmark", "-p", "ait-napi",
+                "-p", "ait-py", "--lib", "--no-fail-fast", "--", "--show-output"
+            )
+            Invoke-Collect "patchset-integrations" "cargo" @(
+                "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+                "--locked", "--all-features",
+                "-p", "ait-core", "-p", "ait-cli",
+                "--test", "server_source_ownership",
+                "--test", "patchset_ci_runner", "--test", "workflow_recovery_cli",
+                "--test", "snapshot_task_binding_cli", "--test", "workflow_friction_cli",
+                "--test", "plan_cli", "--test", "workflow_package_frozen_candidate_cli",
+                "--test", "workflow_package_accepted_retry_cli", "--no-fail-fast"
+            )
+            Invoke-Collect "team-create" "cargo" @(
+                "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+                "--locked", "--all-features", "-p", "ait-cli", "--test", "team_session_cli",
+                "concurrent_creation_then_retry_does_not_create_duplicate", "--", "--exact"
+            )
+            Invoke-Collect "team-recovery" "cargo" @(
+                "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+                "--locked", "--all-features", "-p", "ait-cli", "--test", "team_session_cli",
+                "concurrent_missing_recovery_then_retry_does_not_create_duplicate", "--", "--exact"
+            )
+        } else {
+            Write-Blocked "patchset-libraries, patchset-integrations, team-create, team-recovery: patchset-build failed"
+        }
 
         # Markdown is Plan lineage and is intentionally absent from remote Snapshot
         # materialization. Canonical source still carries the sole protected authority.
         if (Test-Path -LiteralPath (Join-Path $repoRoot "docs/binary_db_v0.md") -PathType Leaf) {
-            Invoke-Checked "cargo" @(
+            Invoke-Collect "schema-build" "cargo" @(
                 "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-                "--locked", "-p", "ait-core", "--test", "binary_db_schema_authority"
+                "--locked", "-p", "ait-core", "--test", "binary_db_schema_authority", "--no-run"
             )
+            if ($script:stageExitCode -eq 0) {
+                Invoke-Collect "schema-tests" "cargo" @(
+                    "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+                    "--locked", "-p", "ait-core", "--test", "binary_db_schema_authority"
+                )
+            } else {
+                Write-Blocked "schema-tests: schema-build failed"
+            }
         } else {
             Write-Output "skipping binary_db_schema_authority: lineage-only Markdown is unavailable in this Snapshot"
         }
     }
 
     function Invoke-RepoTests {
-        Invoke-Checked "cargo" @(
+        Invoke-Collect "repo-build" "cargo" @(
             "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
-            "--workspace", "--all-targets", "--all-features", "--locked"
+            "--workspace", "--all-targets", "--all-features", "--locked", "--no-run"
         )
+        if ($script:stageExitCode -eq 0) {
+            Invoke-Collect "repo-tests" "cargo" @(
+                "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",
+                "--workspace", "--all-targets", "--all-features", "--locked", "--no-fail-fast"
+            )
+        } else {
+            Write-Blocked "repo-tests: repo-build failed"
+        }
     }
 
     function Invoke-Clippy {
-        Invoke-Checked "cargo" @(
+        Invoke-Collect "clippy" "cargo" @(
             "clippy", "--manifest-path", "rust/Cargo.toml",
             "--workspace", "--all-targets", "--all-features", "--locked",
             "--", "-D", "warnings"
@@ -132,8 +183,19 @@ try {
             Invoke-Clippy
         }
     }
+} catch {
+    Write-Output $_
+    Write-Blocked "remaining Cargo stages: unsafe setup or boundary check failed"
 } finally {
     if ($cleanupOwnedRoot -and (Test-Path -LiteralPath $ownedRoot)) {
-        Remove-Item -LiteralPath $ownedRoot -Recurse -Force
+        try {
+            Remove-Item -LiteralPath $ownedRoot -Recurse -Force
+        } catch {
+            Write-Output $_
+            $script:ciFailed = $true
+        }
     }
 }
+
+if ($script:ciFailed) { exit 1 }
+exit 0

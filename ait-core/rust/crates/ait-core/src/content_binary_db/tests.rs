@@ -3405,7 +3405,9 @@ fn local_content_binary_db_snapshot_delta_depth_follows_persisted_parent_member(
 #[test]
 fn content_binary_db_rejects_absolute_pack_paths() {
     let temp = tempdir().expect("tempdir");
-    let err = absolute_repo_path(&StorePath::from(temp.path()), "/tmp/outside-pack.zip")
+    let outside = temp.path().join("outside-pack.zip");
+    assert!(outside.is_absolute());
+    let err = absolute_repo_path(&StorePath::from(temp.path()), outside.to_str().unwrap())
         .expect_err("absolute pack path should be rejected");
     assert!(err.contains("repo-relative"));
 }

@@ -116,7 +116,7 @@ fn config(local_stt: bool) -> (TempDir, TelegramWorkerConfig) {
     fs::create_dir(temp.path().join(".ait")).expect("ait dir");
     fs::write(
         temp.path().join(".ait/config.json"),
-        json!({"repo_name": "input-fixture", "workflow_mode": "solo_local"}).to_string(),
+        json!({"repo_name": "input-fixture"}).to_string(),
     )
     .expect("repo config");
     let mut worker = json!({
@@ -275,10 +275,10 @@ fn file_mode_downloads_every_attachment_and_preserves_candidate_text() {
     let calls = files.requests();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0]["bot_token"], "123:private-telegram-token");
-    assert!(calls[0]["cache_root"]
-        .as_str()
-        .expect("cache root")
-        .ends_with("private-state/telegram-downloads"));
+    assert!(
+        Path::new(calls[0]["cache_root"].as_str().expect("cache root"))
+            .ends_with(Path::new("private-state").join("telegram-downloads"))
+    );
 }
 
 #[test]

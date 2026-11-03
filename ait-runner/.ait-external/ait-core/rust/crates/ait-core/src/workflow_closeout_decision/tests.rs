@@ -11,6 +11,7 @@ fn commands_with_patchset_ci() -> JsonValue {
 fn attestation_pass() -> JsonValue {
     json!({
         "attestation_id": "AT-RCP-1",
+        "verification_state":"pass","require_tests_pass":true,"require_human_review":false,"require_lint_pass":false,"revoked":false,"ci_backed":true,
         "evaluation_summary": {
             "tests": "pass"
         }
@@ -410,7 +411,7 @@ fn workflow_ready_records_compact_attestation_after_patchset_ci() {
 }
 
 #[test]
-fn workflow_ready_without_ci_contract_keeps_manual_attestation_command() {
+fn workflow_ready_missing_catalog_keeps_first_statement_ci_required() {
     let mut facts = ready_facts(JsonValue::Null);
     facts["attestation"] = JsonValue::Null;
     facts["tests_state"] = json!("");
@@ -422,11 +423,8 @@ fn workflow_ready_without_ci_contract_keeps_manual_attestation_command() {
 
     let action = workflow_ready_next_action(&facts, &commands, false, false, false);
 
-    assert_eq!(action["code"], json!("record_attestation"));
-    assert_eq!(
-        action["command"],
-        json!("ait attest put RCP-1 --tests pass")
-    );
+    assert_eq!(action["code"], json!("run_patchset_ci"));
+    assert_eq!(action["command"], JsonValue::Null);
 }
 
 #[test]
@@ -511,4 +509,56 @@ fn workflow_land_blocks_attestation_only_pass_without_remote_ci() {
         .as_str()
         .unwrap()
         .contains("Remote patchset CI evidence is missing"));
+}
+
+#[test]
+fn compact_statement_verification_and_optional_ci_are_independent() {
+    let commands = json!({"apply_command":"ait workflow ready RT-0001 --apply"});
+    let mut facts = ready_facts(JsonValue::Null);
+    facts["attestation"]["require_tests_pass"] = json!(false);
+    facts["attestation"]["ci_backed"] = json!(false);
+    facts["attestation"]["evaluation_summary"]["tests"] = json!("none");
+    facts["tests_state"] = json!("none");
+    assert_eq!(
+        workflow_ready_next_action(&facts, &commands, false, false, false)["code"],
+        "done"
+    );
+    for state in ["unknown", "pending", "fail"] {
+        facts["attestation"]["verification_state"] = json!(state);
+        assert_eq!(
+            workflow_ready_next_action(&facts, &commands, false, false, false)["code"],
+            "record_attestation"
+        );
+    }
+    facts["attestation"]["verification_state"] = json!("pass");
+    facts["attestation"]["revoked"] = json!(true);
+    assert_eq!(
+        workflow_ready_next_action(&facts, &commands, false, false, false)["code"],
+        "record_attestation"
+    );
+    facts["attestation"] = json!({"evaluation_summary":{"tests":"pass"}});
+    assert_eq!(
+        workflow_ready_next_action(&facts, &commands, false, false, false)["code"],
+        "attestation_incompatible"
+    );
+}
+#[test]
+fn compact_statement_requires_lint_even_without_catalog_and_ignores_manual_ci_claims() {
+    let mut facts = ready_facts(passing_ci_status());
+    facts["attestation"]["require_lint_pass"] = json!(true);
+    let commands = json!({});
+    assert_eq!(
+        workflow_ready_next_action(&facts, &commands, false, false, false)["code"],
+        "run_patchset_ci"
+    );
+    facts["patchset_ci_status"]["lint_status"] = json!("pass");
+    assert_eq!(
+        workflow_ready_next_action(&facts, &commands, false, false, false)["code"],
+        "done"
+    );
+    facts["patchset_ci_status"]["ci_run_seq"] = json!(0);
+    assert_eq!(
+        workflow_ready_next_action(&facts, &commands, false, false, false)["code"],
+        "run_patchset_ci"
+    );
 }

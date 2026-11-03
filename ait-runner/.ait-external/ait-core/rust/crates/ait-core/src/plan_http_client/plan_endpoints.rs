@@ -118,6 +118,7 @@ impl PlanHttpClientManager {
     ) -> PlanHttpClientResult<Value> {
         let spec = build_create_plan_request_spec(
             &self.config,
+            self.require_actor_key_index()?,
             repo_name,
             title,
             artifact_path,
@@ -180,6 +181,7 @@ impl PlanHttpClientManager {
     ) -> PlanHttpClientResult<Value> {
         let spec = build_revise_plan_request_spec(
             &self.config,
+            self.require_actor_key_index()?,
             plan_id,
             artifact_path,
             artifact_selector,
@@ -200,7 +202,12 @@ impl PlanHttpClientManager {
         plan_id: &str,
         status: &str,
     ) -> PlanHttpClientResult<Value> {
-        let spec = build_update_plan_status_request_spec(&self.config, plan_id, status)?;
+        let spec = build_update_plan_status_request_spec(
+            &self.config,
+            self.require_actor_key_index()?,
+            plan_id,
+            status,
+        )?;
         parse_object_payload(self.execute_json(spec)?)
     }
 
@@ -212,6 +219,7 @@ impl PlanHttpClientManager {
     ) -> PlanHttpClientResult<Value> {
         let spec = build_put_plan_revision_artifacts_request_spec(
             &self.config,
+            self.require_actor_key_index()?,
             plan_id,
             plan_revision_id,
             artifacts,

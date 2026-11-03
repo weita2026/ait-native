@@ -12,7 +12,7 @@ use std::io::{Cursor, Read, Write};
 use std::path::Path;
 use tar::{Archive, Builder as TarBuilder, Header as TarHeader};
 use tempfile::TempDir;
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions as FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 const TARGETS: &[&str] = &[
@@ -235,7 +235,12 @@ fn zip_members(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
         let mut entry = archive.by_index(index).expect("valid ZIP member");
         let mut content = Vec::new();
         entry.read_to_end(&mut content).expect("read ZIP member");
-        assert!(members.insert(entry.name().to_string(), content).is_none());
+        assert!(members
+            .insert(
+                entry.name().expect("valid ZIP member name").into_owned(),
+                content
+            )
+            .is_none());
     }
     members
 }

@@ -297,9 +297,14 @@ pub(super) fn resolve_plan_artifact(
             body_file.display()
         ));
     }
-    let markdown =
-        read_utf8_text_file(file_path.to_string_lossy().as_ref()).map_err(plan_fs_error)?;
-    let known_refs = list_plan_section_refs(Some(markdown.as_str()));
+    let markdown = String::from_utf8(
+        read_binary_file(file_path.to_string_lossy().as_ref()).map_err(plan_fs_error)?,
+    )
+    .map_err(|_| format!("File is not valid UTF-8: {}", file_path.display()))?;
+    // Parsing retains the text-reader's newline behavior; artifact identity and
+    // stored content retain the authored bytes used by workspace drift checks.
+    let parsed_markdown = markdown.replace("\r\n", "\n").replace('\r', "\n");
+    let known_refs = list_plan_section_refs(Some(parsed_markdown.as_str()));
     let mut normalized_plan_ref = plan_ref
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -312,7 +317,10 @@ pub(super) fn resolve_plan_artifact(
                 return Ok(SyncArtifact {
                     artifact_path: artifact_path.clone(),
                     artifact_selector: None,
-                    artifact_heading: default_markdown_artifact_heading(&markdown, &artifact_path),
+                    artifact_heading: default_markdown_artifact_heading(
+                        &parsed_markdown,
+                        &artifact_path,
+                    ),
                     items: Vec::new(),
                     artifact_body: markdown.clone(),
                     artifact_blob_id: artifact_blob_id(&markdown),
@@ -333,7 +341,7 @@ pub(super) fn resolve_plan_artifact(
         }
     }
     let selected_ref = normalized_plan_ref.unwrap_or_default();
-    let section = extract_plan_section(Some(markdown.as_str()), Some(selected_ref.as_str()))
+    let section = extract_plan_section(Some(parsed_markdown.as_str()), Some(selected_ref.as_str()))
         .ok_or_else(|| {
             if known_refs.is_empty() {
                 format!(
@@ -759,7 +767,7 @@ where
     let mut remote_plan = None;
     let mut remote_continuity = None;
     if request.base_url.is_some()
-        && (local_plan.is_none() || !local_fully_published || request.reconcile)
+        && (local_plan.is_none() || !local_fully_published || request.reconcile || request.rebase)
     {
         let (mut candidate, mut continuity) = select_existing_plan_with_continuity(
             Path::new(&request.root_path),

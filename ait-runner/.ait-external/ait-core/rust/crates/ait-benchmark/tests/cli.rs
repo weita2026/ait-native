@@ -196,7 +196,7 @@ fn protocol_command_exposes_compiled_versioned_contract() {
 }
 
 #[test]
-fn agent_token_protocol_and_solo_local_template_validate() {
+fn agent_token_protocol_and_local_template_validate() {
     Command::cargo_bin("ait-benchmark")
         .unwrap()
         .args(["agent-token", "protocol"])
@@ -205,9 +205,7 @@ fn agent_token_protocol_and_solo_local_template_validate() {
         .stdout(predicate::str::contains(
             "ait-agent-token-benchmark-protocol/v1",
         ))
-        .stdout(predicate::str::contains(
-            "\"workflow_mode\": \"solo_local\"",
-        ))
+
         .stdout(predicate::str::contains(
             "\"core_sprint_mode\": \"manifest-pinned off for the primary campaign; separately reported sprint-on smoke and complete campaigns are admitted\"",
         ))
@@ -270,9 +268,6 @@ fn agent_token_protocol_and_solo_local_template_validate() {
         ))
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "\"workflow_mode\": \"solo_local\"",
-        ))
         .stdout(predicate::str::contains("\"sprint_mode\": \"off\""))
         .stdout(predicate::str::contains("\"ait_server_connected\": false"));
 

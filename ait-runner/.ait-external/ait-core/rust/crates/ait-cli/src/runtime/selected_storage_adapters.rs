@@ -30,11 +30,14 @@ impl<const WRITE_LAYOUT: u32> RepoBinaryDbStoreFactory<WRITE_LAYOUT> {
         } else {
             LocalStateScope::Repository
         };
-        match admit_activated_binary_db_generation_for_runtime(
+        let admission = admit_activated_binary_db_generation_for_runtime(
             &repo_root,
             &authority_root,
             &repo.repo_name(),
-        ) {
+        );
+        #[cfg(test)]
+        admission_test_support::record(admission.is_ok());
+        match admission {
             Ok((generation, generation_guard)) => Self {
                 repo_root,
                 authority_root: generation.authority_root,
@@ -231,6 +234,7 @@ impl<const WRITE_LAYOUT: u32> RepoBinaryDbLocalSnapshotOperationStore<WRITE_LAYO
             lines,
             worktree_config_path,
             workflow_binding: None,
+            defer_line_advance: false,
         }
     }
 
@@ -374,6 +378,25 @@ impl RepoRuntime {
         Ok(self.binary_db_storage_request::<WRITE_LAYOUT>())
     }
 
+    /// Standalone Plan sync admits only its Plan/content files in the Core
+    /// executor. Other operations continue to use full runtime admission.
+    pub fn standalone_plan_sync_storage_request(&self) -> Result<JsonValue, String> {
+        let root = self
+            .authoritative_repo_root()
+            .canonicalize()
+            .map_err(|error| format!("Cannot resolve Plan repository root: {error}"))?;
+        let authority = root.join(APP_DIR).join(BINARY_DB_DIR);
+        Ok(ait_core::json_support::json!({
+            "write_layout": 1,
+            "authority_root": authority,
+            "activation_pointer": authority,
+            "pack_root": root,
+            "repo_root": root,
+            "local_authority_id": format!("local:{}", self.repo_name()),
+            "current_line_state_scope": if self.is_worktree() { "task" } else { "repository" },
+        }))
+    }
+
     pub fn snapshot_binary_db_storage_request<const WRITE_LAYOUT: u32>(
         &self,
     ) -> Result<JsonValue, String> {
@@ -458,5 +481,45 @@ impl RepoRuntime {
             stores.content(),
             stores.lines(),
         ))
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod admission_test_support {
+    use std::cell::Cell;
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct Counts {
+        pub attempts: usize,
+        pub rejected: usize,
+    }
+
+    thread_local! {
+        static COUNTS: Cell<Option<Counts>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn record(accepted: bool) {
+        COUNTS.with(|slot| {
+            if let Some(mut counts) = slot.get() {
+                counts.attempts += 1;
+                counts.rejected += usize::from(!accepted);
+                slot.set(Some(counts));
+            }
+        });
+    }
+
+    pub(crate) fn measure<T>(operation: impl FnOnce() -> T) -> (T, Counts) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                COUNTS.with(|slot| slot.set(None));
+            }
+        }
+        COUNTS.with(|slot| assert!(slot.replace(Some(Counts::default())).is_none()));
+        let reset = Reset;
+        let value = operation();
+        let counts = COUNTS.with(|slot| slot.get().unwrap());
+        drop(reset);
+        (value, counts)
     }
 }

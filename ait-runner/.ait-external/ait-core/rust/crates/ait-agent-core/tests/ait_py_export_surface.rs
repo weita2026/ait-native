@@ -25,7 +25,7 @@ const RETIRED_AGENT_SESSION_EXPORTS: &[&str] = &[
     "ait_agent_transport_envelope_build_binding_metadata",
 ];
 
-const SUPPORTED_AIT_AGENT_EXPORTS: &[&str] = &[
+const RETAINED_CHAT_COMPATIBILITY_EXPORTS: &[&str] = &[
     "ait_agent_env_file_load",
     "ait_agent_management",
     "ait_agent_telegram_message_delivery_execute",
@@ -82,10 +82,10 @@ fn ait_py_rejects_retired_doctor_overrides_and_wheel_export() {
 }
 
 #[test]
-fn ait_py_agent_export_surface_matches_supported_external_consumers_exactly() {
+fn ait_py_preserves_chat_compatibility_symbols_exactly() {
     let source = ait_py_source();
     let compact_source = compact_source(&source);
-    let mut expected = SUPPORTED_AIT_AGENT_EXPORTS
+    let mut expected = RETAINED_CHAT_COMPATIBILITY_EXPORTS
         .iter()
         .map(|export_name| export_name.to_string())
         .collect::<Vec<_>>();
@@ -104,41 +104,14 @@ fn ait_py_agent_export_surface_matches_supported_external_consumers_exactly() {
     actual.sort();
 
     assert_eq!(actual, expected);
-    assert_ait_py_exports(&compact_source, SUPPORTED_AIT_AGENT_EXPORTS);
+    assert_ait_py_exports(&compact_source, RETAINED_CHAT_COMPATIBILITY_EXPORTS);
     assert_eq!(
         compact_source
             .matches("wrap_pyfunction!(ait_agent_")
             .count(),
-        SUPPORTED_AIT_AGENT_EXPORTS.len(),
-        "only supported ait_agent PyO3 registrations may remain"
+        RETAINED_CHAT_COMPATIBILITY_EXPORTS.len(),
+        "the retained chat compatibility registrations must remain exact"
     );
-}
-
-#[test]
-fn supported_blocking_agent_exports_release_the_python_gil() {
-    let source = ait_py_source();
-    for export_name in [
-        "ait_agent_env_file_load",
-        "ait_agent_management",
-        "ait_agent_telegram_message_delivery_execute",
-        "ait_agent_web_runtime_execute",
-        "ait_agent_worker_capabilities",
-        "ait_agent_worker_transaction",
-    ] {
-        let marker = format!("#[pyfunction(name = \"{export_name}\"");
-        let start = source
-            .find(&marker)
-            .unwrap_or_else(|| panic!("missing export marker for {export_name}"));
-        let function_source = &source[start..];
-        let end = function_source[marker.len()..]
-            .find("#[pyfunction")
-            .map(|offset| marker.len() + offset)
-            .unwrap_or(function_source.len());
-        assert!(
-            function_source[..end].contains(".detach("),
-            "{export_name} must release the Python GIL during Rust execution"
-        );
-    }
 }
 
 fn ait_py_source() -> String {

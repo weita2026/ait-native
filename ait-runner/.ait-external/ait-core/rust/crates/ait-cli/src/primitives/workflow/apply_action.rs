@@ -123,6 +123,7 @@ pub(in crate::primitives) fn workflow_publish_patchset_action_with_task_and_clos
 ) -> Result<JsonValue, String>
 where
     T: TaskWorkflowRemoteChangeReader
+        + TaskWorkflowRemoteTaskReader
         + TaskWorkflowRemoteChangeDetailReader
         + TaskWorkflowRemoteChangeLister
         + TaskWorkflowLineReader
@@ -156,19 +157,9 @@ where
             result_obj.insert("auto_rebase".to_string(), auto_rebase);
         }
     }
-    let selection = {
-        let _range = perfetto_range!("ait.workflow_ready.publish.select");
-        super::change_flow::patchset_select_with_closeout_remote(
-            closeout_remote,
-            change_id,
-            &published_patchset_id,
-            repo_name,
-        )?
-    };
     let mut action = json!({
         "result": result,
         "patchset_id": Some(published_patchset_id),
-        "selection": selection,
     });
     if let Some(auto_rebase) = auto_rebase {
         action["auto_rebase"] = auto_rebase;
@@ -232,7 +223,10 @@ pub(in crate::primitives) fn workflow_ready_record_attestation_with_closeout_rem
     repo_name: &str,
 ) -> Result<JsonValue, String>
 where
-    R: TaskWorkflowPatchsetReader + TaskWorkflowAttestationWriter + ?Sized,
+    R: TaskWorkflowPatchsetReader
+        + TaskWorkflowAttestationReader
+        + TaskWorkflowAttestationWriter
+        + ?Sized,
 {
     let _range = perfetto_range!("ait.workflow_ready.attestation.write");
     workflow_record_attestation_action_with_closeout_remote(
@@ -246,7 +240,7 @@ where
         model_name,
         repo_name,
         "Workflow ready apply could not resolve a patchset for attestation.",
-        Some("pass"),
+        true,
     )
 }
 
@@ -262,32 +256,63 @@ pub(in crate::primitives) fn workflow_record_attestation_action_with_closeout_re
     model_name: Option<String>,
     repo_name: &str,
     missing_patchset_message: &str,
-    default_tests: Option<&str>,
+    automatic_verification: bool,
 ) -> Result<JsonValue, String>
 where
-    R: TaskWorkflowPatchsetReader + TaskWorkflowAttestationWriter + ?Sized,
+    R: TaskWorkflowPatchsetReader
+        + TaskWorkflowAttestationReader
+        + TaskWorkflowAttestationWriter
+        + ?Sized,
 {
+    use ait_core::attest_json::{RemoteAttestationStatement, RemoteVerificationState};
+    let _ = model_name;
+    RemoteAttestationStatement::validate_manual_inputs(tests, lint, security, license, None)?;
     let patchset_id = string_field(patchset, "patchset_id")
         .ok_or_else(|| missing_patchset_message.to_string())?;
-    let resolved_patchset_id =
-        super::change_flow::resolve_patchset_id(closeout_remote, &patchset_id, Some(repo_name))?;
-    let resolved_tests = normalized_text(tests).or_else(|| default_tests.map(str::to_string));
-    let attest_json = ait_core::attest_json::AttestJson::stateless();
-    let evaluation_summary =
-        attest_json.build_evaluation_summary(resolved_tests.as_deref(), lint, security, license);
-    let (provenance_summary, detail) =
-        attest_json.build_minimum_provenance(author_mode, model_name.as_deref())?;
-    Ok(json!({
-        "result": super::change_flow::attestation_put_with_closeout_remote(
-            closeout_remote,
-            &resolved_patchset_id,
-            author_mode,
-            &evaluation_summary,
-            &provenance_summary,
-            &detail,
-            repo_name,
-        )?
-    }))
+    let current = closeout_remote
+        .get_patchset(&patchset_id, Some(repo_name), None)
+        .map_err(|e| e.to_string())?;
+    let identity = ait_core::workflow_expected_identity::WorkflowExpectedIdentity {
+        repository_index: 0,
+        patchset_id: patchset_id.clone(),
+        base_snapshot_id: string_field(patchset, "base_snapshot_id")
+            .ok_or("Exact Patchset base is missing")?,
+        revision_snapshot_id: string_field(patchset, "revision_snapshot_id")
+            .ok_or("Exact Patchset revision is missing")?,
+    };
+    identity.validate_patchset_reference(&current)?;
+    if current["base_snapshot_id"] != patchset["base_snapshot_id"]
+        || current["revision_snapshot_id"] != patchset["revision_snapshot_id"]
+    {
+        return Err("Attestation candidate changed after workflow state was read".into());
+    }
+    let previous = match closeout_remote.get_attestation(&patchset_id, Some(repo_name), true) {
+        Ok(row) => Some(RemoteAttestationStatement::validate_for_patchset(
+            &row, &current,
+        )?),
+        Err(error) if error.remote_status() == Some(404) => None,
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut statement = previous.clone().unwrap_or_default();
+    if let Some(tests) = tests {
+        statement.verification_state =
+            RemoteAttestationStatement::manual_verification(Some(tests))?;
+    } else if automatic_verification {
+        if let Some(previous) = previous.as_ref() {
+            if previous.revoked || previous.verification_state != RemoteVerificationState::Pass {
+                return Err("Existing remote verification is unknown, pending, failed or revoked; provide a genuine explicit manual statement before continuing".into());
+            }
+        } else if statement.required_ci_passed(&current) {
+            statement.verification_state = RemoteVerificationState::Pass;
+        } else {
+            return Err("Automatic verification requires completed passing CI for this exact Patchset; no Attestation was written".into());
+        }
+    } else {
+        statement.verification_state = RemoteVerificationState::Unknown;
+    }
+    Ok(
+        json!({"result":super::change_flow::attestation_put_with_closeout_remote(closeout_remote,&patchset_id,author_mode,&statement,repo_name)?}),
+    )
 }
 
 #[expect(
@@ -309,6 +334,9 @@ pub(in crate::primitives) fn workflow_ready_apply_action(
     model: Option<&str>,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
+    ait_core::attest_json::RemoteAttestationStatement::validate_manual_inputs(
+        tests, lint, security, license, model,
+    )?;
     let patchset = state.get("patchset").cloned().unwrap_or(JsonValue::Null);
     match code {
         "snapshot_create" => {
@@ -332,8 +360,20 @@ pub(in crate::primitives) fn workflow_ready_apply_action(
                 guard_no_planning_only_artifact_drift(repo, "ait workflow ready")?;
             }
             let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
+            guard_capture_publication_target(repo, &remote_row)?;
             let mut task_remote = http_task_remote(repo, &remote_row)?;
             let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
+            if let Some(correction) =
+                super::local_completion::workflow_prepare_aggregate_correction(
+                    repo,
+                    state,
+                    summary,
+                    author_mode,
+                    remote_name,
+                )?
+            {
+                return Ok(correction);
+            }
             let auto_rebase = if repo.is_worktree() {
                 let _range = perfetto_range!("ait.workflow_ready.publish.auto_rebase");
                 let (base_line, expected_snapshot_id) =
@@ -426,22 +466,17 @@ pub(crate) fn ready_publish_summary(summary: Option<&str>, state: &JsonValue) ->
 }
 
 /// Finish may record the compact Attestation only from an already passing
-/// (or not required) Patchset CI result; it never runs CI itself.
+/// Patchset CI result; it never runs CI itself.
 pub(crate) fn workflow_finish_may_record_attestation(state: &JsonValue) -> bool {
-    let tests_status = state
-        .get("patchset_ci_status")
-        .and_then(|value| value.get("tests_status"))
-        .or_else(|| {
-            state
-                .get("patchset")
-                .and_then(|value| value.get("patchset_ci"))
-                .and_then(|value| value.get("tests_status"))
-        })
-        .and_then(JsonValue::as_str)
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    matches!(tests_status.as_str(), "pass" | "not_required")
+    let statement = state
+        .get("attestation")
+        .filter(|v| !v.is_null())
+        .and_then(|v| ait_core::attest_json::RemoteAttestationStatement::from_readback(v).ok());
+    if statement.is_some() {
+        return false;
+    }
+    ait_core::attest_json::RemoteAttestationStatement::default()
+        .required_ci_passed(&state["patchset"])
 }
 
 pub(crate) fn review_message_required_error() -> String {
@@ -475,7 +510,10 @@ pub(in crate::primitives) fn workflow_land_record_attestation_with_closeout_remo
     repo_name: &str,
 ) -> Result<JsonValue, String>
 where
-    R: TaskWorkflowPatchsetReader + TaskWorkflowAttestationWriter + ?Sized,
+    R: TaskWorkflowPatchsetReader
+        + TaskWorkflowAttestationReader
+        + TaskWorkflowAttestationWriter
+        + ?Sized,
 {
     workflow_record_attestation_action_with_closeout_remote(
         closeout_remote,
@@ -488,7 +526,7 @@ where
         model_name,
         repo_name,
         "Workflow finish apply could not resolve a patchset for attestation.",
-        None,
+        false,
     )
 }
 
@@ -553,11 +591,12 @@ where
     };
     let result = {
         let _range = perfetto_range!("ait.task_land.remote.review_record");
-        super::change_flow::review_record_with_closeout_remote(
+        super::change_flow::review_record_as_actor_with_closeout_remote(
             closeout_remote,
             change_id,
             &resolved_patchset_id,
             reviewer,
+            crate::reviewer_identity::ActingReviewer::ACTOR_KIND,
             action,
             comment,
             blocking,
@@ -709,6 +748,7 @@ pub(in crate::primitives) fn workflow_land_apply_action(
     state: &JsonValue,
     change_id: &str,
     review_message: Option<&str>,
+    reviewer: Option<&str>,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
     let _action_range = perfetto_range!("ait.workflow_land.workflow_action");
@@ -756,17 +796,15 @@ pub(in crate::primitives) fn workflow_land_apply_action(
                 &patchset,
                 "Workflow finish apply could not resolve the patchset for task approval.",
             )?;
-            let resolved_reviewer = repo.task_review_reviewer_identity().ok_or_else(|| {
-                "Workflow finish apply needs `ait config` `user_name` before it can auto-record task approval."
-                    .to_string()
-            })?;
+            let resolved_reviewer =
+                crate::reviewer_identity::ActingReviewer::resolve(repo, reviewer)?;
             let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
             let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
             workflow_land_record_task_review_with_closeout_remote(
                 &mut closeout_remote,
                 &patchset,
                 change_id,
-                &resolved_reviewer,
+                &resolved_reviewer.name,
                 &repo_name,
             )
         }
@@ -776,9 +814,8 @@ pub(in crate::primitives) fn workflow_land_apply_action(
                 &patchset,
                 "Workflow finish apply could not resolve the patchset for code review summary.",
             )?;
-            let resolved_reviewer = repo.ai_code_review_reviewer_identity().ok_or_else(|| {
-                "Workflow finish apply needs a reviewer identity before it can record code review evidence.".to_string()
-            })?;
+            let resolved_reviewer =
+                crate::reviewer_identity::ActingReviewer::resolve(repo, reviewer)?;
             let review_message =
                 normalized_text(review_message).ok_or_else(review_message_required_error)?;
             let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
@@ -787,7 +824,7 @@ pub(in crate::primitives) fn workflow_land_apply_action(
                 &mut closeout_remote,
                 &patchset,
                 change_id,
-                &resolved_reviewer,
+                &resolved_reviewer.name,
                 &review_message,
                 &repo_name,
             )
@@ -896,19 +933,19 @@ mod finish_attestation_tests {
     use super::*;
 
     #[test]
-    fn finish_records_attestation_only_from_passing_or_not_required_ci() {
-        assert!(workflow_finish_may_record_attestation(&json!({
-            "patchset_ci_status": {"tests_status": "pass"}
-        })));
-        assert!(workflow_finish_may_record_attestation(&json!({
-            "patchset": {"patchset_ci": {"tests_status": "not_required"}}
-        })));
-        assert!(!workflow_finish_may_record_attestation(&json!({
-            "patchset_ci_status": {"tests_status": "pending"}
-        })));
-        assert!(!workflow_finish_may_record_attestation(&json!({
-            "patchset_ci_status": {"tests_status": "fail"}
-        })));
+    fn finish_records_attestation_only_from_actual_completed_ci_without_existing_statement() {
+        let mut state = json!({"patchset":{"ci":{"run_seq":1,"completed_at_s":1,"tests_status":"pass","suite_result_count":1,"blocking_failure_count":0}}});
+        assert!(workflow_finish_may_record_attestation(&state));
+        for status in ["none", "pending", "fail", "not_required"] {
+            state["patchset"]["ci"]["tests_status"] = json!(status);
+            assert!(!workflow_finish_may_record_attestation(&state));
+        }
+        state["patchset"]["ci"]["tests_status"] = json!("pass");
+        state["patchset"]["ci"]["run_seq"] = json!(0);
+        assert!(!workflow_finish_may_record_attestation(&state));
+        assert!(!workflow_finish_may_record_attestation(
+            &json!({"patchset_ci_status":{"tests_status":"pass"}})
+        ));
         assert!(!workflow_finish_may_record_attestation(&json!({})));
     }
 

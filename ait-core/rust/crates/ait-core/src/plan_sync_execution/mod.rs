@@ -125,7 +125,7 @@ use crate::plan_blob_diff::{
     local_plan_fully_published, plan_heads_equivalent, plan_matches_sync_artifact,
 };
 use crate::plan_filesystem::{
-    list_visible_markdown_artifact_paths, read_json_file, read_utf8_text_file,
+    list_visible_markdown_artifact_paths, read_binary_file, read_json_file, read_utf8_text_file,
     resolve_repo_artifact_path, PlanFilesystemError,
 };
 use crate::plan_http_client::{PlanHttpClientConfig, PlanHttpClientManager};

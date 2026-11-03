@@ -76,6 +76,10 @@ pub struct LocalContentBinaryDb<const WRITE_LAYOUT: u32> {
 mod local_read_adapter;
 mod local_write_adapter;
 mod path_authority_mapping;
+mod raw_batch;
+pub use raw_batch::RawBlobBatchSession;
+mod raw_trees;
+pub use raw_trees::{RawTreeLocator, RawTreeSession};
 mod snapshot_authoring_support;
 mod transaction_coordination;
 

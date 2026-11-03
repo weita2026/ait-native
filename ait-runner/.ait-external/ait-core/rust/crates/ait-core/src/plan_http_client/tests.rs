@@ -9,6 +9,8 @@ use std::time::Duration;
 use super::*;
 use crate::json_support::{json, JsonValue};
 
+mod workflow_package_tests;
+
 fn config() -> PlanHttpClientConfig {
     PlanHttpClientConfig {
         base_url: "https://example.test".to_string(),
@@ -19,6 +21,91 @@ fn config() -> PlanHttpClientConfig {
         retry_backoff_ms: 7,
         pool_max_idle_per_host: 3,
     }
+}
+
+#[test]
+fn typed_review_actor_contract_rejects_unsupported_servers_before_post() {
+    for capabilities in [
+        r#"{}"#,
+        r#"{"operational_capabilities":{"review_actor_identity_v1":false}}"#,
+    ] {
+        let (url, server) = spawn_scripted_http_server(vec![(200, capabilities)]);
+        let mut cfg = config();
+        cfg.base_url = url;
+        let error = resolved_actor_client(cfg)
+            .record_review_as_actor(
+                "RT-1/C-01",
+                "RT-1/C-01/P-01",
+                "Einstein",
+                "bot",
+                "code_review_summary",
+                None,
+                false,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("no review mutation was sent"));
+        assert_eq!(server.join().unwrap(), ["GET"]);
+    }
+}
+
+#[test]
+fn typed_review_actor_contract_checks_all_readback_identity_fields() {
+    const CAPABILITY: &str = r#"{"operational_capabilities":{"review_actor_identity_v1":true}}"#;
+    const EXACT: &str = r#"{"reviewer":"Einstein","reviewer_kind":"bot","patchset_id":"RT-1/C-01/P-01","action":"code_review_summary"}"#;
+    for (readback, mismatch) in [
+        (EXACT, None),
+        (
+            r#"{"reviewer":"Faraday","reviewer_kind":"bot","patchset_id":"RT-1/C-01/P-01","action":"code_review_summary"}"#,
+            Some("reviewer"),
+        ),
+        (
+            r#"{"reviewer":"Einstein","reviewer_kind":"user","patchset_id":"RT-1/C-01/P-01","action":"code_review_summary"}"#,
+            Some("reviewer_kind"),
+        ),
+        (
+            r#"{"reviewer":"Einstein","reviewer_kind":"bot","patchset_id":"RT-1/C-01/P-02","action":"code_review_summary"}"#,
+            Some("patchset_id"),
+        ),
+        (
+            r#"{"reviewer":"Einstein","reviewer_kind":"bot","patchset_id":"RT-1/C-01/P-01","action":"task_approve"}"#,
+            Some("action"),
+        ),
+        (r#"{}"#, Some("reviewer")),
+    ] {
+        let (url, server) = spawn_scripted_http_server(vec![(200, CAPABILITY), (200, readback)]);
+        let mut cfg = config();
+        cfg.base_url = url;
+        let result = resolved_actor_client(cfg).record_review_as_actor(
+            "RT-1/C-01",
+            "RT-1/C-01/P-01",
+            " Einstein ",
+            "bot",
+            "code_review_summary",
+            None,
+            false,
+        );
+        if let Some(field) = mismatch {
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains(field) && error.contains("reconciliation"),
+                "{error}"
+            );
+        } else {
+            assert_eq!(result.unwrap()["reviewer_kind"], "bot");
+        }
+        assert_eq!(server.join().unwrap(), ["GET", "POST"]);
+    }
+    assert!(build_record_review_as_actor_request_spec(
+        &config(),
+        "RT-1/C-01",
+        "RT-1/C-01/P-01",
+        "Einstein",
+        "automation",
+        "approve",
+        None,
+        false
+    )
+    .is_err());
 }
 
 fn find_header_end(bytes: &[u8]) -> Option<usize> {
@@ -238,7 +325,7 @@ fn transport_refuses_a_redirect_to_remote_plaintext() {
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let mut bytes = [0; 4096];
-        stream.read(&mut bytes).unwrap();
+        assert!(stream.read(&mut bytes).unwrap() > 0);
         stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://192.0.2.1/private-session\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
     });
     let mut client =
@@ -333,7 +420,7 @@ fn mutation_never_retries_a_structured_retryable_busy_response() {
     let busy_body =
         r#"{"detail":"ait.binary-db.error.v1|retryable_busy|writer_scope=ServerWorkflow"}"#;
     let (base_url, server) = spawn_scripted_http_server(vec![(503, busy_body)]);
-    let mut manager = PlanHttpClientManager::new(local_http_config(base_url)).unwrap();
+    let mut manager = resolved_actor_client(local_http_config(base_url));
 
     let err = manager
         .create_task("ait-core", "title", "intent", None, None, None, None)
@@ -711,28 +798,32 @@ fn list_plans_request_spec_normalizes_optional_query() {
 #[test]
 fn atomic_task_start_request_spec_preserves_one_repository_scoped_payload() {
     let payload = json!({
-        "contract": "task-start-atomic/v1",
+        "contract": "task-start-atomic/v2",
+        "actor_key_index":0,
         "idempotency_key": "task-start-1",
         "plan_item_ref": "card/item",
         "plan": {"action": "existing", "plan_id": "PR-1", "plan_revision_id": "plan-revision:2"},
         "task": {"title": "Atomic task", "intent": "Use one mutation"},
         "change": {"title": "Atomic change", "base_line": "main"}
     });
-    let spec = build_start_plan_bound_task_request_spec(&config(), " repo/a ", &payload).unwrap();
+    let spec =
+        build_start_plan_bound_task_request_spec(&config(), 0, " repo/a ", &payload).unwrap();
 
     assert_eq!(spec.method, "POST");
     assert_eq!(spec.path, "/v1/native/repository-authorities/7/task-start");
     assert_eq!(spec.body.as_ref(), Some(&payload));
     assert!(build_start_plan_bound_task_request_spec(
         &config(),
+        0,
         "repo",
         &json!({"contract": "task-start-atomic/v0"})
     )
     .unwrap_err()
     .to_string()
-    .contains("task-start-atomic/v1"));
+    .contains("task-start-atomic/v2"));
     assert!(build_start_plan_bound_task_request_spec(
         &config(),
+        0,
         "repo",
         &JsonValue::Array(Vec::new())
     )
@@ -1433,6 +1524,7 @@ fn plan_linkage_request_specs_match_native_rust_contract() {
 fn create_plan_request_spec_omits_caller_selected_plan_identity() {
     let spec = build_create_plan_request_spec(
         &config(),
+        0,
         "housekeeper",
         "Plan title",
         "docs/sprints/demo.md",
@@ -1487,6 +1579,7 @@ fn repository_scoped_plan_and_remote_sync_specs_use_configured_repository_index(
     );
     let create = build_create_plan_request_spec(
         &scoped,
+        0,
         "ignored-name",
         "Plan",
         "docs/plan.md",
@@ -1536,6 +1629,7 @@ fn create_plan_request_spec_carries_packed_artifact_locator() {
     });
     let spec = build_create_plan_request_spec(
         &config(),
+        0,
         "housekeeper",
         "Plan title",
         "docs/sprints/demo.md",
@@ -1560,6 +1654,7 @@ fn create_plan_request_spec_carries_packed_artifact_locator() {
 fn revise_plan_request_spec_omits_empty_optional_fields() {
     let spec = build_revise_plan_request_spec(
         &config(),
+        0,
         "PL-123",
         "docs/sprints/demo.md",
         Some("demo/root"),
@@ -1586,12 +1681,13 @@ fn revise_plan_request_spec_omits_empty_optional_fields() {
 #[test]
 fn update_status_and_artifact_specs_are_shaped_correctly() {
     let update_spec =
-        build_update_plan_status_request_spec(&config(), "PL-123", "archived").unwrap();
+        build_update_plan_status_request_spec(&config(), 0, "PL-123", "archived").unwrap();
     assert_eq!(update_spec.method, "PATCH");
     assert_eq!(update_spec.body.unwrap()["status"], "archived");
 
     let artifact_spec = build_put_plan_revision_artifacts_request_spec(
         &config(),
+        0,
         "PL-123",
         "PR-2",
         &[JsonValue::Object(Map::from_iter([(
@@ -1856,4 +1952,10 @@ fn bounded_bytes_failure_keeps_stats_for_every_started_worker() {
     assert_eq!(manager.inspect().request_count, 3);
     assert_eq!(manager.inspect().retry_count, 0);
     assert_eq!(server.join().expect("join failure server").len(), 3);
+}
+
+fn resolved_actor_client(config: PlanHttpClientConfig) -> PlanHttpClientManager {
+    let mut manager = PlanHttpClientManager::new(config).unwrap();
+    manager.actor_context = manager.config.repository_index.map(|index| (index, 0));
+    manager
 }

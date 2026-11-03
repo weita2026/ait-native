@@ -82,7 +82,6 @@ pub(crate) fn workflow_land_full_steps(
     let landing_summary = optional_obj_field(facts, "landing_summary");
     let worktree_retarget = optional_obj_field(facts, "worktree_retarget");
     let patchset_refresh = optional_obj_field(facts, "patchset_refresh");
-    let change = field_obj(facts, "change");
     let publish_command = command_hint(command_hints, "publish_command");
     let refresh_command = if patchset_refresh
         .as_ref()
@@ -311,32 +310,20 @@ pub(crate) fn workflow_land_full_steps(
             &detail,
             attestation_command,
         ));
-    } else if !string_field(facts, "tests_state").is_empty()
-        && !matches!(
-            string_field(facts, "tests_state").as_str(),
-            "pass" | "not_required"
-        )
+    } else if !attestation
+        .as_ref()
+        .and_then(|row| {
+            crate::attest_json::RemoteAttestationStatement::from_readback(&JsonValue::Object(
+                row.clone(),
+            ))
+            .ok()
+        })
+        .is_some_and(|statement| {
+            statement.verification_state == crate::attest_json::RemoteVerificationState::Pass
+                && !statement.revoked
+        })
     {
-        let tests_state = string_field(facts, "tests_state");
-        let step_status = if tests_state == "pending" {
-            "pending"
-        } else {
-            "blocked"
-        };
-        let detail = if patchset_ci_command.is_some() {
-            format!(
-                "Patchset CI currently reports tests `{tests_state}` for patchset `{patchset_id}`."
-            )
-        } else {
-            format!("Tests are currently `{tests_state}` for patchset `{patchset_id}`.")
-        };
-        steps.push(workflow_land_step(
-            "attestation",
-            "Attestation",
-            step_status,
-            &detail,
-            attestation_command,
-        ));
+        steps.push(workflow_land_step("attestation","Attestation","blocked","The compact verification statement is unknown, pending, failed, revoked or incompatible. Actual Patchset CI is a separate requirement.",attestation_command));
     } else {
         let attestation_id = optional_string_field(attestation.as_ref().unwrap(), "attestation_id")
             .unwrap_or_default();
@@ -380,18 +367,18 @@ pub(crate) fn workflow_land_full_steps(
         let team_review_state = if int_field(facts, "team_review_approvals") > 0 {
             format!("{} approval(s)", int_field(facts, "team_review_approvals"))
         } else if command_hint(command_hints, "team_review_command").is_some() {
-            "available in team_remote".to_string()
+            "available with Agent Teams".to_string()
         } else {
-            "unavailable outside team_remote".to_string()
+            "unavailable while Agent Teams is disabled".to_string()
         };
         steps.push(workflow_land_step("review", "Review", "blocked", &format!("Code review: {code_review_state}; Task review: {task_review_state}; Team review: {team_review_state}. Blocking review feedback exists for Task `{task_id}`."), review_command));
     } else if int_field(facts, "task_review_approvals") <= 0 {
         let team_review_state = if int_field(facts, "team_review_approvals") > 0 {
             format!("{} approval(s)", int_field(facts, "team_review_approvals"))
         } else if command_hint(command_hints, "team_review_command").is_some() {
-            "available in team_remote".to_string()
+            "available with Agent Teams".to_string()
         } else {
-            "unavailable outside team_remote".to_string()
+            "unavailable while Agent Teams is disabled".to_string()
         };
         let detail = if task_review_required {
             format!(
@@ -401,7 +388,7 @@ pub(crate) fn workflow_land_full_steps(
             format!("Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. Reviewer-owned `ait workflow finish --apply` or a successful direct `ait review code submit` can record `task_approve` as `{reviewer}` before atomic Task closeout.")
         } else {
             format!(
-                "Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. `task_review=automatic` requires `ait config` `user_name` before approval can be recorded."
+                "Code review: {code_review_state}; Task review: pending; Team review: {team_review_state}. Supply the acting Reviewer's own name with `--reviewer` when recording automatic approval."
             )
         };
         steps.push(workflow_land_step(
@@ -420,9 +407,9 @@ pub(crate) fn workflow_land_full_steps(
         let team_review_state = if int_field(facts, "team_review_approvals") > 0 {
             format!("{} approval(s)", int_field(facts, "team_review_approvals"))
         } else if command_hint(command_hints, "team_review_command").is_some() {
-            "available in team_remote".to_string()
+            "available with Agent Teams".to_string()
         } else {
-            "unavailable outside team_remote".to_string()
+            "unavailable while Agent Teams is disabled".to_string()
         };
         steps.push(workflow_land_step("review", "Review", "done", &format!("Code review: {code_review_state}; Task review: {task_review_state}; Team review: {team_review_state}."), None));
     }
@@ -475,8 +462,9 @@ pub(crate) fn workflow_land_full_steps(
         steps.push(workflow_land_step("policy", "Policy", "advisory", &format!("Policy is folded into `task finish` for Patchset `{patchset_id}`; finish preflight will run the authoritative evaluation."), None));
     }
 
-    let change_status = optional_string_field(&change, "status").unwrap_or_default();
-    if change_status == "landed" {
+    if crate::workflow_closeout_model_support::workflow_task_has_successful_receipt(&field_obj(
+        facts, "task",
+    )) {
         steps.push(workflow_land_step(
             "land",
             "Finish",
@@ -623,14 +611,16 @@ pub(crate) fn workflow_land_phase_steps(facts: &JsonValue) -> Vec<JsonValue> {
                 None,
             ),
         );
-        let task_step = if string_field(&field_obj(facts, "change"), "status") == "landed"
-            && string_field(&field_obj(facts, "task"), "status") != "completed"
-        {
-            workflow_land_step(
+        let task_step =
+            if crate::workflow_closeout_model_support::workflow_task_has_successful_receipt(
+                &field_obj(facts, "task"),
+            ) && string_field(&field_obj(facts, "task"), "status") != "completed"
+            {
+                workflow_land_step(
                 "task",
                 "Task",
                 "pending",
-                "The Change is already applied; run task finish again to close the Task slice.",
+                "The Task receipt is already authoritative; run task finish again to resume closeout.",
                 optional_string_field(facts, "state_next_action_command").or_else(|| {
                     Some(format!(
                         "ait task finish {}",
@@ -639,27 +629,27 @@ pub(crate) fn workflow_land_phase_steps(facts: &JsonValue) -> Vec<JsonValue> {
                     ))
                 }),
             )
-        } else if string_field(&field_obj(facts, "task"), "status") == "completed" {
-            workflow_land_step(
-                "task",
-                "Task",
-                "done",
-                &format!(
-                    "Task `{}` is already completed.",
-                    optional_string_field(&field_obj(facts, "task"), "task_id")
-                        .unwrap_or_else(|| "unknown".to_string())
-                ),
-                None,
-            )
-        } else {
-            workflow_land_step(
-                "task",
-                "Task",
-                "waiting",
-                "Task completion follows a successful finish.",
-                None,
-            )
-        };
+            } else if string_field(&field_obj(facts, "task"), "status") == "completed" {
+                workflow_land_step(
+                    "task",
+                    "Task",
+                    "done",
+                    &format!(
+                        "Task `{}` is already completed.",
+                        optional_string_field(&field_obj(facts, "task"), "task_id")
+                            .unwrap_or_else(|| "unknown".to_string())
+                    ),
+                    None,
+                )
+            } else {
+                workflow_land_step(
+                    "task",
+                    "Task",
+                    "waiting",
+                    "Task completion follows a successful finish.",
+                    None,
+                )
+            };
         vec![ready_step, review_step, policy_step, land_step, task_step]
     } else {
         vec![
@@ -688,7 +678,6 @@ pub(crate) fn workflow_land_suggested_commands(
     let next_action_code = optional_string_field(next_action, "code").unwrap_or_default();
     let patchset = optional_obj_field(facts, "patchset");
     let requires_code_review_summary = bool_field(facts, "requires_code_review_summary");
-    let change = field_obj(facts, "change");
     let mut candidates: Vec<Option<String>> = Vec::new();
     if next_action_code == "land_blocked" {
         candidates.extend([
@@ -757,7 +746,9 @@ pub(crate) fn workflow_land_suggested_commands(
             } else {
                 None
             },
-            if string_field(&change, "status") == "landed" {
+            if crate::workflow_closeout_model_support::workflow_task_has_successful_receipt(
+                &field_obj(facts, "task"),
+            ) {
                 command_hint(commands, "task_land_command")
             } else {
                 None

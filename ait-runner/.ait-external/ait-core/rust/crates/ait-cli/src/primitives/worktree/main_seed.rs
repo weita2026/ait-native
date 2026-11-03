@@ -66,9 +66,8 @@ fn validate_workspace_cargo_projection_for_snapshot(
             config_path.display()
         ));
     };
-    if actual != current_actual
-        || normalize_workspace_cargo_projection_target(workspace_path, &actual)
-            != normalize_workspace_cargo_projection_target(workspace_path, &expected)
+    if normalize_workspace_cargo_projection_target(workspace_path, &current_actual)
+        != normalize_workspace_cargo_projection_target(workspace_path, &expected)
     {
         return Err(format!(
             "Managed Cargo file does not match Snapshot {target_snapshot_id}: expected_sha256={}, actual_sha256={}.",
@@ -419,7 +418,7 @@ fn prepare_main_seed_backup_slot(
         return Ok(None);
     }
     if !path_exists_or_directory_link(seed_path) {
-        fs::rename(&backup_path, seed_path).map_err(|err| {
+        rename_seed_directory(&backup_path, seed_path).map_err(|err| {
             format!(
                 "Failed to restore retained CLI main-seed backup {} to {}: {err}",
                 backup_path.display(),
@@ -437,7 +436,7 @@ fn prepare_main_seed_backup_slot(
         if restored_is_valid {
             return Ok(Some("restored_retained_backup"));
         }
-        let rollback_error = fs::rename(seed_path, &backup_path).err();
+        let rollback_error = rename_seed_directory(seed_path, &backup_path).err();
         return Err(match rollback_error {
             Some(rollback_error) => format!(
                 "Retained CLI main-seed backup failed validation after restore, and moving it back to {} failed: {rollback_error}",
@@ -482,7 +481,184 @@ fn local_line_generation_matches(
     Ok(local_line_head_snapshot_id(repo, line_name)?.as_deref() == Some(target_snapshot_id))
 }
 
+#[derive(Default)]
+struct WritableSeedRoots {
+    #[cfg(target_os = "macos")]
+    roots: Vec<(fs::File, fs::Permissions, PathBuf)>,
+}
+
+impl WritableSeedRoots {
+    fn new(paths: &[&Path]) -> Result<Self, String> {
+        #[cfg(target_os = "macos")]
+        let mut guard = Self::default();
+        #[cfg(not(target_os = "macos"))]
+        let guard = Self::default();
+        #[cfg(not(target_os = "macos"))]
+        let _ = paths;
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            for path in paths {
+                let metadata = match fs::symlink_metadata(path) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => {
+                        return Err(format!(
+                            "Failed to inspect main-seed root {}: {error}",
+                            path.display()
+                        ))
+                    }
+                };
+                if !metadata.is_dir() || metadata.permissions().mode() & 0o200 != 0 {
+                    continue;
+                }
+                // Darwin can require add-subdirectory permission on the source
+                // directory even for a same-parent rename. Unlock only this
+                // physical root; descendants and symlink targets stay sealed.
+                let directory = fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+                    .open(path)
+                    .map_err(|error| {
+                        format!("Failed to open main-seed root {}: {error}", path.display())
+                    })?;
+                let original = directory
+                    .metadata()
+                    .map_err(|error| error.to_string())?
+                    .permissions();
+                let writable = fs::Permissions::from_mode(original.mode() | 0o200);
+                guard.roots.push((directory, original, path.to_path_buf()));
+                guard
+                    .roots
+                    .last()
+                    .unwrap()
+                    .0
+                    .set_permissions(writable)
+                    .map_err(|error| {
+                        format!(
+                            "Failed to unlock main-seed root {}: {error}",
+                            path.display()
+                        )
+                    })?;
+            }
+        }
+        Ok(guard)
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            let errors: Vec<String> = self
+                .roots
+                .iter()
+                .filter_map(|(directory, original, path)| {
+                    directory
+                        .set_permissions(original.clone())
+                        .err()
+                        .map(|error| format!("root originally at {}: {error}", path.display()))
+                })
+                .collect();
+            if !errors.is_empty() {
+                return Err(errors.join("; "));
+            }
+            self.roots.clear();
+        }
+        Ok(())
+    }
+}
+
+impl Drop for WritableSeedRoots {
+    fn drop(&mut self) {
+        // The same descriptors still name these roots after any swap/rollback.
+        // Explicit restoration reports errors; unwinding also makes a bounded
+        // best-effort restoration without touching descendant permissions.
+        let _ = self.restore();
+    }
+}
+
+fn rename_seed_directory(source: &Path, target: &Path) -> Result<(), String> {
+    let mut roots = WritableSeedRoots::new(&[source])?;
+    let moved = fs::rename(source, target);
+    let restored = roots.restore();
+    match (moved, restored) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(error)) => Err(format!(
+            "Main-seed move completed at {}, but root permission restoration failed: {error}",
+            target.display()
+        )),
+        (Err(error), Ok(())) => Err(error.to_string()),
+        (Err(error), Err(restore_error)) => Err(format!(
+            "{error}; root permission restoration failed: {restore_error}"
+        )),
+    }
+}
+
 fn atomic_install_seed_directory_with<R, V>(
+    staging_path: &Path,
+    seed_path: &Path,
+    backup_path: &Path,
+    rename: R,
+    validate: V,
+) -> Result<bool, String>
+where
+    R: FnMut(&Path, &Path) -> std::io::Result<()>,
+    V: FnOnce() -> Result<(), String>,
+{
+    atomic_install_seed_directory_with_restore(
+        staging_path,
+        seed_path,
+        backup_path,
+        rename,
+        validate,
+        WritableSeedRoots::restore,
+    )
+}
+
+fn atomic_install_seed_directory_with_restore<R, V, S>(
+    staging_path: &Path,
+    seed_path: &Path,
+    backup_path: &Path,
+    rename: R,
+    validate: V,
+    restore: S,
+) -> Result<bool, String>
+where
+    R: FnMut(&Path, &Path) -> std::io::Result<()>,
+    V: FnOnce() -> Result<(), String>,
+    S: FnOnce(&mut WritableSeedRoots) -> Result<(), String>,
+{
+    let mut roots = WritableSeedRoots::new(&[staging_path, seed_path])?;
+    let swapped = atomic_install_seed_directory_raw_with(
+        staging_path,
+        seed_path,
+        backup_path,
+        rename,
+        validate,
+    );
+    // Permission restoration is a separate phase, never a synthetic rename
+    // failure. A completed swap and its prior-seed backup remain authoritative.
+    let restored = restore(&mut roots);
+    match (swapped, restored) {
+        (Ok(previous), Ok(())) => Ok(previous),
+        (Ok(previous), Err(error)) => {
+            let prior = if previous {
+                format!("prior seed retained at {}", backup_path.display())
+            } else {
+                "no previous seed".to_string()
+            };
+            Err(format!(
+                "Main-seed swap completed at {}; {prior}; root permission restoration failed: {error}",
+                seed_path.display()
+            ))
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(restore_error)) => Err(format!(
+            "{error}; root permission restoration failed: {restore_error}"
+        )),
+    }
+}
+
+fn atomic_install_seed_directory_raw_with<R, V>(
     staging_path: &Path,
     seed_path: &Path,
     backup_path: &Path,
@@ -567,9 +743,72 @@ where
         staging_path,
         seed_path,
         backup_path,
-        |source, target| fs::rename(source, target),
+        |source, target| {
+            #[cfg(all(any(test, debug_assertions), target_os = "macos"))]
+            {
+                let result = fs::rename(source, target);
+                if let Err(error) = &result {
+                    trace_failed_seed_rename(source, target, error);
+                }
+                result
+            }
+            #[cfg(not(all(any(test, debug_assertions), target_os = "macos")))]
+            {
+                fs::rename(source, target)
+            }
+        },
         validate,
     )
+}
+
+#[cfg(all(any(test, debug_assertions), target_os = "macos"))]
+fn trace_failed_seed_rename(source: &Path, target: &Path, error: &std::io::Error) {
+    use std::os::macos::fs::MetadataExt as _;
+    use std::os::unix::fs::MetadataExt as _;
+
+    eprintln!(
+        "main-seed rename failed: source={} target={} kind={:?} raw_os_error={:?}: {error}",
+        source.display(),
+        target.display(),
+        error.kind(),
+        error.raw_os_error(),
+    );
+    let paths = [
+        ("source", Some(source)),
+        ("target", Some(target)),
+        ("source_parent", source.parent()),
+        ("target_parent", target.parent()),
+    ];
+    for (label, path) in paths {
+        let Some(path) = path else { continue };
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => eprintln!(
+                "{label}={} mode={:#o} uid={} gid={} flags={:#x} symlink={}",
+                path.display(),
+                metadata.mode(),
+                metadata.uid(),
+                metadata.gid(),
+                metadata.st_flags(),
+                metadata.file_type().is_symlink(),
+            ),
+            Err(error) => eprintln!("{label}={}: metadata error: {error}", path.display()),
+        }
+    }
+    // Keep ACLs and extended attributes in the failing operation's original stream.
+    // Inspection must never replace the rename error or change permissions.
+    match std::process::Command::new("/bin/ls")
+        .arg("-ldeO@")
+        .args(paths.into_iter().filter_map(|(_, path)| path))
+        .output()
+    {
+        Ok(output) => eprintln!(
+            "seed rename ACL/flags: status={:?}\n{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ),
+        Err(error) => eprintln!("seed rename ACL/flags inspection failed: {error}"),
+    }
 }
 
 fn restore_promoted_worktree_source(
@@ -1925,6 +2164,243 @@ mod selected_binary_main_seed_tests {
         assert!(error.contains("Managed Cargo file does not match Snapshot"));
     }
 
+    #[cfg(target_os = "macos")]
+    mod darwin_seed_rename {
+        use super::*;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        struct SwapFixture {
+            temp: WritableTempDir,
+            seed: PathBuf,
+            staged: PathBuf,
+            backup: PathBuf,
+        }
+
+        impl SwapFixture {
+            fn new() -> Self {
+                let temp = WritableTempDir::new();
+                fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o755)).unwrap();
+                let fixture = Self {
+                    seed: temp.path().join("seed"),
+                    staged: temp.path().join("staged"),
+                    backup: temp.path().join("backup"),
+                    temp,
+                };
+                for (root, value) in [(&fixture.seed, "old"), (&fixture.staged, "new")] {
+                    write_file(&root.join("nested/value"), value);
+                    set_tree_readonly(root).unwrap();
+                }
+                fixture
+            }
+
+            fn value(&self, root: &Path) -> String {
+                fs::read_to_string(root.join("nested/value")).unwrap()
+            }
+
+            fn assert_readonly(&self, root: &Path, root_mode: u32) {
+                assert_eq!(mode(root), root_mode);
+                assert_eq!(mode(&root.join("nested")), 0o555);
+                assert_eq!(mode(&root.join("nested/value")), 0o444);
+                assert_eq!(mode(self.temp.path()), 0o755);
+            }
+        }
+
+        fn mode(path: &Path) -> u32 {
+            fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777
+        }
+
+        // Model the source-directory add-subdirectory authorization recorded in
+        // the hosted failure; every permitted move still uses the real syscall.
+        fn authorized_rename(source: &Path, target: &Path) -> std::io::Result<()> {
+            if fs::symlink_metadata(source)?.is_dir() && mode(source) & 0o200 == 0 {
+                return Err(std::io::Error::from_raw_os_error(13));
+            }
+            fs::rename(source, target)
+        }
+
+        #[test]
+        fn source_write_gate_allows_swap_and_restores_exact_root_modes_only() {
+            let fixture = SwapFixture::new();
+            let external = fixture.temp.path().join("external");
+            write_file(&external.join("value"), "external");
+            set_tree_readonly(&external).unwrap();
+            fs::set_permissions(&fixture.staged, fs::Permissions::from_mode(0o755)).unwrap();
+            symlink(&external, fixture.staged.join("external-link")).unwrap();
+            fs::set_permissions(&fixture.staged, fs::Permissions::from_mode(0o550)).unwrap();
+            fs::set_permissions(&fixture.seed, fs::Permissions::from_mode(0o551)).unwrap();
+            assert_eq!(
+                authorized_rename(&fixture.staged, &fixture.seed)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(13)
+            );
+            let previous = atomic_install_seed_directory_with(
+                &fixture.staged,
+                &fixture.seed,
+                &fixture.backup,
+                authorized_rename,
+                || {
+                    assert_eq!(fixture.value(&fixture.seed), "new");
+                    assert_eq!(mode(&fixture.seed.join("nested/value")), 0o444);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert!(previous);
+            fixture.assert_readonly(&fixture.seed, 0o550);
+            fixture.assert_readonly(&fixture.backup, 0o551);
+            assert_eq!(fixture.value(&fixture.backup), "old");
+            assert_eq!(mode(&external), 0o555);
+            assert_eq!(mode(&external.join("value")), 0o444);
+            assert_eq!(
+                fs::read_to_string(external.join("value")).unwrap(),
+                "external"
+            );
+            assert!(fs::symlink_metadata(fixture.seed.join("external-link"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        }
+
+        #[test]
+        fn source_write_gate_preserves_readonly_roots_on_install_failure() {
+            let fixture = SwapFixture::new();
+            let mut moves = 0;
+            let error = atomic_install_seed_directory_with(
+                &fixture.staged,
+                &fixture.seed,
+                &fixture.backup,
+                |source, target| {
+                    moves += 1;
+                    if moves == 2 {
+                        return Err(std::io::Error::from_raw_os_error(18));
+                    }
+                    authorized_rename(source, target)
+                },
+                || Ok(()),
+            )
+            .unwrap_err();
+            assert!(error.contains("Failed to install staged main seed"));
+            assert_eq!(moves, 3);
+            assert_eq!(fixture.value(&fixture.seed), "old");
+            assert_eq!(fixture.value(&fixture.staged), "new");
+            fixture.assert_readonly(&fixture.seed, 0o555);
+            fixture.assert_readonly(&fixture.staged, 0o555);
+            assert!(!fixture.backup.exists());
+        }
+
+        #[test]
+        fn source_write_gate_preserves_readonly_roots_on_validation_rollback() {
+            let fixture = SwapFixture::new();
+            let error = atomic_install_seed_directory_with(
+                &fixture.staged,
+                &fixture.seed,
+                &fixture.backup,
+                authorized_rename,
+                || Err("injected validation failure".into()),
+            )
+            .unwrap_err();
+            assert!(error.contains("post-swap validation"));
+            assert_eq!(fixture.value(&fixture.seed), "old");
+            assert_eq!(fixture.value(&fixture.staged), "new");
+            fixture.assert_readonly(&fixture.seed, 0o555);
+            fixture.assert_readonly(&fixture.staged, 0o555);
+            assert!(!fixture.backup.exists());
+        }
+
+        #[test]
+        fn restoration_failure_reports_completed_swap_without_restoring_over_it() {
+            let fixture = SwapFixture::new();
+            let mut moves = 0;
+            let error = atomic_install_seed_directory_with_restore(
+                &fixture.staged,
+                &fixture.seed,
+                &fixture.backup,
+                |source, target| {
+                    moves += 1;
+                    authorized_rename(source, target)
+                },
+                || Ok(()),
+                |_| Err("injected mode restoration failure".into()),
+            )
+            .unwrap_err();
+            assert!(error.contains("swap completed"));
+            assert!(error.contains("prior seed retained"));
+            assert_eq!(moves, 2);
+            assert!(!fixture.staged.exists());
+            assert_eq!(fixture.value(&fixture.seed), "new");
+            assert_eq!(fixture.value(&fixture.backup), "old");
+            fixture.assert_readonly(&fixture.seed, 0o555);
+            fixture.assert_readonly(&fixture.backup, 0o555);
+        }
+
+        #[test]
+        fn initial_install_restoration_failure_preserves_the_completed_move() {
+            let fixture = SwapFixture::new();
+            remove_tree_force(&fixture.seed).unwrap();
+            let error = atomic_install_seed_directory_with_restore(
+                &fixture.staged,
+                &fixture.seed,
+                &fixture.backup,
+                authorized_rename,
+                || Ok(()),
+                |_| Err("injected initial mode restoration failure".into()),
+            )
+            .unwrap_err();
+            assert!(error.contains("swap completed"));
+            assert!(error.contains("no previous seed"));
+            assert!(!fixture.staged.exists());
+            assert!(!fixture.backup.exists());
+            assert_eq!(fixture.value(&fixture.seed), "new");
+            fixture.assert_readonly(&fixture.seed, 0o555);
+        }
+
+        #[test]
+        fn rename_guard_does_not_follow_a_source_symlink() {
+            let fixture = SwapFixture::new();
+            let source = fixture.temp.path().join("source-link");
+            let target = fixture.temp.path().join("target-link");
+            symlink(&fixture.staged, &source).unwrap();
+            rename_seed_directory(&source, &target).unwrap();
+            assert_eq!(fs::read_link(target).unwrap(), fixture.staged);
+            fixture.assert_readonly(&fixture.staged, 0o555);
+        }
+
+        #[test]
+        fn actual_same_parent_rename_probe_keeps_descendants_readonly() {
+            let fixture = SwapFixture::new();
+            let target = fixture.temp.path().join("probe-target");
+            let baseline = fs::rename(&fixture.staged, &target);
+            eprintln!("seed-rename-mode-probe source=0555 parent=0755 baseline={baseline:?}");
+            if let Err(error) = &baseline {
+                trace_failed_seed_rename(&fixture.staged, &target, error);
+            }
+            match baseline {
+                Ok(()) => fs::rename(&target, &fixture.staged).unwrap(),
+                Err(error) => assert_eq!(error.raw_os_error(), Some(13)),
+            }
+            assert!(!target.exists());
+            fixture.assert_readonly(&fixture.staged, 0o555);
+            atomic_install_seed_directory_with(
+                &fixture.staged,
+                &target,
+                &fixture.backup,
+                |source, target| {
+                    eprintln!(
+                        "seed-rename-mode-probe guarded_source_before_syscall={:o}",
+                        mode(source)
+                    );
+                    fs::rename(source, target)
+                },
+                || Ok(()),
+            )
+            .unwrap();
+            fixture.assert_readonly(&target, 0o555);
+            assert_eq!(fixture.value(&target), "new");
+            eprintln!("seed-rename-mode-probe guarded=Ok root_after=0555 descendants=0555/0444");
+        }
+    }
+
     #[test]
     fn atomic_seed_swap_rolls_back_previous_seed_after_validation_failure() {
         let temp = TempDir::new().expect("swap tempdir");
@@ -1996,10 +2472,10 @@ mod selected_binary_main_seed_tests {
             "main",
             &snapshot_id,
         );
-        assert_eq!(promoted["status"], json!("promoted"));
+        assert_eq!(promoted["status"], json!("promoted"), "{promoted:#?}");
         let backup_path = main_seed_backup_path(&seed_path);
 
-        fs::rename(&seed_path, &backup_path).expect("simulate interrupted swap");
+        rename_seed_directory(&seed_path, &backup_path).expect("simulate interrupted swap");
         let recovery =
             prepare_main_seed_backup_slot(&repo, &seed_path).expect("restore retained backup");
         assert_eq!(recovery, Some("restored_retained_backup"));
@@ -2159,7 +2635,7 @@ mod selected_binary_main_seed_tests {
             &snapshot_id,
         );
 
-        assert_eq!(refreshed["status"], json!("refreshed"));
+        assert_eq!(refreshed["status"], json!("refreshed"), "{refreshed:#?}");
         assert_eq!(refreshed["fallback_used"], json!(true));
         assert_eq!(
             refreshed["fallback_reason"],
@@ -2283,7 +2759,7 @@ mod selected_binary_main_seed_tests {
             &snapshot_id,
         );
 
-        assert_eq!(refreshed["status"], json!("refreshed"));
+        assert_eq!(refreshed["status"], json!("refreshed"), "{refreshed:#?}");
         assert_eq!(refreshed["fallback_used"], json!(true));
         assert_eq!(refreshed["fallback_reason"], json!("task_not_completed"));
         assert!(worktree_path.is_dir());
@@ -2432,6 +2908,59 @@ mod selected_binary_main_seed_tests {
         assert_eq!(
             fs::read_to_string(seed_path.join("nested/file.txt")).expect("seed nested"),
             "seed nested\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn main_seed_materialization_preserves_links_without_chmodding_their_targets() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let (temp, repo) = binary_snapshot_repo();
+        let root = repo.workspace_root();
+        write_file(&root.join("secret.txt"), "secret");
+        set_portable_mode(&root.join("secret.txt"), 0o600).unwrap();
+        symlink("secret.txt", root.join("alias")).unwrap();
+        symlink("missing", root.join("dangling")).unwrap();
+        let snapshot = repo
+            .local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&root)
+            .unwrap()
+            .create_snapshot("fixture-ait", "main", Some("seed links"), false)
+            .unwrap();
+        let snapshot_id = required_string_field(&snapshot, "snapshot_id").unwrap();
+        let rules = snapshot_rules_state_from_snapshot_id(&repo, Some(&snapshot_id)).unwrap();
+        let seed_path = temp.path().join("main-seed-links");
+        let seed = materialize_worktree_runtime_layout(
+            &repo,
+            "main-seed-links",
+            &seed_path,
+            "main",
+            "2026-10-21T00:00:00Z",
+            None,
+        )
+        .unwrap();
+        materialize_main_seed_snapshot(&seed, &snapshot_id, None, &rules, 0.0).unwrap();
+        for (name, target) in [("alias", "secret.txt"), ("dangling", "missing")] {
+            assert!(fs::symlink_metadata(seed_path.join(name))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(
+                fs::read_link(seed_path.join(name)).unwrap(),
+                Path::new(target)
+            );
+        }
+        assert_eq!(
+            fs::metadata(seed_path.join("secret.txt"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o400
+        );
+        assert!(
+            validate_main_seed_baseline(&seed, &snapshot_id, rules.text.as_deref())
+                .unwrap()
+                .clean
         );
     }
 

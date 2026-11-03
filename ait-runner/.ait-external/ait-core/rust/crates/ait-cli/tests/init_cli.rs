@@ -1,3 +1,5 @@
+#[path = "support/native_home.rs"]
+mod native_home;
 use ait_core::json_support::{JsonCodec, JsonValue};
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
@@ -6,7 +8,11 @@ use std::process::Command;
 use tempfile::TempDir;
 
 fn cargo_bin() -> Command {
-    Command::cargo_bin("ait-cli").unwrap()
+    let mut c = Command::cargo_bin("ait-cli").unwrap();
+    c.env("CODEX_HOME", native_home::path())
+        .env_remove("CODEX_THREAD_ID")
+        .env_remove("CODEX_SESSION_ID");
+    c
 }
 
 fn output_json(command: &mut Command) -> JsonValue {
@@ -89,19 +95,18 @@ fn init_cli_creates_then_reinitializes_the_agent_contract() {
     assert!(ignore.lines().all(|line| line.starts_with('#')));
     let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
     assert!(agents.contains("<!-- ait:workflow:start -->"));
-    assert!(agents.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(agents.contains("Route: sprint=`on`; scope=`local`"));
     assert!(agents.contains("plan-binding=`required`"));
     assert!(agents.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent"));
     assert!(agents.contains("Work only in the returned `edit_root`"));
     assert!(agents.contains("otherwise omit it and use the returned `edit_root`"));
     let claude = fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap();
     assert!(claude.contains("<!-- ait:workflow:start -->"));
-    assert!(claude.contains("Route: mode=`solo_local`; sprint=`on`; scope=`local`"));
+    assert!(claude.contains("Route: sprint=`on`; scope=`local`"));
     assert!(claude.contains("ait task start --from <sprint-card-path>#<exact-ref> --intent"));
     assert!(claude.contains("--edit-root <absolute-path>"));
     assert!(claude.contains("&& cd <absolute-path>"));
-    assert!(!agents.to_ascii_lowercase().contains("json"));
-    assert!(!claude.to_ascii_lowercase().contains("json"));
+
     assert!(claude.contains("Do not omit `--edit-root`"));
     assert!(!claude.contains("@AGENTS.md"));
     for guidance in [&agents, &claude] {

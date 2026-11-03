@@ -71,7 +71,18 @@ class _ArgumentParser(argparse.ArgumentParser):
             return super().parse_known_args(arguments, namespace)
         self._parsing_intermixed = True
         try:
-            return self.parse_known_intermixed_args(arguments, namespace)
+            literal_arguments = []
+            if "--" in arguments:
+                boundary = arguments.index("--")
+                arguments, literal_arguments = arguments[:boundary], arguments[boundary + 1:]
+            parsed, extras = self.parse_known_intermixed_args(arguments, namespace)
+            if literal_arguments:
+                # Both intermixed grammars have one variadic string positional.
+                # Keep its literal tail out of Python 3.11's second option pass.
+                positional, = self._get_positional_actions()
+                values = getattr(parsed, positional.dest)
+                setattr(parsed, positional.dest, [*values, *literal_arguments])
+            return parsed, extras
         finally:
             self._parsing_intermixed = False
 

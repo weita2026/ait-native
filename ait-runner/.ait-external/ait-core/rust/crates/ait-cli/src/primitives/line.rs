@@ -538,8 +538,7 @@ fn line_history_preservation(
             return Ok(Some(format!("local-line:{candidate_name}")));
         }
     }
-    let tag_store =
-        FilesystemTagStore::new(repo.authoritative_repo_root().to_string_lossy().as_ref())?;
+    let tag_store = crate::tag_surface::tag_store(repo)?;
     for tag in tag_store.list_tags()? {
         if snapshot_distance_if_ancestor(
             repo,

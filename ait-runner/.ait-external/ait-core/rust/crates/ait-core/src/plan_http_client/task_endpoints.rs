@@ -185,6 +185,7 @@ impl PlanHttpClientManager {
         pack_id: &str,
         pack_bytes: &[u8],
     ) -> PlanHttpClientResult<ZstdPackUploadResponse> {
+        self.ensure_request_actor()?;
         let spec = build_put_remote_zstd_object_pack_request_spec(
             &self.config,
             repo_name,
@@ -207,6 +208,7 @@ impl PlanHttpClientManager {
         pack_id: &str,
         pack_bytes: &[u8],
     ) -> PlanHttpClientResult<ZstdPackUploadResponse> {
+        self.ensure_request_actor()?;
         let spec = build_put_remote_zstd_tree_pack_request_spec(
             &self.config,
             repo_name,
@@ -230,6 +232,7 @@ impl PlanHttpClientManager {
         tree_packs: &[(String, Vec<u8>)],
         max_parallelism: usize,
     ) -> PlanHttpClientResult<(Vec<ZstdPackUploadResponse>, Vec<ZstdPackUploadResponse>)> {
+        self.ensure_request_actor()?;
         let mut specs = Vec::with_capacity(object_packs.len() + tree_packs.len());
         let mut response_context = Vec::with_capacity(specs.capacity());
         for (pack_id, pack_bytes) in object_packs {
@@ -572,23 +575,60 @@ impl PlanHttpClientManager {
         parse_object_payload(self.execute_json(spec)?)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_review_as_actor(
+        &mut self,
+        change_id: &str,
+        patchset_id: &str,
+        reviewer: &str,
+        reviewer_kind: &str,
+        action: &str,
+        comment: Option<&str>,
+        blocking: bool,
+    ) -> PlanHttpClientResult<Value> {
+        // Validate locally and negotiate before POST: old servers ignored kind
+        // fields and persisted every reviewer as a user.
+        let spec = build_record_review_as_actor_request_spec(
+            &self.config,
+            change_id,
+            patchset_id,
+            reviewer,
+            reviewer_kind,
+            action,
+            comment,
+            blocking,
+        )?;
+        let handshake = self.get_server_handshake()?;
+        if handshake["operational_capabilities"]["review_actor_identity_v1"] != Value::Bool(true) {
+            return Err(PlanHttpClientError::Invalid("Server lacks review_actor_identity_v1; no review mutation was sent. Use a compatible server for truthful Reviewer attribution.".into()));
+        }
+        let expected = spec
+            .body
+            .clone()
+            .expect("review request contains an object");
+        let result = parse_object_payload(self.execute_json(spec)?)?;
+        for field in ["reviewer", "reviewer_kind", "action", "patchset_id"] {
+            if result[field] != expected[field] {
+                return Err(PlanHttpClientError::Invalid(format!("Review mutation returned mismatched {field} Actor/candidate readback; outcome requires reconciliation before retrying")));
+            }
+        }
+        Ok(result)
+    }
+
     pub fn put_attestation(
         &mut self,
         patchset_id: &str,
         author_mode: &str,
-        evaluation_summary: &Value,
-        provenance_summary: &Value,
-        detail: &Value,
+        statement: &crate::attest_json::RemoteAttestationStatement,
     ) -> PlanHttpClientResult<Value> {
-        let spec = build_put_attestation_request_spec(
-            &self.config,
-            patchset_id,
-            author_mode,
-            evaluation_summary,
-            provenance_summary,
-            detail,
-        )?;
-        parse_object_payload(self.execute_json(spec)?)
+        let spec =
+            build_put_attestation_request_spec(&self.config, patchset_id, author_mode, statement)?;
+        // Attestations append history. A lost response must be recovered by GET, not transport replay.
+        let retry_attempts = self.config.retry_attempts;
+        self.config.retry_attempts = 0;
+        let result = self.execute_json(spec);
+        self.config.retry_attempts = retry_attempts;
+        parse_object_payload(result?)
     }
 
     pub fn get_attestation(&mut self, patchset_id: &str) -> PlanHttpClientResult<Value> {
@@ -661,6 +701,28 @@ impl PlanHttpClientManager {
         parse_object_payload(self.execute_json(spec)?)
     }
 
+    pub fn submit_task_land_guarded(
+        &mut self,
+        task_or_change_ref: &str,
+        target_line: Option<&str>,
+        mode: &str,
+        idempotency_key: &str,
+        repo_name: Option<&str>,
+        expected: Option<&crate::workflow_expected_identity::WorkflowExpectedIdentity>,
+    ) -> PlanHttpClientResult<Value> {
+        let spec = crate::land_json::LandJson::stateless()
+            .build_submit_task_land_guarded_request_spec(
+                &self.config,
+                task_or_change_ref,
+                target_line,
+                mode,
+                idempotency_key,
+                repo_name,
+                expected,
+            )?;
+        parse_object_payload(self.execute_json(spec)?)
+    }
+
     pub fn get_land(
         &mut self,
         submission_id: &str,
@@ -690,7 +752,9 @@ impl PlanHttpClientManager {
         repo_name: &str,
         payload: &Value,
     ) -> PlanHttpClientResult<Value> {
-        let spec = build_start_plan_bound_task_request_spec(&self.config, repo_name, payload)?;
+        let actor = self.ensure_request_actor()?;
+        let spec =
+            build_start_plan_bound_task_request_spec(&self.config, actor, repo_name, payload)?;
         parse_object_payload(self.execute_json(spec)?)
     }
 

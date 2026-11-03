@@ -77,6 +77,31 @@ impl TaskWorkflowReviewRequester for HttpWorkflowCloseoutRemote {
 }
 
 impl TaskWorkflowReviewRecorder for HttpWorkflowCloseoutRemote {
+    fn record_review_as_actor(
+        &mut self,
+        change_id: &str,
+        patchset_id: &str,
+        reviewer: &str,
+        reviewer_kind: &str,
+        action: &str,
+        comment: Option<&str>,
+        blocking: bool,
+        repo_name: Option<&str>,
+        exact_id: bool,
+    ) -> TaskWorkflowHttpClientResult<Value> {
+        let resolved_change_ref = self.resolved_change_ref(change_id, repo_name, exact_id)?;
+        let review = self.manager.record_review_as_actor(
+            &resolved_change_ref,
+            patchset_id,
+            reviewer,
+            reviewer_kind,
+            action,
+            comment,
+            blocking,
+        )?;
+        self.normalize_change_identity_payload(review, change_id)
+    }
+
     fn record_review(
         &mut self,
         change_id: &str,

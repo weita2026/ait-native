@@ -32,6 +32,21 @@ requirePassedCase(`running 1 test\ntest ${name} ... ok\r\ntest result: ok. 1 pas
 for (const output of ["running 0 tests\ntest result: ok. 0 passed; 0 failed\n", `test ${name} ... ignored\n`,
   `test other::case ... ok\n`, `test ${name} ... FAILED\n`]) assert.throws(() => requirePassedCase(output, name));
 
+const singleCaseFunction = fs.readFileSync(new URL('./release_windows_retained_source.mjs', import.meta.url), 'utf8')
+  .match(/export function runSingleCargoCase\([\s\S]+?\n\}/)[0].replace(/^export /, '');
+for (const nocapture of [false, true]) for (const outcome of ['pass', 'zero', 'ignored']) {
+  let argv;
+  const output = outcome === 'pass' ? `test ${name} ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n`
+    : outcome === 'ignored' ? `test ${name} ... ignored\ntest result: ok. 0 passed; 0 failed; 1 ignored;\n`
+    : 'test result: ok. 0 passed; 0 failed; 0 ignored;\n';
+  const execute = () => vm.runInNewContext(singleCaseFunction + `\nrunSingleCargoCase(['--lib'], ${JSON.stringify(name)}, { nocapture: ${nocapture} });`, {
+    assert, requirePassedCase, process: { stdout: { write() {} }, stderr: { write() {} } },
+    spawnSync(command, args) { assert.equal(command, 'cargo'); argv = Array.from(args); return { status: 0, stdout: output, stderr: '' }; },
+  });
+  if (outcome === 'pass') execute(); else assert.throws(execute);
+  assert.deepEqual(argv, ['test', '--locked', '--lib', name, '--', '--exact', ...(nocapture ? ['--nocapture'] : []), '--test-threads=1', '--color', 'never']);
+}
+
 const roots = ["inspects_complete_windows_drive_roots", "rejects_non_directory_ancestors",
   "rejects_symbolic_link_components"].map(suffix => CORE_EDIT_ROOT_PREFIX + suffix);
 const rootListing = roots.map(test => `${test}: test`).join("\r\n") + "\r\nunrelated: test\r\n";

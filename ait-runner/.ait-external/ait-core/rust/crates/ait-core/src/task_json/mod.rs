@@ -183,6 +183,31 @@ impl<S> TaskJson<S> {
                     None,
                 ),
             )
+        } else if task.contains_key("local_finish") {
+            let task_id = optional_text(task.get("task_id"))?.unwrap_or_default();
+            let pending = task
+                .get("local_finish")
+                .is_some_and(|receipt| !receipt.is_null());
+            (
+                if pending {
+                    "task_closeout_pending"
+                } else {
+                    "task_initial_work"
+                },
+                if pending {
+                    "task_closeout_pending"
+                } else {
+                    "task_working"
+                },
+                if pending {
+                    "The Task has a successful local finish receipt. Resume only unfinished closeout.".to_string()
+                } else {
+                    "The Task owns the complete implementation; optional Changes describe revisions.".to_string()
+                },
+                json!({"code":"finish_task","label":"Finish Task",
+                    "detail":"Finish the complete frozen Task Snapshot once.","change_id":null,
+                    "command":format!("ait task finish {task_id} --local")}),
+            )
         } else if change_rows.is_empty() {
             (
                 "no_changes",

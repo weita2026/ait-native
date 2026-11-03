@@ -12,6 +12,32 @@ pub(in crate::primitives) struct PatchsetPublishRemoteContext {
 const PUBLIC_PATCHSET_CI_RECENT_LIMIT: i64 = 10;
 const PUBLIC_PATCHSET_CI_RERUN_TRIGGER: &str = "manual_rerun";
 
+fn publication_task_preflight<R: TaskWorkflowRemoteTaskReader + ?Sized>(
+    remote: &mut R,
+    task_id: &str,
+    repo_name: &str,
+) -> Result<JsonValue, String> {
+    let task = remote
+        .get_task(task_id, Some(repo_name))
+        .map_err(|error| error.to_string())?;
+    if task["status"].as_str() != Some("active")
+        || ait_core::land_json::LandJson::stateless()
+            .task_successful_receipt(&task, task_id, None)?
+            .is_some()
+    {
+        return Err(
+            "Patchset publication requires the exact active Task without an accepted receipt"
+                .into(),
+        );
+    }
+    match task.get("current_patchset_id") {
+        Some(JsonValue::Null)=>{},
+        Some(JsonValue::String(id)) if !id.is_empty() && id.trim()==id=>{},
+        _=>return Err("Task publication requires nullable current_patchset_id; update the server before publication".into()),
+    }
+    Ok(task)
+}
+
 pub(super) fn exact_patchset_id(value: &str) -> Result<String, String> {
     let patchset_id =
         normalized_text(Some(value)).ok_or_else(|| "Patchset ID must be non-empty.".to_string())?;
@@ -29,15 +55,32 @@ pub(in crate::primitives) fn patchset_publish_remote_context_with_task_remote<R>
 ) -> Result<PatchsetPublishRemoteContext, String>
 where
     R: TaskWorkflowRemoteChangeReader
+        + TaskWorkflowRemoteTaskReader
         + TaskWorkflowRemoteChangeDetailReader
         + TaskWorkflowRemoteChangeLister
         + TaskWorkflowLineReader
         + ?Sized,
 {
+    if is_task_id(change_id) {
+        let task = publication_task_preflight(task_remote, change_id, repo_name)?;
+        let base_line = string_field(&task, "base_line").unwrap_or_else(|| "main".into());
+        let base_snapshot_id =
+            change_base_line_head_with_task_remote(task_remote, repo_name, &base_line)?;
+        return Ok(PatchsetPublishRemoteContext {
+            resolved_change_id: change_id.into(),
+            resolved_change_ref: change_id.into(),
+            change_task_id: Some(change_id.into()),
+            base_line,
+            base_snapshot_id,
+        });
+    }
     let change = change_show_with_task_remote(task_remote, change_id, repo_name)?;
     let resolved_change_id =
         string_field(&change, "change_id").unwrap_or_else(|| change_id.to_string());
     let resolved_change_ref = change_reference_from_payload(&change, Some(change_id))?;
+    if let Some(task_id) = string_field(&change, "task_id").filter(|task| is_task_id(task)) {
+        publication_task_preflight(task_remote, &task_id, repo_name)?;
+    }
     let change_task_id = if resolve_change_task_id {
         remote_change_task_id(
             task_remote,
@@ -74,6 +117,7 @@ pub(in crate::primitives) fn patchset_publish_flow_with_task_and_closeout_remote
 ) -> Result<JsonValue, String>
 where
     T: TaskWorkflowRemoteChangeReader
+        + TaskWorkflowRemoteTaskReader
         + TaskWorkflowRemoteChangeDetailReader
         + TaskWorkflowRemoteChangeLister
         + TaskWorkflowLineReader
@@ -85,6 +129,7 @@ where
     C: TaskWorkflowPatchsetPublisher + ?Sized,
 {
     let _range = perfetto_range!("ait.workflow_ready.publish.remote_flow.detail");
+    guard_capture_publication_target_name(repo, remote_name)?;
     let (line_name, revision_snapshot_id) = {
         let _range = perfetto_range!("ait.workflow_ready.publish.local_context");
         guard_no_planning_only_artifact_drift(repo, "ait patchset publish")?;
@@ -93,7 +138,7 @@ where
         let revision_snapshot_id = required_string_field(&line_row, "head_snapshot_id")?;
         (line_name, revision_snapshot_id)
     };
-    let publish_context = {
+    let mut publish_context = {
         let _range = perfetto_range!("ait.workflow_ready.publish.remote_context");
         patchset_publish_remote_context_with_task_remote(
             task_remote,
@@ -102,6 +147,30 @@ where
             repo_root_has_bound_worktree_metadata(repo)?,
         )?
     };
+    if is_task_id(change_id) {
+        let owners = resolved_remote_snapshot_ownership_rows(
+            repo,
+            std::slice::from_ref(&revision_snapshot_id),
+            Some(remote_name),
+        )?;
+        let owners = owners
+            .iter()
+            .filter(|owner| owner["snapshot_id"].as_str() == Some(&revision_snapshot_id))
+            .collect::<Vec<_>>();
+        let [owner] = owners.as_slice() else {
+            return Err("Publication requires unique numeric capture ownership".into());
+        };
+        if string_field(owner, "task_id").as_deref() != Some(change_id)
+            || owner["ownership_source"].as_str() != Some("durable_remote_snapshot_binding")
+        {
+            return Err("Publication Snapshot is not captured by this exact Task".into());
+        }
+        if let Some(child) = string_field(owner, "change_id") {
+            publish_context.resolved_change_ref =
+                change_reference_for_context(Some(change_id), &child)?;
+            publish_context.resolved_change_id = child;
+        }
+    }
     {
         let _range = perfetto_range!("ait.workflow_ready.publish.scope_guards");
         {
@@ -109,7 +178,8 @@ where
             guard_repo_root_bound_task_worktree(
                 repo,
                 publish_context.change_task_id.as_deref(),
-                Some(&publish_context.resolved_change_id),
+                (!is_task_id(&publish_context.resolved_change_id))
+                    .then_some(publish_context.resolved_change_id.as_str()),
                 "ait patchset publish",
             )?;
         }
@@ -123,8 +193,9 @@ where
             repo,
             &publish_context.base_snapshot_id,
             &revision_snapshot_id,
-            change_id,
+            &publish_context.resolved_change_ref,
             &line_name,
+            remote_name,
         )?;
         ensure_patchset_not_empty(
             &publish_context.resolved_change_ref,
@@ -167,6 +238,7 @@ pub fn patchset_publish(
 ) -> Result<JsonValue, String> {
     guard_no_planning_only_artifact_drift(repo, "ait patchset publish")?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
+    guard_capture_publication_target(repo, &remote_row)?;
     let mut task_remote = http_task_remote(repo, &remote_row)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     let resolved_author_mode = repo.effective_author_mode(author_mode);
@@ -198,6 +270,7 @@ pub fn patchset_publish_explicit(
 ) -> Result<JsonValue, String> {
     guard_no_planning_only_artifact_drift(repo, "ait patchset publish")?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, repo_name_override)?;
+    guard_capture_publication_target(repo, &remote_row)?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     let resolved_author_mode = repo.effective_author_mode(author_mode);
     patchset_publish_payload_with_closeout_remote(
@@ -288,7 +361,11 @@ fn patchset_publish_payload(
         canonical_change_id(change_id).unwrap_or_else(|_| change_id.to_string());
     payload.insert(
         "change_id".to_string(),
-        JsonValue::String(canonical_change_id.clone()),
+        if is_task_id(change_id) {
+            JsonValue::Null
+        } else {
+            JsonValue::String(canonical_change_id.clone())
+        },
     );
     if change_id != canonical_change_id && !payload.contains_key("change_ref") {
         payload.insert(
@@ -392,7 +469,7 @@ where
         patchset_show_with_closeout_remote(closeout_remote, patchset_id, Some(repo_name), None)?;
     let resolved_patchset_id =
         string_field(&patchset, "patchset_id").unwrap_or_else(|| patchset_id.to_string());
-    let owning_change_ref = change_reference_from_payload(&patchset, None)?;
+    let owning_change_ref = required_string_field(&patchset, "task_id")?;
     patchset_select_with_closeout_remote(
         closeout_remote,
         &owning_change_ref,
@@ -465,6 +542,13 @@ where
         .read_patchset_ci_readiness(&resolved_patchset_id, recent_limit, None, true)
         .map_err(|err| err.to_string())?;
     validate_patchset_ci_readiness_payload(&payload, &resolved_patchset_id, recent_limit)?;
+    if string_field(&patchset, "task_id").is_none()
+        || string_field(&patchset, "task_id") != string_field(&payload, "task_id")
+        || string_field(&patchset, "change_ref") != string_field(&payload, "change_ref")
+        || patchset.get("change_id") != payload.get("change_id")
+    {
+        return Err("Patchset CI readiness owner differs from the exact Patchset.".into());
+    }
     Ok(payload)
 }
 
@@ -532,7 +616,7 @@ fn validate_patchset_ci_readiness_payload(
                 )
             })
     };
-    if required_text("contract")? != "ait.server.patchset_ci.readiness.v1" {
+    if required_text("contract")? != "ait.server.patchset_ci.readiness.v2" {
         return Err(
             "Patchset CI readiness response has an unsupported contract; refusing repository-job fallback."
                 .to_string(),
@@ -549,7 +633,38 @@ fn validate_patchset_ci_readiness_payload(
             "Patchset CI readiness response is for a different patchset; expected {patchset_id}."
         ));
     }
-    required_text("change_id")?;
+    let task_id = required_text("task_id")?;
+    let change_ref = match object.get("change_ref") {
+        Some(JsonValue::Null) => None,
+        Some(JsonValue::String(text)) if !text.is_empty() && text.trim() == text => {
+            Some(text.as_str())
+        }
+        _ => return Err("Patchset CI readiness Change must be exact text or null.".into()),
+    };
+    let change_id = match object.get("change_id") {
+        Some(JsonValue::Null) => None,
+        Some(JsonValue::String(text)) if !text.is_empty() && text.trim() == text => {
+            Some(text.as_str())
+        }
+        _ => return Err("Patchset CI readiness requires nullable exact change_id.".into()),
+    };
+    if change_ref.and_then(|reference| reference.rsplit_once('/').map(|(_, child)| child))
+        != change_id
+    {
+        return Err("Patchset CI readiness optional Change fields disagree.".into());
+    }
+    if patchset_id.contains("/P-") {
+        ait_core::workflow_expected_identity::validate_patchset_reference_owner(
+            patchset_id,
+            task_id,
+            change_ref,
+        )?;
+    }
+    if let Some(change_ref) = change_ref {
+        if change_ref.rsplit_once('/').map(|(owner, _)| owner) != Some(task_id) {
+            return Err("Patchset CI readiness Change belongs to another Task.".into());
+        }
+    }
     required_text("repo_name")?;
     required_text("tests_status")?;
     for key in ["available", "has_runnable_evidence"] {

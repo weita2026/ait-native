@@ -1098,6 +1098,7 @@ async function validatePublicReadme(family) {
     "## Why AIT beyond worktrees?",
     OFFICIAL_WEBSITE,
     "Current stable: 1.2.0.",
+    "Development target: 1.2.1.",
     "Agent Teams, sprint binding and Local/Remote scope are independent.",
     "ait team contacts --json",
     "## Migrating to 1.2.0",
@@ -1113,8 +1114,8 @@ async function validatePublicReadme(family) {
     "36.28%",
     "benchmark-sprint-on-20260829",
     "not pooled observations or a causal sprint-on/off A/B test",
-    "### Claude Fable benchmark — still running",
-    "**Progress: 22 / 200 sessions**",
+    "### Claude Fable benchmark — incomplete checkpoint",
+    "**Recorded progress: 22 / 200 sessions**",
     "claim_eligible=false",
     "The workload-median token saving is **20.32%**, with an aggregate bootstrap",
     "numbers are published for transparency, not as a product claim",
@@ -1126,7 +1127,7 @@ async function validatePublicReadme(family) {
     "## License map",
     "`ait-core/**`, `ait-runner/**`, `ait-python/**`, and\n`ait-node/**` are Apache-2.0",
     "`ait-server/**`, which is AGPL-3.0-only",
-    "No commercial or proprietary license applies to a public 1.0 source path",
+    "bundling does not relicense either component",
   ]) {
     if (!readme.includes(required)) {
       fail(`public README is missing the agent-first contract: ${JSON.stringify(required)}`);
@@ -1178,19 +1179,22 @@ async function validatePublicReadme(family) {
     const guidance = {
       "README.md": [
         "Current stable: 1.2.0.", "**1. Install AIT 1.2.0.**", "The version must be 1.2.0.",
-        "**AIT 1.2.0 workflow:**", "## Migrating to 1.2.0",
+        "Development target: 1.2.1.", "**1.2.1 development workflow:**", "## Migrating to 1.2.0",
+        "deferred and unqualified.", "do not establish Claude host qualification.",
         "WinGet's public catalog lists 1.2.0.",
-        `Release source: **${family.family.tag}**.`,
+        `Source target: **${family.family.tag}**.`,
       ],
       "README_CN.md": [
         "当前稳定版：1.2.0。", "**1. 安装 AIT 1.2.0。**", "版本应为 1.2.0。",
-        "**AIT 1.2.0 工作流：**", "## 迁移至 1.2.0", "在 WinGet 公共目录列出 1.2.0 前",
-        `发行源码：**${family.family.tag}**。`,
+        "开发目标：1.2.1。", "**AIT 1.2.1 开发工作流：**", "## 迁移至 1.2.0", "在 WinGet 公共目录列出 1.2.0 前",
+        "实际 Claude host 编排、混合 provider 派送与移动工作流仍推迟且未通过资格验证。",
+        `源代码目标：**${family.family.tag}**。`,
       ],
       "README_ZH.md": [
         "目前穩定版：1.2.0。", "**1. 安裝 AIT 1.2.0。**", "版本應為 1.2.0。",
-        "**AIT 1.2.0 工作流：**", "## 遷移至 1.2.0", "在 WinGet 公開目錄列出 1.2.0 前",
-        `發行原始碼：**${family.family.tag}**。`,
+        "開發目標：1.2.1。", "**AIT 1.2.1 開發工作流：**", "## 遷移至 1.2.0", "在 WinGet 公開目錄列出 1.2.0 前",
+        "實際 Claude host 編排、混合 provider 派送與行動工作流仍延後且未通過資格驗證。",
+        `原始碼目標：**${family.family.tag}**。`,
       ],
     }[name];
     for (const required of [
@@ -1198,6 +1202,12 @@ async function validatePublicReadme(family) {
     ]) {
       if (!text.includes(required)) fail(`${name} is missing published 1.2.0 availability guidance`);
     }
+    const localePrefix = { "README.md": "", "README_CN.md": "zh-cn/", "README_ZH.md": "zh-tw/" }[name];
+    const manualRoot = `${OFFICIAL_WEBSITE}${localePrefix}technical/1.2.1/`;
+    for (const suffix of ["", "cli/reference/", "cli/reference/ait/", "integrations/python/", "integrations/node/", "agent-teams/", "#user-manual-pdf", "#command-manual-pdf", "#agent-teams-pdf"]) {
+      if (!text.includes(manualRoot + suffix)) fail(`${name} is missing a planned 1.2.1 manual link: ${suffix}`);
+    }
+    if (text.includes("/technical/v1.2.1/")) fail(`${name} uses a reserved historical manual route`);
     // Dated historical release links remain valid. Current install selectors
     // and availability claims must describe the actually published version.
     for (const stale of [
@@ -1256,7 +1266,7 @@ async function validatePublicPolicies() {
   }
 
   for (const required of [
-    "Latest `1.0.0-rc.x` release candidate",
+    "Latest `1.x` stable release",
     "https://github.com/weita2026/ait-native/security/advisories/new",
     "Do not open a public issue",
     "Published tags and registry",
@@ -1925,8 +1935,6 @@ async function validateBuildInputs(expectedGitCommit) {
     "ait init",
     "## What initialization provides",
     OFFICIAL_WEBSITE,
-    "## Upgrading from 0.x",
-    "There is no `ait install` command in 1.0.",
     "ait workflow ready <task-id> --apply",
     "ait workflow finish <task-id> --apply",
   ]) {
@@ -1934,7 +1942,11 @@ async function validateBuildInputs(expectedGitCommit) {
       fail(`npm storefront README is missing ${JSON.stringify(required)}`);
     }
   }
-  for (const forbidden of ["90 seconds"]) {
+  for (const forbidden of [
+    "90 seconds",
+    "## Upgrading from 0.x",
+    "There is no `ait install` command in 1.0.",
+  ]) {
     if (nodeReadme.includes(forbidden)) {
       fail(`npm storefront copy contains stale wording ${JSON.stringify(forbidden)}`);
     }

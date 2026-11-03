@@ -133,7 +133,6 @@ fn request() -> JsonValue {
         "state_path": "/tmp/slack-state.json",
         "runtime_target": {
             "mode": "remote",
-            "workflow_mode": "solo_remote",
             "repo_name": "demo-repo",
             "remote_name": "origin",
             "server_url": "http://127.0.0.1:1",
@@ -375,7 +374,6 @@ fn local_target_forwards_provider_configuration_and_validation_is_early() {
     let mut local = request();
     local["runtime_target"] = json!({
         "mode": "local",
-        "workflow_mode": "solo_local",
         "repo_name": "demo-repo",
         "repo_root": "/tmp/demo-repo",
     });
@@ -451,4 +449,20 @@ fn real_binding_store_persists_dedupe_delivery_cursor_and_codex_binding() {
         binding["slack_recent_request_ids"],
         json!(["trigger-slack-1"])
     );
+}
+
+#[test]
+fn retired_execution_modes_are_rejected_before_any_port_runs() {
+    let trace = trace();
+    let state = StubState::new(trace.clone(), vec![]);
+    let backend = StubBackend::new(trace.clone(), vec![]);
+    let delivery = StubDelivery::new(trace.clone(), vec![]);
+    for mode in ["solo_local", "solo_remote", "team_remote"] {
+        let mut retired = request();
+        retired["runtime_target"]["workflow_mode"] = json!(mode);
+        let error = execute_with_slack_command_job_ports(&state, &backend, &delivery, &retired)
+            .unwrap_err();
+        assert!(error.contains("Retired execution field `workflow_mode`"));
+    }
+    assert!(trace.borrow().is_empty());
 }

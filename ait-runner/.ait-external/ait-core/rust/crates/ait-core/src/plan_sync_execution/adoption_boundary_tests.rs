@@ -2,6 +2,9 @@ use super::local_ports::PlanSyncLocalRevisionArtifact;
 use super::*;
 use std::cell::{Cell, RefCell};
 
+#[path = "owner_attribution_tests.rs"]
+mod owner_attribution_tests;
+
 #[derive(Default)]
 struct BoundaryBlobStore {
     calls: RefCell<Vec<String>>,
@@ -247,6 +250,9 @@ impl PlanSyncRemoteRevisionReader for BoundaryRemote {
 
 fn boundary_request(rebase: bool) -> SyncRequest {
     SyncRequest {
+        user_name: Some("Alice".into()),
+        user_email: Some("alice@example".into()),
+        current_actor_revision_ids: BTreeSet::new(),
         root_path: "/tmp/ait-plan-boundary-test".to_string(),
         repo_name: "ait_test".to_string(),
         repository_index: Some(RepositoryIndex::new(7)),
@@ -277,6 +283,53 @@ fn boundary_artifact() -> SyncArtifact {
         artifact_body,
         items: Vec::new(),
     }
+}
+
+#[test]
+fn artifact_resolution_preserves_authored_utf8_bytes_and_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("card.md");
+    let mut request = boundary_request(false);
+    request.root_path = root.path().to_string_lossy().into_owned();
+    request.target = "card.md".to_string();
+    let fixture = "# Fixture [plan-ref: binding/fixture]\n\n\
+                   - [ ] Finish fixture. [ref: binding/finish]\n\
+                   - [ ] Preserve sibling. [ref: binding/sibling]\n";
+    for (body, allow_generic) in [(fixture, false), ("# Café\n\nUnicode: 螃蟹 🦀\n", true)] {
+        for newline in ["\n", "\r\n", "\r"] {
+            let authored = body.replace('\n', newline);
+            std::fs::write(&path, authored.as_bytes()).unwrap();
+            let artifact = resolve_plan_artifact(&request, &path, None, allow_generic).unwrap();
+            assert_eq!(artifact.artifact_body.as_bytes(), authored.as_bytes());
+            assert_eq!(artifact.artifact_blob_id, artifact_blob_id(&authored));
+            assert_eq!(std::fs::read(&path).unwrap(), authored.as_bytes());
+            assert_eq!(read_utf8_text_file(path.to_str().unwrap()).unwrap(), body);
+            if allow_generic {
+                assert_eq!(artifact.artifact_heading, "Café");
+                assert!(artifact.artifact_selector.is_none());
+            } else {
+                assert_eq!(
+                    artifact.artifact_selector.as_deref(),
+                    Some("binding/fixture")
+                );
+                assert_eq!(artifact.items.len(), 2);
+                if newline == "\r\n" {
+                    assert_eq!(artifact.artifact_blob_id, "BLB-18816dea439a8564f7e8");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn artifact_resolution_rejects_invalid_utf8() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("invalid.md");
+    std::fs::write(&path, [0xff]).unwrap();
+    let mut request = boundary_request(false);
+    request.root_path = root.path().to_string_lossy().into_owned();
+    let error = resolve_plan_artifact(&request, &path, None, true).unwrap_err();
+    assert!(error.contains("File is not valid UTF-8"), "{error}");
 }
 
 fn duplicate_current_plan(
@@ -925,8 +978,9 @@ fn duplicate_current_plan_reconcile_rejects_tied_latest_timestamp() {
 }
 
 #[test]
-fn explicit_rebase_adopts_verified_head_without_reading_unavailable_history() {
-    let request = boundary_request(true);
+fn automatic_rebase_adopts_verified_head_without_reading_unavailable_history() {
+    let mut request = boundary_request(false);
+    enable_automatic_sync_rebase(&mut request);
     let artifact = boundary_artifact();
     let remote_body = "# Verified Remote Boundary\n";
     let remote_blob_id = artifact_blob_id(remote_body);
@@ -995,8 +1049,9 @@ fn explicit_rebase_adopts_verified_head_without_reading_unavailable_history() {
 }
 
 #[test]
-fn explicit_rebase_splits_published_stale_identity_at_a_distinct_local_plan() {
-    let request = boundary_request(true);
+fn automatic_rebase_splits_published_stale_identity_at_a_distinct_local_plan() {
+    let mut request = boundary_request(false);
+    enable_automatic_sync_rebase(&mut request);
     let artifact = boundary_artifact();
     let remote_body = "# Canonical Remote Boundary\n";
     let remote_blob_id = artifact_blob_id(remote_body);
@@ -1091,8 +1146,9 @@ fn explicit_rebase_splits_published_stale_identity_at_a_distinct_local_plan() {
 }
 
 #[test]
-fn explicit_published_rebase_rejects_head_selector_mismatch_before_local_mutation() {
-    let request = boundary_request(true);
+fn automatic_published_rebase_rejects_head_selector_mismatch_before_local_mutation() {
+    let mut request = boundary_request(false);
+    enable_automatic_sync_rebase(&mut request);
     let artifact = boundary_artifact();
     let remote_body = "# Canonical Remote Boundary\n";
     let remote_blob_id = artifact_blob_id(remote_body);
@@ -1152,8 +1208,9 @@ fn explicit_published_rebase_rejects_head_selector_mismatch_before_local_mutatio
 }
 
 #[test]
-fn explicit_rebase_rejects_head_hash_mismatch_before_local_mutation() {
-    let request = boundary_request(true);
+fn automatic_rebase_rejects_head_hash_mismatch_before_local_mutation() {
+    let mut request = boundary_request(false);
+    enable_automatic_sync_rebase(&mut request);
     let artifact = boundary_artifact();
     let remote_plan = boundary_remote_plan("BLB-declared-wrong");
     let (mut local_inventory, mut remote_inventory) =

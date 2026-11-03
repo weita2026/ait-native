@@ -12,6 +12,15 @@ use super::source_ports::{
     CurrentSourceNativeCacheSourceEntry, CurrentSourceNativeCacheSourceStore,
 };
 
+// Fake stores key paths by their native components, so equivalent joined
+// spellings identify the same fixture on Windows as on Unix.
+fn path_text(path: &Path) -> String {
+    path.components()
+        .collect::<PathBuf>()
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn temp_dir(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -473,34 +482,31 @@ fn cache_contract_returns_stable_path_shape() {
     let build_key = payload["build_key"].as_str().unwrap();
     let cache_root = namespace_root
         .join(CURRENT_SOURCE_CACHE_NAMESPACE)
-        .join(build_key)
-        .to_string_lossy()
-        .to_string();
+        .join(build_key);
     assert_eq!(
         payload["cache_schema_version"],
         CURRENT_SOURCE_CACHE_SCHEMA_VERSION
     );
     assert_eq!(payload["namespace"], CURRENT_SOURCE_CACHE_NAMESPACE);
-    assert_eq!(payload["cache_root"], cache_root);
-    assert_eq!(
-        payload["runtime_extensions_root"],
-        format!("{cache_root}/runtime-extensions")
-    );
-    assert_eq!(
-        payload["package_dir"],
-        format!("{cache_root}/runtime-extensions/ait_py")
-    );
-    assert_eq!(payload["target_dir"], format!("{cache_root}/cargo-target"));
+    for (field, relative) in [
+        ("cache_root", ""),
+        ("runtime_extensions_root", "runtime-extensions"),
+        ("package_dir", "runtime-extensions/ait_py"),
+        ("target_dir", "cargo-target"),
+        ("lock_path", ".build.lock"),
+        ("manifest_path", "manifest.json"),
+        ("leases_dir", "leases"),
+    ] {
+        assert_eq!(
+            Path::new(payload[field].as_str().unwrap()),
+            cache_root.join(relative),
+            "{field}"
+        );
+    }
     assert_eq!(
         payload["binary_profile"],
         CURRENT_SOURCE_CACHE_BINARY_PROFILE
     );
-    assert_eq!(payload["lock_path"], format!("{cache_root}/.build.lock"));
-    assert_eq!(
-        payload["manifest_path"],
-        format!("{cache_root}/manifest.json")
-    );
-    assert_eq!(payload["leases_dir"], format!("{cache_root}/leases"));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -520,7 +526,10 @@ fn register_lease_writes_through_lease_store_trait_object() {
     .unwrap();
 
     let lease_path = PathBuf::from(payload["lease_path"].as_str().unwrap());
-    assert_eq!(payload["namespace_root"], path_text(&paths.namespace_root));
+    assert_eq!(
+        Path::new(payload["namespace_root"].as_str().unwrap()),
+        paths.namespace_root
+    );
     assert_eq!(payload["build_key"], "lease-build");
     assert_eq!(
         store.calls.borrow().as_slice(),
@@ -590,7 +599,7 @@ fn release_lease_prunes_through_lease_store_trait_object() {
     )
     .unwrap();
 
-    assert_eq!(payload["released"], path_text(&lease_path));
+    assert_eq!(Path::new(payload["released"].as_str().unwrap()), lease_path);
     assert_eq!(payload["prune"]["removed_unleased_ready"], json!([]));
     assert!(paths.cache_root.exists());
     assert_eq!(
@@ -822,7 +831,7 @@ fn source_fingerprint_reads_inputs_through_source_store_trait_object() {
     assert_eq!(
         store.calls.borrow().as_slice(),
         [
-            "resolve:/repo".to_string(),
+            format!("resolve:{}", path_text(&root)),
             format!("exists:{}", path_text(&cargo_toml)),
             format!("exists:{}", path_text(&root.join("rust/Cargo.lock"))),
             format!(
@@ -894,7 +903,7 @@ fn source_mtime_reads_inputs_through_source_store_trait_object() {
     assert_eq!(
         store.calls.borrow().as_slice(),
         [
-            "resolve:/server".to_string(),
+            format!("resolve:{}", path_text(&root)),
             format!("exists:{}", path_text(&cargo_toml)),
             format!("exists:{}", path_text(&server_toml)),
             format!("is-dir:{}", path_text(&server_src)),
@@ -1046,7 +1055,7 @@ fn cli_bootstrap_fails_closed_when_core_source_changes() {
 }
 
 #[test]
-fn cli_bootstrap_fails_closed_when_executable_timestamp_changes() {
+fn cli_bootstrap_fails_closed_when_executable_content_changes() {
     let root = temp_dir("cli-bootstrap-binary-stale");
     let (request, _, executable_path) = cli_bootstrap_fixture(&root);
     write(&executable_path, "mutated ait-cli bytes\n");
@@ -1055,12 +1064,15 @@ fn cli_bootstrap_fails_closed_when_executable_timestamp_changes() {
     let error = validate_current_source_cli_bootstrap(&request).unwrap_err();
 
     assert!(error.contains("Current-source ait-cli is stale"));
-    assert!(error.contains("executable mtime"));
+    assert!(error.contains("executable"));
     fs::remove_dir_all(root).unwrap();
 }
 
-#[test]
-fn cli_bootstrap_store_fast_path_reads_metadata_and_stats_without_content_hashing() {
+fn cli_bootstrap_store_fixture() -> (
+    FakeCurrentSourceNativeCacheSourceStore,
+    FakeCurrentSourceNativeCacheArtifactStore,
+    CurrentSourceCliBootstrapRequest,
+) {
     let root = PathBuf::from("/repo");
     let metadata_path = PathBuf::from("/metadata.json");
     let executable_path = PathBuf::from("/ait-cli");
@@ -1086,11 +1098,25 @@ fn cli_bootstrap_store_fast_path_reads_metadata_and_stats_without_content_hashin
             (path_text(&cli_toml), 20),
             (path_text(&cli_main), 30),
         ]),
+        files: BTreeMap::from_iter([
+            (path_text(&cargo_toml), b"[workspace]\n".to_vec()),
+            (path_text(&cli_toml), b"[package]\n".to_vec()),
+            (path_text(&cli_main), b"fn main() {}\n".to_vec()),
+        ]),
         ..Default::default()
     };
+    let fingerprint = expected_source_fingerprint(
+        &root,
+        source_store
+            .files
+            .iter()
+            .map(|(path, bytes)| (PathBuf::from(path), bytes.clone()))
+            .collect(),
+    );
     let artifact_store = FakeCurrentSourceNativeCacheArtifactStore {
         executable: BTreeMap::from_iter([(path_text(&executable_path), true)]),
         mtime_ns: BTreeMap::from_iter([(path_text(&executable_path), 40)]),
+        sha256: BTreeMap::from_iter([(path_text(&executable_path), "recorded-cli-sha".into())]),
         metadata: BTreeMap::from_iter([(
             path_text(&metadata_path),
             JsonMap::from_iter([
@@ -1100,10 +1126,7 @@ fn cli_bootstrap_store_fast_path_reads_metadata_and_stats_without_content_hashin
                     json!(CURRENT_SOURCE_CACHE_BINARY_PROFILE),
                 ),
                 ("ait_cli_sha256".to_string(), json!("recorded-cli-sha")),
-                (
-                    "core_source_fingerprint".to_string(),
-                    json!("recorded-source-fingerprint"),
-                ),
+                ("core_source_fingerprint".to_string(), json!(fingerprint)),
                 ("core_source_mtime_ns".to_string(), json!(30)),
             ]),
         )]),
@@ -1114,30 +1137,84 @@ fn cli_bootstrap_store_fast_path_reads_metadata_and_stats_without_content_hashin
         metadata_path: metadata_path.clone(),
         executable_path: executable_path.clone(),
     };
+    (source_store, artifact_store, request)
+}
+
+#[test]
+fn cli_bootstrap_validates_content_once_per_source_input_and_executable() {
+    let (source_store, artifact_store, request) = cli_bootstrap_store_fixture();
 
     let validated =
         validate_current_source_cli_bootstrap_with_stores(&source_store, &artifact_store, &request)
             .unwrap();
 
     assert_eq!(validated.source_mtime_ns, 30);
-    assert_eq!(validated.source_fingerprint, "recorded-source-fingerprint");
+    assert_eq!(
+        validated.source_fingerprint,
+        artifact_store.metadata[&path_text(&request.metadata_path)]["core_source_fingerprint"]
+            .as_str()
+            .unwrap()
+    );
     assert_eq!(validated.executable_sha256, "recorded-cli-sha");
-    assert!(
+    assert_eq!(
         source_store
             .calls
             .borrow()
             .iter()
-            .all(|call| !call.starts_with("read:")),
-        "bootstrap fast path must not read source content"
+            .filter(|call| call.starts_with("read:"))
+            .count(),
+        source_store.files.len(),
+        "one identity scan must read each relevant source input only once"
     );
     assert_eq!(
         artifact_store.calls.borrow().as_slice(),
         [
-            format!("load:{}", path_text(&metadata_path)),
-            format!("executable:{}", path_text(&executable_path)),
-            format!("mtime:{}", path_text(&executable_path)),
+            format!("load:{}", path_text(&request.metadata_path)),
+            format!("executable:{}", path_text(&request.executable_path)),
+            format!("mtime:{}", path_text(&request.executable_path)),
+            format!("sha:{}", path_text(&request.executable_path)),
         ]
     );
+}
+
+#[test]
+fn cli_bootstrap_rejects_changed_content_under_nonadvancing_maximum() {
+    for (relative, mtime) in [
+        ("rust/Cargo.toml", 10),
+        ("rust/Cargo.toml", 25),
+        ("rust/crates/ait-cli/src/main.rs", 30),
+        ("rust/crates/ait-cli/src/main.rs", 31),
+    ] {
+        let (mut source, artifact, request) = cli_bootstrap_store_fixture();
+        let path = path_text(&request.core_repo_root.join(relative));
+        source
+            .files
+            .insert(path.clone(), b"different source bytes and size".to_vec());
+        source.mtime_ns.insert(path, mtime);
+        let error = validate_current_source_cli_bootstrap_with_stores(&source, &artifact, &request)
+            .unwrap_err();
+        assert!(error.contains("Current-source ait-cli is stale"));
+        assert!(
+            error.contains(if mtime > 30 {
+                "core source mtime changed"
+            } else {
+                "core source content changed"
+            }),
+            "{relative} mtime={mtime}: {error}"
+        );
+    }
+}
+
+#[test]
+fn cli_bootstrap_rejects_changed_executable_with_equal_mtime() {
+    let (source, mut artifact, request) = cli_bootstrap_store_fixture();
+    artifact.sha256.insert(
+        path_text(&request.executable_path),
+        "different-cli-sha".into(),
+    );
+    let error = validate_current_source_cli_bootstrap_with_stores(&source, &artifact, &request)
+        .unwrap_err();
+    assert!(error.contains("bootstrap executable content changed"));
 }
 
 #[test]

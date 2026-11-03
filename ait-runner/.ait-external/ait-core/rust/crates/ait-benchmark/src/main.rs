@@ -656,7 +656,6 @@ fn entry(cli: Cli) -> Result<(), String> {
                     "evidence_checked": args.campaign_dir.is_some(),
                     "valid": valid,
                     "errors": evidence_errors,
-                    "workflow_mode": "solo_local",
                     "sprint_mode": manifest.ait_sprint_mode.as_str(),
                     "ait_server_connected": false,
                 }))?;

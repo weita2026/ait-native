@@ -7,9 +7,28 @@ pub fn task_abandon(
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
     if repo.task_uses_local_scope(local, remote_name)? {
-        let task_store = repo.task_store()?;
-        let change_store = repo.change_store()?;
-        return task_abandon_local_with_stores(&task_store, &change_store, task_id);
+        let root = crate::primitives::workflow::workflow_root_repo(repo)?;
+        let _root_writer =
+            crate::workspace_lock::WorkspaceCommandLock::try_acquire(&root, "ait task abandon")?;
+        let task_store = root.task_store()?;
+        let change_store = root.change_store()?;
+        let already_abandoned = task_abandon_preflight(
+            &task_local_read_with_task_store(&task_store, task_id)?,
+            task_id,
+        )?;
+        if !already_abandoned {
+            guard_task_pending_finish(&root, task_id)?;
+        }
+        let cleanup = super::abandon_cleanup::prepare(&root, repo, task_id)?;
+        if already_abandoned {
+            cleanup.guard_pending_finish(&root)?;
+        }
+        let mut task = task_abandon_local_with_stores(&task_store, &change_store, task_id)?;
+        task["bound_worktree_cleanup"] = cleanup.finish(&root).map_err(|error| format!(
+            "Task {task_id} is abandoned, but owned worktree cleanup is incomplete: {error}. Retry `ait task abandon {task_id} --local` after resolving the blocker."
+        ))?;
+        task["already_abandoned"] = json!(already_abandoned);
+        return Ok(task);
     }
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
     let mut task_remote = http_task_remote(repo, &remote_row)?;
@@ -114,16 +133,15 @@ where
 {
     let task = task_local_read_with_task_store(task_store, task_id)?;
     let already_abandoned = task_abandon_preflight(&task, task_id)?;
+    if already_abandoned {
+        return Ok(task);
+    }
     let changes = change_local_list_with_change_store(change_store)?;
     let targets = task_abandon_change_targets(changes, task_id)?;
     for change_ref in targets {
         change_local_close_with_change_store(change_store, &change_ref, "canceled")?;
     }
-    if already_abandoned {
-        task_local_read_with_task_store(task_store, task_id)
-    } else {
-        task_local_close_with_task_store(task_store, task_id, "abandoned")
-    }
+    task_local_close_with_task_store(task_store, task_id, "abandoned")
 }
 
 fn task_abandon_remote_with_remotes<C, T>(
@@ -392,6 +410,25 @@ mod tests {
             *events.borrow(),
             vec!["change:LCT-7/C-01:canceled", "task:LCT-7:abandoned"]
         );
+    }
+
+    #[test]
+    fn already_abandoned_local_task_does_not_repeat_task_or_change_closure() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let task_store = RecordingTaskStore {
+            task: RefCell::new(json!({"task_id":"LCT-7","status":"abandoned"})),
+            events: events.clone(),
+        };
+        let change_store = RecordingChangeStore {
+            changes: RefCell::new(vec![
+                json!({"task_id":"LCT-7","change_id":"C-01", "change_ref":"LCT-7/C-01","status":"draft"}),
+            ]),
+            events: events.clone(),
+        };
+        let task = task_abandon_local_with_stores(&task_store, &change_store, "LCT-7").unwrap();
+        assert_eq!(task["status"], "abandoned");
+        assert!(events.borrow().is_empty());
+        assert_eq!(change_store.changes.borrow()[0]["status"], "draft");
     }
 
     #[test]

@@ -1,21 +1,48 @@
 use super::*;
 
+// Rebase is normal remote sync behavior, not a public retry switch. The old
+// request field remains readable for internal consumers. Exact history publishing
+// and task admission retain their own protocols; reconciliation is a separate
+// explicit mixed-lineage repair. Local sync already appends to the local head.
+pub(super) fn enable_automatic_sync_rebase(request: &mut SyncRequest) {
+    if request.base_url.is_some()
+        && !request.local
+        && !request.reconcile
+        && request.history_publish_plan_id.is_none()
+        && request.task_start.is_none()
+    {
+        request.rebase = true;
+    }
+}
+
 pub(super) fn parse_request_map(
     request: JsonMap<String, JsonValue>,
 ) -> Result<SyncRequest, String> {
+    let base_url = optional_text(request.get("base_url"))?;
+    let (user_name, user_email) = if base_url.is_some() {
+        (
+            optional_text_allow_empty(request.get("user_name"))?,
+            optional_text_allow_empty(request.get("user_email"))?,
+        )
+    } else {
+        (None, None)
+    };
     Ok(SyncRequest {
         root_path: require_nonempty_text(request.get("root_path"), "root_path")?,
         repo_name: require_nonempty_text(request.get("repo_name"), "repo_name")?,
         repository_index: optional_u32(request.get("repository_index"))?.map(RepositoryIndex::new),
         id_namespace_prefix: optional_text_allow_empty(request.get("id_namespace_prefix"))?,
         created_by: optional_text(request.get("created_by"))?,
+        user_name,
+        user_email,
+        current_actor_revision_ids: BTreeSet::new(),
         target: require_nonempty_text(request.get("target"), "target")?,
         plan_ref: optional_text(request.get("plan_ref"))?,
         prune: optional_bool(request.get("prune"), false)?,
         local: optional_bool(request.get("local"), false)?,
         remote_name: optional_text(request.get("remote_name"))?,
         remote_repo_name: optional_text(request.get("remote_repo_name"))?,
-        base_url: optional_text(request.get("base_url"))?,
+        base_url,
         rebase: optional_bool(request.get("rebase"), false)?,
         reconcile: optional_bool(request.get("reconcile"), false)?,
         history_publish_plan_id: optional_text(request.get("history_publish_plan_id"))?,
@@ -29,13 +56,10 @@ pub(super) fn validate_runtime_flags(request: &SyncRequest) -> Result<(), String
         return Err("`--local` cannot be combined with `--remote`; omit `--local` to sync locally and publish.".to_string());
     }
     if request.rebase && request.reconcile {
-        return Err("Choose either `--rebase` or `--reconcile`, not both.".to_string());
+        return Err("Legacy rebase request cannot be combined with reconciliation.".to_string());
     }
     if request.rebase && request.base_url.is_none() {
-        return Err(
-            "`--rebase` requires `--remote <name>` because it replaces a divergent local head from shared Plan authority."
-                .to_string(),
-        );
+        return Err("Legacy rebase request requires remote Plan authority.".to_string());
     }
     if request.reconcile && request.base_url.is_none() && !request.local {
         return Err(
@@ -80,6 +104,19 @@ pub(super) fn validate_runtime_flags(request: &SyncRequest) -> Result<(), String
             );
         }
     }
+    if request.base_url.is_some() {
+        crate::plan_http_client::RemoteActorIdentity::new(
+            request
+                .user_name
+                .as_deref()
+                .ok_or("Remote Plan sync requires effective AIT config user_name.")?,
+            request
+                .user_email
+                .as_deref()
+                .ok_or("Remote Plan sync requires effective AIT config user_email.")?,
+        )
+        .map_err(|error| error.to_string())?;
+    }
     request.plan_storage.require_binary_layout()?;
     Ok(())
 }
@@ -112,8 +149,8 @@ fn parse_task_start_request(
         ));
     }
     let contract = require_nonempty_text(object.get("contract"), "task_start.contract")?;
-    if contract != "task-start-atomic/v1" {
-        return Err("task_start.contract must be `task-start-atomic/v1`.".to_string());
+    if contract != "task-start-atomic/v2" {
+        return Err("task_start.contract must be `task-start-atomic/v2`.".to_string());
     }
     let idempotency_key =
         require_nonempty_text(object.get("idempotency_key"), "task_start.idempotency_key")?;
@@ -128,18 +165,10 @@ fn parse_task_start_request(
         &["task_id", "title", "intent"],
         &["title", "intent"],
     )?;
-    let change = parse_task_start_child(
-        object.get("change"),
-        "task_start.change",
-        &[
-            "change_id",
-            "title",
-            "base_line",
-            "fork_snapshot_id",
-            "forked_from_line",
-        ],
-        &["title", "base_line"],
-    )?;
+    if object.get("change").is_some_and(|change| !change.is_null()) {
+        return Err("Task start v2 creates initial Task work without an implicit Change.".into());
+    }
+    let change = JsonValue::Null;
     Ok(Some(PlanSyncTaskStartRequest {
         contract,
         idempotency_key,
@@ -244,18 +273,85 @@ mod tests {
             "remote_name": "origin",
             "remote_repo_name": "repo",
             "base_url": "https://server.test",
+            "user_name": "Alice",
+            "user_email": "alice@example.test",
             "plan_storage": {"write_layout": 1},
             "task_start": {
-                "contract": "task-start-atomic/v1",
+                "contract": "task-start-atomic/v2",
                 "idempotency_key": "start-1",
                 "plan_item_ref": "card/item",
                 "task": {"title": "Task", "intent": "Intent"},
-                "change": {"title": "Change", "base_line": "main"}
+                "change": null
             }
         })
         .as_object()
         .cloned()
         .unwrap()
+    }
+
+    #[test]
+    fn actor_identity_is_required_only_for_remote_plan_writes() {
+        let mut payload = request_payload();
+        payload["task_start"] = JsonValue::Null;
+        for field in ["user_name", "user_email"] {
+            let mut missing = payload.clone();
+            missing.remove(field);
+            let request = parse_request_map(missing.clone()).unwrap();
+            assert!(validate_runtime_flags(&request)
+                .unwrap_err()
+                .contains(field));
+            missing["local"] = JsonValue::Bool(true);
+            missing["base_url"] = JsonValue::Null;
+            validate_runtime_flags(&parse_request_map(missing).unwrap()).unwrap();
+        }
+        payload["user_name"] = JsonValue::String(" ".into());
+        assert!(validate_runtime_flags(&parse_request_map(payload).unwrap()).is_err());
+    }
+
+    #[test]
+    fn normal_sync_automatically_rebases_without_a_request_flag() {
+        let mut payload = request_payload();
+        payload["task_start"] = JsonValue::Null;
+        payload.remove("rebase");
+        let mut remote = parse_request_map(payload.clone()).unwrap();
+        validate_runtime_flags(&remote).unwrap();
+        enable_automatic_sync_rebase(&mut remote);
+        assert!(remote.rebase);
+        // Older callers sending false do not disable normal automatic behavior.
+        payload.insert("rebase".into(), JsonValue::Bool(false));
+        let mut remote = parse_request_map(payload.clone()).unwrap();
+        enable_automatic_sync_rebase(&mut remote);
+        assert!(remote.rebase);
+        payload["local"] = JsonValue::Bool(true);
+        payload["base_url"] = JsonValue::Null;
+        payload["remote_name"] = JsonValue::Null;
+        payload["remote_repo_name"] = JsonValue::Null;
+        let mut local = parse_request_map(payload).unwrap();
+        validate_runtime_flags(&local).unwrap();
+        enable_automatic_sync_rebase(&mut local);
+        assert!(
+            !local.rebase,
+            "local sync appends locally without contacting a remote"
+        );
+    }
+
+    #[test]
+    fn automatic_sync_does_not_change_exact_history_or_task_admission() {
+        let mut admission = parse_request_map(request_payload()).unwrap();
+        validate_runtime_flags(&admission).unwrap();
+        enable_automatic_sync_rebase(&mut admission);
+        assert!(!admission.rebase);
+        let mut payload = request_payload();
+        payload["task_start"] = JsonValue::Null;
+        payload["plan_ref"] = JsonValue::Null;
+        payload.insert(
+            "history_publish_plan_id".into(),
+            JsonValue::String("PR-649".into()),
+        );
+        let mut history = parse_request_map(payload).unwrap();
+        validate_runtime_flags(&history).unwrap();
+        enable_automatic_sync_rebase(&mut history);
+        assert!(!history.rebase);
     }
 
     #[test]
@@ -318,7 +414,7 @@ mod tests {
         let parsed = parse_request_map(local_rebase).unwrap();
         assert!(validate_runtime_flags(&parsed)
             .unwrap_err()
-            .contains("`--rebase` requires `--remote <name>`"));
+            .contains("Legacy rebase request requires remote Plan authority"));
 
         let mut ambiguous_reconcile = request_payload();
         ambiguous_reconcile["remote_name"] = JsonValue::Null;
@@ -338,7 +434,7 @@ mod tests {
         let parsed = parse_request_map(mixed_retry_modes).unwrap();
         assert!(validate_runtime_flags(&parsed)
             .unwrap_err()
-            .contains("Choose either `--rebase` or `--reconcile`"));
+            .contains("Legacy rebase request cannot be combined with reconciliation"));
     }
 
     #[test]

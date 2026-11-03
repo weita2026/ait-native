@@ -815,6 +815,7 @@ fn write_bytes_atomically_from_directory_to_filesystem(
                 format!("Failed to sync {}: {err}", temp_path.display()),
             )
         })?;
+        drop(file);
         replace_file_atomically(&temp_path, path).map_err(|err| {
             FileIoError::from_io_message(
                 format!(
@@ -844,6 +845,19 @@ fn replace_file_atomically(source: &Path, target: &Path) -> io::Result<()> {
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
 
+    // Rust's filesystem adapter accepts long paths; the raw Win32 call needs
+    // the fully qualified verbatim spelling too. Keep the target leaf intact
+    // so replacing a symlink still replaces the link, not its referent.
+    let source = fs::canonicalize(source)?;
+    let target = fs::canonicalize(
+        target
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new(".")),
+    )?
+    .join(target.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "atomic target has no filename")
+    })?);
     let source = source
         .as_os_str()
         .encode_wide()

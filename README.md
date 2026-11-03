@@ -4,6 +4,10 @@
 
 **Current stable: 1.2.0.**
 
+**Development target: 1.2.1.** Its source, consumer compatibility and final
+artifacts are being qualified. 1.2.1 packages and channel availability remain
+pending publication; installation examples below select published 1.2.0.
+
 **Turn parallel coding-agent sessions into verified, traceable Tasks.**
 
 AIT is a local-first CLI for individual developers and maintainers who delegate
@@ -18,13 +22,18 @@ your hands.
 
 **[Try your first Task](https://ait-native.dev/local-quickstart/#first-task)** ·
 [Watch the demo](https://ait-native.dev/demo/#in-action) ·
-[Documentation](https://ait-native.dev/technical/) ·
+[1.2.1 manual preparation](https://ait-native.dev/technical/1.2.1/) ·
 [Get help](https://github.com/weita2026/ait-native/discussions)
 
 [简体中文入门](https://ait-native.dev/zh-cn/local-quickstart/#first-task) ·
 [繁體中文入門](https://ait-native.dev/zh-tw/local-quickstart/#first-task)
 
-## 1.2.0 highlights
+## 1.2.1 development target
+
+The development line prepares reviewed security and platform repairs and
+shared autonomous-rebase guidance. Full source admission, matching package
+artifacts, cross-platform and Web qualification, and publication readback
+remain required. It retains these published 1.2.0 workflow boundaries:
 
 - **[Agent Teams enabled for new repositories.](#how-agent-teams-work)** Fresh `ait init` enables Teams;
   existing repository settings and session bindings are preserved. Team setup,
@@ -71,8 +80,14 @@ Reinitializing an existing repository preserves its settings and session binding
 Usable conversations still require a supported agent host. Teams, sprint binding,
 and Local/Remote scope are independent choices; local initialization does not
 require a running Server. Use the generated instructions for exact commands and
-the [Agent Teams guide](https://ait-native.dev/development/1.2.0/agent-teams/)
-for session preparation prerequisites.
+the installed version's guide for session preparation prerequisites.
+
+The planned [1.2.1 Agent Teams guide](https://ait-native.dev/technical/1.2.1/agent-teams/)
+describes the development contract. With Teams disabled, the executor rebases
+in-scope work independently when needed. With Teams enabled, the Developer
+rebases and resolves in-scope conflicts, then the Reviewer verifies integration
+before finish. Ordinary target advancement needs no PM relay; scope decisions
+and unresolved blockers still follow the existing escalation rules.
 
 ## Follow an AIT Task
 
@@ -121,7 +136,7 @@ ait config set --user-name "your-name"
 The three baseline tests should pass. Task start records the initial baseline
 through its initialization workflow. Create checkpoints only inside the returned
 Task worktree, using its Task ID. For an existing project, use the
-[getting-started guide](https://ait-native.dev/technical/getting-started/) instead.
+[published Quickstart](https://ait-native.dev/local-quickstart/) instead.
 
 **3. After initialization, start a fresh coding-agent session in the example folder.**
 
@@ -154,14 +169,19 @@ result: the Task completed, its worktree was cleaned, and the bound sprint item
 closed where applicable. Feature acceptance and workflow completion are separate
 checks. Review the change, then try one small task in your own project.
 
+A pending, blocked or partial result is unfinished, even if an exit code is zero
+or the Task already reports completed. Preserve the successful apply and its
+original identity while recovering only the unfinished closeout.
+
 ## What you gain
 
 - **Keep the request attached to the work.** A precise Markdown sprint item and
   its Plan revision stay bound to the Task. After context compression, generated
   instructions require the agent to reread that item.
 - **Finish against the current project.** Independent Tasks have separate
-  worktrees. AIT rechecks the target, rebases compatible work or stops at a real
-  conflict, and cleans up after successful Task finish.
+  worktrees. AIT rechecks the target; the responsible executor rebases when
+  needed and validates integration. Real conflicts require correction before
+  successful Task finish and cleanup.
 - **Find the context when something breaks.** `ait blame` links affected code or
   Plan text to recorded revisions and available workflow history. The agent uses
   that evidence to diagnose a problem, make a bounded repair and verify it.
@@ -225,18 +245,18 @@ promise for every workload and do not measure high-concurrency execution.
 [Released baseline evidence](https://github.com/weita2026/ait-native/tree/v1.1.0/ait-core/release/benchmarks/game-v1-g56s-max-complete200-fx27-20260826) ·
 [Sprint-on replication evidence](https://github.com/weita2026/ait-native/tree/benchmark-sprint-on-20260829/ait-core/release/benchmarks/game-v1-g56s-max-sprint-on-natural-complete200-20260828)
 
-### Claude Fable benchmark — still running
+### Claude Fable benchmark — incomplete checkpoint
 
-We are running a frozen 200-session benchmark comparing AIT's task-oriented
+An incomplete frozen 200-session benchmark compares AIT's task-oriented
 workflow with an agent-managed local Git-worktree treatment across the same
 five game-development workloads.
 
-**Progress: 22 / 200 sessions**
+**Recorded progress: 22 / 200 sessions**
 
-All 22 observed runs are currently valid and accepted, with no model fallback.
-The campaign is still incomplete and remains `claim_eligible=false`. We will
-continue to all 200 sessions regardless of whether the remaining results favor
-AIT or Git.
+All 22 observed runs were valid and accepted at that checkpoint, with no model
+fallback. The campaign remains incomplete and `claim_eligible=false`; this is
+preserved interim evidence, not a completed Claude/Fable campaign or a
+new performance claim.
 
 The latest balanced checkpoint is 20/200, with two complete AIT/Git pairs for
 each workload:
@@ -318,19 +338,30 @@ the task lifecycle and enforces the applicable workflow conditions.
 blocks in `AGENTS.md` and `CLAUDE.md`. The generated block is the source of truth for the
 effective commands; local repository initialization does not need a running `ait-server`.
 
-**AIT 1.2.0 workflow:** Follow the instructions generated by your installed
+**1.2.1 development workflow:** Follow the instructions generated by your installed
 version for commands and completion requirements.
 
-In AIT 1.2.0, Agent Teams, sprint binding and Local/Remote scope are independent.
+Agent Teams, sprint binding and Local/Remote scope are independent.
 Fresh `ait init` enables Agent Teams; existing repositories retain their settings.
 A supported agent host must still prepare usable sessions. `ait team contacts --json`
 reports bindings and native availability. `ait team session ensure` prepares an
 existing member; assignment and desktop execution status remain separate.
 Preparing a Reviewer session requires server registration.
 
+Automatic session preparation and session checks currently use the native
+Codex host. AIT also generates `CLAUDE.md` repository guidance. Live Claude
+host orchestration, mixed-provider delivery and mobile workflows remain
+deferred and unqualified. Generated guidance and the incomplete benchmark
+do not establish Claude host qualification.
+
 Agent Teams and configuration reference:
-[Agent Teams contacts and sessions](https://ait-native.dev/development/1.2.0/agent-teams/) ·
-[Init and configuration](https://ait-native.dev/development/1.2.0/config/).
+[Agent Teams contacts and sessions](https://ait-native.dev/technical/1.2.1/agent-teams/) ·
+[Native command reference, including init and config](https://ait-native.dev/technical/1.2.1/cli/reference/ait/).
+These are planned 1.2.1 references. Existing
+[1.2.0 documentation](https://ait-native.dev/development/1.2.0/) retains its
+published-version scope. Generated Claude guidance currently requires an
+explicit safe `--edit-root`; AGENTS guidance may use the returned root.
+Follow the actual installed harness instructions.
 
 Follow generated instructions for `ait task start`, `ait snapshot create`
 checkpoints, Markdown lineage through `ait plan sync`, and the applicable
@@ -341,11 +372,12 @@ identity through CI and guarded finish. After a preformal Server restart, explic
 ready apply may reprepare the same sealed content/mode with a new Job, CI and
 required review. Accepted formal retries reuse their original acceptance.
 
-- [Git import, export and exit](https://ait-native.dev/technical/cli/reference/git/)
-- [Feature workflow](https://ait-native.dev/technical/workflows/feature/) and [regression repair](https://ait-native.dev/technical/workflows/regression/)
+- [1.2.1 usage and recovery manual](https://ait-native.dev/technical/1.2.1/)
+- [Complete command directory](https://ait-native.dev/technical/1.2.1/cli/reference/) and [native commands, including Git interoperability](https://ait-native.dev/technical/1.2.1/cli/reference/ait/)
+- [Python CLI/API](https://ait-native.dev/technical/1.2.1/integrations/python/) and [Node.js CLI/API](https://ait-native.dev/technical/1.2.1/integrations/node/)
 - [Components](https://ait-native.dev/components/) and [release status](https://ait-native.dev/proof/)
 
-Release source: **v1.2.0**. `ait-monorepo-source.json` records
+Source target: **v1.2.0**. `ait-monorepo-source.json` records
 the exported component Snapshots. See [release status](https://ait-native.dev/proof/)
 for package-channel availability.
 
@@ -356,7 +388,13 @@ Checked 2026-10-07: stable 1.1.4 is published through GitHub, PyPI, npm, Homebre
 
 </details>
 
-The website's technical reference and PDFs preserve the archived 1.1.1 source and command receipts. Use the [current Quickstart](https://ait-native.dev/local-quickstart/) for installation and the AGENTS.md generated by your installed version for workflow commands. Recorded demonstrations and benchmark campaigns retain their original version and date.
+The planned 1.2.1 manuals include [usage](https://ait-native.dev/technical/1.2.1/#user-manual-pdf),
+[command](https://ait-native.dev/technical/1.2.1/#command-manual-pdf) and
+[Agent Teams](https://ait-native.dev/technical/1.2.1/#agent-teams-pdf) PDF editions.
+These links are coordinated preparation, with deployment and final-artifact
+readback pending. Archived 1.1.1 technical manuals/PDFs and recorded demos keep
+their original version and date. Use the [Quickstart](https://ait-native.dev/local-quickstart/)
+and installed-version guidance for published installation.
 
 ## What each install route gives you
 
@@ -460,7 +498,6 @@ documentation, `ait-core/**`, `ait-runner/**`, `ait-python/**`, and
 `ait-node/**` are Apache-2.0. The sole component exception is
 `ait-server/**`, which is AGPL-3.0-only. Each component subtree keeps its
 exact `LICENSE` and `NOTICE`; bundling does not relicense either component.
-No commercial or proprietary license applies to a public 1.0 source path.
 
 The detailed package, source, build, and license contract lives in
 [`docs/distribution.md`](docs/distribution.md).

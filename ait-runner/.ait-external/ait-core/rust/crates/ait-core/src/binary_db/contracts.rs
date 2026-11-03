@@ -48,6 +48,12 @@ pub(crate) mod private {
 pub trait BinaryDb: private::BinaryDbRecoveryIo {
     fn authority_root(&self) -> &StorePath;
 
+    /// An optional outer container publishes after a durable inner commit.
+    /// Direct local and remote authorities already persist their transactions.
+    fn publish_directory_checkpoint(&self) -> StoreResult<()> {
+        Ok(())
+    }
+
     fn acquire_command_lock(
         &self,
         command_scope: BinaryDbCommandScope,
@@ -196,6 +202,20 @@ pub trait BinaryDb: private::BinaryDbRecoveryIo {
     ) -> StoreResult<()> {
         Err(BinaryDbError::unsupported(
             "fixed-record overwrite is not supported by this Binary DB adapter",
+        ))
+    }
+
+    /// Replace only the fixed record's first metadata byte. Callers must
+    /// durably flush every dependency and other record byte before this marker.
+    fn overwrite_record_marker(
+        &self,
+        _file: BinaryFileId,
+        _record_index: u32,
+        _marker: u8,
+        _write: &mut BinaryWriteContext,
+    ) -> StoreResult<()> {
+        Err(BinaryDbError::unsupported(
+            "fixed-record commit markers are not supported by this adapter",
         ))
     }
 

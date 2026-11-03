@@ -48,7 +48,12 @@ pub struct RemoteHeadRecoveryContext {
 impl RemoteHeadRecoveryContext {
     pub fn discover() -> Result<Self, String> {
         let current = env::current_dir().map_err(|error| error.to_string())?;
-        match Self::discover_from_path(&current) {
+        Self::discover_from_path_or_environment(&current)
+    }
+
+    /// Explicit frontend start path with the native recovery environment fallback.
+    pub fn discover_from_path_or_environment(current: &Path) -> Result<Self, String> {
+        match Self::discover_from_path(current) {
             Ok(context) => Ok(context),
             Err(primary_error) => {
                 for variable in RECOVERY_DISCOVERY_ENV_VARS {

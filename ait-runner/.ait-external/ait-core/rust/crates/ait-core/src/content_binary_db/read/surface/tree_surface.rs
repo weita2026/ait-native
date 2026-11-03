@@ -1,4 +1,5 @@
 use super::*;
+use std::path::PathBuf;
 
 #[derive(Default)]
 pub struct BinaryDbTreeReadCache {
@@ -7,20 +8,161 @@ pub struct BinaryDbTreeReadCache {
     pub(super) tree_pack_views: Vec<BinaryTreePackView>,
     pub(super) tree_pack_for_tree_index: Vec<Option<usize>>,
     pub(super) tree_pack_index_loaded: bool,
+    admission_budget: Option<usize>,
+    entry_bytes: usize,
+    entry_sizes: BTreeMap<u32, usize>,
+    entry_used: BTreeMap<u32, u64>,
+    archive_used: BTreeMap<String, u64>,
+    clock: u64,
+    #[cfg(test)]
+    legacy_clear_all: bool,
+    #[cfg(test)]
+    archive_test_budget: Option<usize>,
+    admission_stamps: BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>)>,
 }
 
 impl BinaryDbTreeReadCache {
+    pub(crate) fn for_git_admission() -> Self {
+        Self {
+            admission_budget: Some(16 * 1024 * 1024),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn verify_admission_stamps(&self) -> StoreResult<()> {
+        for (path, stamp) in &self.admission_stamps {
+            let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
+            if (metadata.len(), metadata.modified().ok()) != *stamp {
+                return Err(BinaryDbError::corruption(
+                    "verified immutable Tree pack changed during admission",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn clear_tree_entries(&mut self) {
         self.tree_entries.clear();
+        self.entry_sizes.clear();
+        self.entry_used.clear();
+        self.entry_bytes = 0;
     }
 
     pub fn clear_archives(&mut self) {
         self.archives.clear();
+        self.archive_used.clear();
+    }
+
+    fn tick(&mut self) -> u64 {
+        self.clock = self.clock.saturating_add(1);
+        self.clock
+    }
+
+    fn reserve_entry(&mut self, bytes: usize, budget: usize) {
+        #[cfg(test)]
+        if self.legacy_clear_all && self.entry_bytes.saturating_add(bytes) > budget {
+            crate::binary_db::read_profile::note(
+                "tree_entry_evictions",
+                self.tree_entries.len() as u64,
+            );
+            self.clear_tree_entries();
+            return;
+        }
+        while self.entry_bytes.saturating_add(bytes) > budget {
+            let Some(index) = self
+                .entry_used
+                .iter()
+                .min_by_key(|(_, used)| **used)
+                .map(|(index, _)| *index)
+            else {
+                break;
+            };
+
+            self.tree_entries.remove(&index);
+            self.entry_used.remove(&index);
+            self.entry_bytes = self
+                .entry_bytes
+                .saturating_sub(self.entry_sizes.remove(&index).unwrap_or(0));
+            #[cfg(test)]
+            crate::binary_db::read_profile::note("tree_entry_evictions", 1);
+        }
+    }
+
+    fn trim_archives(&mut self) {
+        let Some(budget) = self.admission_budget else {
+            return;
+        };
+        #[cfg(test)]
+        let budget = self.archive_test_budget.unwrap_or(budget);
+        #[cfg(test)]
+        if self.legacy_clear_all && self.retained_archive_bytes() > budget {
+            crate::binary_db::read_profile::note(
+                "tree_archive_evictions",
+                self.archives.len() as u64,
+            );
+            self.clear_archives();
+            return;
+        }
+
+        while self.retained_archive_bytes() > budget {
+            let Some(key) = self
+                .archive_used
+                .iter()
+                .min_by_key(|(_, used)| **used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+
+            self.archives.remove(&key);
+            self.archive_used.remove(&key);
+            #[cfg(test)]
+            crate::binary_db::read_profile::note("tree_archive_evictions", 1);
+        }
+        // Immutable pack stamps deliberately survive eviction.
+    }
+
+    // Owned capacities plus conservative BTree-node accounting. These indexes
+    // are existing metadata; a large catalog is never a new validity limit.
+
+    fn retained_archive_bytes(&self) -> usize {
+        self.archives
+            .iter()
+            .map(|(key, archive)| {
+                let overhead = key.capacity() + 128;
+                overhead + archive.retained_reader_bytes()
+            })
+            .sum()
     }
 }
 
 #[cfg(test)]
 impl BinaryDbTreeReadCache {
+    pub(crate) fn with_admission_budget_for_test(bytes: usize) -> Self {
+        Self {
+            admission_budget: Some(bytes),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn policy_budgets_for_test(entries: usize, archives: usize, legacy: bool) -> Self {
+        Self {
+            admission_budget: Some(entries),
+            archive_test_budget: Some(archives),
+            legacy_clear_all: legacy,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn retained_payload_bytes_for_test(&self) -> usize {
+        self.entry_bytes
+            + self
+                .archives
+                .iter()
+                .map(|(key, a)| key.capacity() + 128 + a.retained_reader_bytes())
+                .sum::<usize>()
+    }
+
     pub(crate) fn archive_count(&self) -> usize {
         self.archives.len()
     }
@@ -70,6 +212,18 @@ where
         tree_view_at_with_cache::<B, WRITE_LAYOUT>(read, tree_index, cache)
     }
 
+    pub(crate) fn required_tree_entries_with_cache(
+        &self,
+        read: &BinaryDbReadTxn<'_, B>,
+        tree_id: &str,
+        cache: &mut BinaryDbTreeReadCache,
+    ) -> StoreResult<Vec<BinaryTreeEntryView>> {
+        let tree = get_tree_view_by_id_with_cache::<B, WRITE_LAYOUT>(read, tree_id, cache)?
+            .ok_or_else(|| {
+                BinaryDbError::missing_data(format!("Unknown Binary DB tree: {tree_id}"))
+            })?;
+        list_tree_entry_views_at::<B, WRITE_LAYOUT>(read, self.repo_root(), tree.tree_index, cache)
+    }
     pub fn get_tree_view(
         &self,
         read: &BinaryDbReadTxn<'_, B>,
@@ -440,15 +594,41 @@ fn read_tree_pack_payload_for_record(
 
     let pack_path = absolute_repo_path(repo_root, &tree_pack.pack_path)?;
     let pack_path_text = path_to_str(&pack_path)?;
+    if cache.admission_budget.is_some() {
+        let metadata = std::fs::metadata(&pack_path).map_err(|e| e.to_string())?;
+        let stamp = (metadata.len(), metadata.modified().ok());
+        if cache
+            .admission_stamps
+            .get(&pack_path)
+            .is_some_and(|old| *old != stamp)
+        {
+            return Err(BinaryDbError::corruption(
+                "verified immutable Tree pack changed during admission",
+            ));
+        }
+        cache.admission_stamps.insert(pack_path.clone(), stamp);
+    }
     let cache_key = format!("{pack_path_text}#{}", tree_pack.pack_format);
+    if cache.admission_budget.is_some() {
+        let used = cache.tick();
+        cache.archive_used.insert(cache_key.clone(), used);
+    }
     let archive = {
         let _range = crate::perfetto_range!("ait.core.tree.pack_payload.archive_select");
         match cache.archives.entry(cache_key) {
-            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::btree_map::Entry::Vacant(entry) => entry.insert(
-                TreePackEntryArchive::open_with_format(pack_path_text, &tree_pack.pack_format)
-                    .map_err(BinaryDbError::corruption)?,
-            ),
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                #[cfg(test)]
+                crate::binary_db::read_profile::note("tree_archive_hits", 0);
+                entry.into_mut()
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                #[cfg(test)]
+                crate::binary_db::read_profile::note("tree_archive_misses", 0);
+                entry.insert(
+                    TreePackEntryArchive::open_with_format(pack_path_text, &tree_pack.pack_format)
+                        .map_err(BinaryDbError::corruption)?,
+                )
+            }
         }
     };
     let payload = {
@@ -457,6 +637,7 @@ fn read_tree_pack_payload_for_record(
             .read_tree_by_ordinal(tree.pack_entry_ordinal as usize)
             .map_err(BinaryDbError::corruption)?
     };
+    cache.trim_archives();
     let normalized = {
         let _range = crate::perfetto_range!("ait.core.tree.pack_payload.normalize");
         normalize_tree_payload(&tree_id, payload)?
@@ -495,10 +676,44 @@ where
     B: BinaryDb,
 {
     if let Some(entries) = cache.tree_entries.get(&tree_index) {
-        return Ok(entries.clone());
+        let result = entries.clone();
+        if cache.admission_budget.is_some() {
+            let used = cache.tick();
+            cache.entry_used.insert(tree_index, used);
+        }
+        #[cfg(test)]
+        crate::binary_db::read_profile::note("tree_entry_hits", 0);
+        return Ok(result);
     }
+
+    #[cfg(test)]
+    crate::binary_db::read_profile::note("tree_entry_misses", 0);
     let payload = read_tree_pack_payload_at::<B, WRITE_LAYOUT>(read, repo_root, tree_index, cache)?;
     let entries = tree_entry_views_from_payload(&payload)?;
+    #[cfg(test)]
+    crate::binary_db::read_profile::note("tree_entry_decodes", 0);
+    let bytes = 128
+        + entries.len() * std::mem::size_of::<BinaryTreeEntryView>()
+        + entries
+            .iter()
+            .map(|e| {
+                e.entry_name.capacity()
+                    + e.entry_type.capacity()
+                    + e.target_id.capacity()
+                    + e.mode.as_ref().map_or(0, String::capacity)
+            })
+            .sum::<usize>();
+    if let Some(budget) = cache.admission_budget {
+        if bytes > budget {
+            return Ok(entries);
+        }
+        cache.reserve_entry(bytes, budget);
+        let used = cache.tick();
+        cache.entry_used.insert(tree_index, used);
+        cache.entry_sizes.insert(tree_index, bytes);
+    }
+    cache.entry_bytes = cache.entry_bytes.saturating_add(bytes);
+
     cache.tree_entries.insert(tree_index, entries.clone());
     Ok(entries)
 }

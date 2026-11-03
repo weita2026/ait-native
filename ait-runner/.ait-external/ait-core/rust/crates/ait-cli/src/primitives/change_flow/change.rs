@@ -9,13 +9,34 @@ pub fn change_create(
     local: bool,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
+    change_create_revision(repo, task_id, title, base_line, None, local, remote_name)
+}
+
+pub fn change_create_revision(
+    repo: &RepoRuntime,
+    task_id: &str,
+    title: &str,
+    base_line: Option<&str>,
+    fork_snapshot: Option<&str>,
+    local: bool,
+    remote_name: Option<&str>,
+) -> Result<JsonValue, String> {
     guard_current_worktree_task_bound_authoring(repo, "change create")?;
-    change_create_for_worktree_bootstrap(repo, task_id, title, base_line, local, remote_name)
+    create_with_fork(
+        repo,
+        task_id,
+        title,
+        base_line,
+        fork_snapshot,
+        local,
+        remote_name,
+    )
 }
 
 /// Create a change without the task-bound authoring guard. Reserved for the
 /// task-start worktree bootstrap, which runs at the repo root before the
 /// bound worktree exists; the public command path stays fail-closed.
+#[cfg(test)]
 pub(in crate::primitives) fn change_create_for_worktree_bootstrap(
     repo: &RepoRuntime,
     task_id: &str,
@@ -24,28 +45,65 @@ pub(in crate::primitives) fn change_create_for_worktree_bootstrap(
     local: bool,
     remote_name: Option<&str>,
 ) -> Result<JsonValue, String> {
+    create_with_fork(repo, task_id, title, base_line, None, local, remote_name)
+}
+
+fn create_with_fork(
+    repo: &RepoRuntime,
+    task_id: &str,
+    title: &str,
+    base_line: Option<&str>,
+    fork_snapshot: Option<&str>,
+    local: bool,
+    remote_name: Option<&str>,
+) -> Result<JsonValue, String> {
     guard_repo_root_pinned_bound_worktree(repo, Some(task_id), "ait change create")?;
     guard_current_worktree_task_scope(repo, task_id, "ait change create")?;
+    let use_local = change_uses_local_scope(repo, local, remote_name)?;
     let bound_base_line = current_worktree_metadata(repo)?
         .and_then(|metadata| metadata.target_base_line)
         .and_then(|line| normalized_text(Some(&line)));
+    let local_revision_line = if use_local {
+        Some(repo.current_line_name()?)
+    } else {
+        None
+    };
     let resolved_base_line = normalized_text(base_line)
+        .or(local_revision_line)
         .or(bound_base_line)
         .unwrap_or_else(|| repo.default_line_name());
-    guard_current_worktree_retarget(
-        repo,
-        &resolved_base_line,
-        None,
-        None,
-        "creating a new change",
-    )?;
-    guard_no_planning_only_artifact_drift(repo, "ait change create")?;
-    let use_local = change_uses_local_scope(repo, local, remote_name)?;
     if use_local {
+        guard_current_worktree_retarget(
+            repo,
+            &resolved_base_line,
+            None,
+            None,
+            "creating a new change",
+        )?;
+        guard_no_planning_only_artifact_drift(repo, "ait change create")?;
         let task_store = repo.task_store()?;
         let change_store = repo.change_store()?;
         let local_task = task_local_read_with_task_store(&task_store, task_id)?;
         let line_row = local_line_row(repo, &resolved_base_line)?;
+        let fork =
+            normalized_text(fork_snapshot).or_else(|| string_field(&line_row, "head_snapshot_id"));
+        if let Some(reviewed) = normalized_text(fork_snapshot) {
+            if !workflow_workspace_status(repo, None, None)?["clean"]
+                .as_bool()
+                .unwrap_or(false)
+            {
+                return Err("Create the revision Change from its reviewed Snapshot before editing the workspace".into());
+            }
+            let owners = task_store
+                .snapshot_ownership_rows(std::slice::from_ref(&reviewed))
+                .map_err(|error| error.to_string())?;
+            if !owners
+                .iter()
+                .any(|owner| string_field(owner, "task_id").as_deref() == Some(task_id))
+            {
+                return Err("Reviewed fork Snapshot is not owned by this Task".into());
+            }
+        }
         let repo_name = repo.repo_name();
         let task_repo_name = required_string_field(&local_task, "repo_name")?;
         if task_repo_name != repo_name {
@@ -60,21 +118,170 @@ pub(in crate::primitives) fn change_create_for_worktree_bootstrap(
             title,
             &resolved_base_line,
             Some(&repo.id_namespace_prefix()),
-            string_field(&line_row, "head_snapshot_id").as_deref(),
+            fork.as_deref(),
         );
     }
+    guard_no_planning_only_artifact_drift(repo, "ait change create")?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
+    guard_capture_publication_target(repo, &remote_row)?;
     let mut task_remote = http_task_remote(repo, &remote_row)?;
-    change_create_remote_flow_with_task_remote(
+    let target_head =
+        change_base_line_head_with_task_remote(&mut task_remote, &repo_name, &resolved_base_line)?;
+    guard_current_worktree_retarget(
+        repo,
+        &resolved_base_line,
+        Some(&target_head),
+        None,
+        "creating a new change",
+    )?;
+    let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
+    change_create_remote_revision_with_remotes(
         &mut task_remote,
+        &mut closeout_remote,
         &repo_name,
         task_id,
         title,
         &resolved_base_line,
-        None,
+        fork_snapshot,
+        Some(&target_head),
     )
 }
 
+fn remote_revision_current_candidate(
+    task: &JsonValue,
+    task_id: &str,
+) -> Result<Option<String>, String> {
+    if task["status"].as_str() != Some("active")
+        || ait_core::land_json::LandJson::stateless()
+            .task_successful_receipt(task, task_id, None)?
+            .is_some()
+    {
+        return Err(
+            "Revision creation requires the exact active Task without an accepted receipt".into(),
+        );
+    }
+    match task.get("current_patchset_id") {
+        Some(JsonValue::Null) => Ok(None),
+        Some(JsonValue::String(id)) if !id.is_empty() && id.trim() == id => Ok(Some(id.clone())),
+        _ => Err("Task revision creation requires nullable current_patchset_id".into()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::primitives) fn change_create_remote_revision_with_remotes<T, C>(
+    task_remote: &mut T,
+    closeout_remote: &mut C,
+    repo_name: &str,
+    task_id: &str,
+    title: &str,
+    base_line: &str,
+    explicit_fork: Option<&str>,
+    expected_target_head: Option<&str>,
+) -> Result<JsonValue, String>
+where
+    T: TaskWorkflowRemoteTaskReader
+        + TaskWorkflowRemoteChangeCreator
+        + TaskWorkflowLineReader
+        + TaskWorkflowLineagePayloadBuilder
+        + ?Sized,
+    C: TaskWorkflowPatchsetReader + ?Sized,
+{
+    let task = task_remote
+        .get_task(task_id, Some(repo_name))
+        .map_err(|error| error.to_string())?;
+    let current = remote_revision_current_candidate(&task, task_id)?;
+    let candidate = current
+        .as_deref()
+        .map(|id| {
+            closeout_remote
+                .get_patchset(id, Some(repo_name), None)
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?;
+    let expected = if let Some(row) = candidate.as_ref() {
+        ait_core::workflow_expected_identity::validate_patchset_owner_fields(row, task_id)?;
+        let expected = ait_core::workflow_expected_identity::WorkflowExpectedIdentity {
+            repository_index: 0,
+            patchset_id: current.clone().unwrap(),
+            base_snapshot_id: required_string_field(row, "base_snapshot_id")?,
+            revision_snapshot_id: required_string_field(row, "revision_snapshot_id")?,
+        };
+        expected.validate_patchset(0, row)?;
+        if normalized_text(explicit_fork).is_some_and(|fork| fork != expected.revision_snapshot_id)
+        {
+            return Err(
+                "Explicit fork Snapshot differs from the exact current Task candidate revision"
+                    .into(),
+            );
+        }
+        Some(expected)
+    } else {
+        None
+    };
+    let (line, mut lineage) =
+        change_create_remote_lineage_with_task_remote(task_remote, repo_name, base_line)?;
+    let target_head = change_base_line_head_from_row(&line, repo_name, base_line)?;
+    if expected_target_head.is_some_and(|head| head != target_head)
+        || expected
+            .as_ref()
+            .is_some_and(|identity| identity.base_snapshot_id != target_head)
+    {
+        return Err("Remote target Line advanced before revision creation".into());
+    }
+    let fork = expected
+        .as_ref()
+        .map(|identity| identity.revision_snapshot_id.clone())
+        .or_else(|| normalized_text(explicit_fork));
+    if let Some(fork) = fork.as_ref() {
+        lineage["fork_snapshot_id"] = json!(fork);
+    }
+    let refreshed = task_remote
+        .get_task(task_id, Some(repo_name))
+        .map_err(|error| error.to_string())?;
+    let refreshed_current = remote_revision_current_candidate(&refreshed, task_id)?;
+    match (candidate.as_ref(), refreshed_current) {
+        (Some(row), Some(id)) => {
+            let mut identity = expected.clone().unwrap();
+            identity.patchset_id = id;
+            identity.validate_patchset(0, row).map_err(|error| {
+                format!("Current Task candidate changed before revision creation: {error}")
+            })?;
+            let current = closeout_remote
+                .get_patchset(&identity.patchset_id, Some(repo_name), None)
+                .map_err(|error| error.to_string())?;
+            ait_core::workflow_expected_identity::validate_patchset_owner_fields(
+                &current, task_id,
+            )?;
+            identity.validate_patchset(0, &current)?;
+        }
+        (None, None) => {}
+        _ => return Err("Current Task candidate changed before revision creation".into()),
+    }
+    let refreshed_head = change_base_line_head_with_task_remote(task_remote, repo_name, base_line)?;
+    if refreshed_head != target_head {
+        return Err("Remote target Line advanced before revision creation".into());
+    }
+    let created = change_create_with_task_remote(
+        task_remote,
+        repo_name,
+        task_id,
+        title,
+        base_line,
+        None,
+        &lineage,
+    )?;
+    if fork
+        .as_deref()
+        .is_some_and(|fork| created["fork_snapshot_id"].as_str() != Some(fork))
+    {
+        return Err(
+            "Created revision readback differs from its exact reviewed fork Snapshot".into(),
+        );
+    }
+    Ok(created)
+}
+
+#[cfg(test)]
 pub(in crate::primitives) fn change_create_remote_flow_with_task_remote<R>(
     task_remote: &mut R,
     repo_name: &str,
@@ -235,6 +442,8 @@ pub fn change_show(
     remote_name: Option<&str>,
     repo_name_override: Option<&str>,
 ) -> Result<JsonValue, String> {
+    let resolved = resolve_task_inspect_change_input(repo, change_id, local, remote_name)?;
+    let change_id = resolved.as_str();
     let use_local = change_uses_local_scope(repo, local, remote_name)?;
     if use_local {
         let store = repo.change_store()?;
@@ -280,7 +489,28 @@ where
     R: TaskWorkflowLineReader + ?Sized,
 {
     let base_line_row = change_base_line_read_with_task_remote(task_remote, repo_name, base_line)?;
-    required_string_field(&base_line_row, "head_snapshot_id")
+    change_base_line_head_from_row(&base_line_row, repo_name, base_line)
+}
+
+fn change_base_line_head_from_row(
+    base_line_row: &JsonValue,
+    repo_name: &str,
+    base_line: &str,
+) -> Result<String, String> {
+    if base_line_row["line_name"].as_str() != Some(base_line)
+        || base_line_row
+            .get("repo_name")
+            .is_some_and(|name| name.as_str() != Some(repo_name))
+    {
+        return Err(
+            "Remote target Line authority differs from the selected Repository/Line".into(),
+        );
+    }
+    let head = required_string_field(base_line_row, "head_snapshot_id")?;
+    if base_line_row["head_snapshot_id"].as_str() != Some(head.as_str()) {
+        return Err("Malformed Remote target Line head".into());
+    }
+    Ok(head)
 }
 
 pub(in crate::primitives) fn change_base_line_read_with_task_remote<R>(
@@ -328,14 +558,12 @@ fn change_revision_snapshot_id(
             "Change {change_ref} has no recorded local revision Snapshot. Create an explicitly owned Snapshot in its Task worktree; legacy ownership cannot be inferred from a Line head."
         ));
     }
-    let patchset_id = string_field(change, "selected_patchset_id")
-        .or_else(|| string_field(change, "current_patchset_id"))
-        .ok_or_else(|| {
-            format!(
-                "Change {change_id} has no selected remote patchset and is not bound to the current worktree, so no authoritative revision snapshot can be resolved."
-            )
-        })?;
     let (remote_row, repo_name) = remote_context(repo, remote_name, repo_name_override)?;
+    let mut task_remote = http_task_remote(repo, &remote_row)?;
+    let (_, current) =
+        change_identity_with_task_remote(&mut task_remote, &change_ref, Some(&repo_name))?;
+    let patchset_id = current
+        .ok_or_else(|| format!("Task for Change {change_id} has no current remote Patchset."))?;
     let mut closeout_remote = http_closeout_remote(repo, &remote_row)?;
     let patchset = closeout_remote
         .get_patchset(&patchset_id, Some(&repo_name), Some(&change_ref))

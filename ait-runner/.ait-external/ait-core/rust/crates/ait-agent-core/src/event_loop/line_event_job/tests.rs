@@ -139,7 +139,6 @@ fn request() -> JsonValue {
         "state_path": "/tmp/line-state.json",
         "runtime_target": {
             "mode": "remote",
-            "workflow_mode": "solo_remote",
             "repo_name": "demo-repo",
             "remote_name": "origin",
             "server_url": "http://127.0.0.1:1",
@@ -256,7 +255,6 @@ fn local_target_forwards_provider_configuration_to_the_gateway() {
     let mut local = request();
     local["runtime_target"] = json!({
         "mode": "local",
-        "workflow_mode": "solo_local",
         "repo_name": "demo-repo",
         "repo_root": "/tmp/demo-repo",
     });
@@ -489,4 +487,20 @@ fn public_entrypoint_rejects_non_object_request() {
         agent_line_event_job_execute_json(&json!([])).unwrap_err(),
         "LINE event job request must be an object."
     );
+}
+
+#[test]
+fn retired_execution_modes_are_rejected_before_any_port_runs() {
+    let trace = trace();
+    let state = StubState::new(trace.clone(), vec![]);
+    let backend = StubBackend::new(trace.clone(), vec![]);
+    let delivery = StubDelivery::new(trace.clone(), vec![]);
+    for mode in ["solo_local", "solo_remote", "team_remote"] {
+        let mut retired = request();
+        retired["runtime_target"]["workflow_mode"] = json!(mode);
+        let error =
+            execute_with_line_event_job_ports(&state, &backend, &delivery, &retired).unwrap_err();
+        assert!(error.contains("Retired execution field `workflow_mode`"));
+    }
+    assert!(trace.borrow().is_empty());
 }

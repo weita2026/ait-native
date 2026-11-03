@@ -3,101 +3,65 @@ const PLAN_BINARY_DB_WRITE_LAYOUT: u32 = 1;
 fn run_plan(repo: RepoRuntime, command: PlanCommand) -> Result<(), String> {
     match command {
         PlanCommand::List(args) => {
-            let mut payload = execute_plan_list_command_request_json(&build_query_request(
-                &repo,
-                &args.scope,
-            )?)?;
-            if matches!(
-                resolve_plan_scope(&repo, args.scope.local, args.scope.remote.as_deref())?,
-                ResolvedPlanScope::Local
-            ) {
-                annotate_plan_rows_with_workspace_match(&repo, &mut payload);
-            }
+            let payload =
+                crate::binding_services::list_plans(&repo, &binding_plan_scope(&args.scope))?;
             if args.scope.json {
                 return print_json(&payload);
             }
-            let rows = expect_array(&payload)?;
-            let all_command = scoped_all_command(
-                "ait plan list",
-                args.scope.local,
-                args.scope.remote.as_deref(),
-            );
-            print_agent_list(
-                &rows,
-                &[
-                    "plan_id",
-                    "status",
-                    "publication_state",
-                    "head_match",
-                    "title",
-                ],
-                args.all,
-                &["archived"],
-                Some("active"),
-                &all_command,
+            println!(
+                "{}",
+                format_plan_list_text(&payload, args.all, &binding_plan_scope(&args.scope))?
             );
             Ok(())
         }
         PlanCommand::Show(args) => {
             let payload =
-                execute_plan_show_command_request_json(&build_show_request(&repo, &args)?)?;
+                crate::binding_services::show_plan(&repo, &binding_plan_selection(&args))?;
             if args.scope.json {
                 return print_json(&payload);
             }
             render_show_like("ait-cli plan show", &payload)
         }
         PlanCommand::Revisions(args) => {
-            let payload =
-                execute_plan_revisions_command_request_json(&build_plan_id_request(&repo, &args)?)?;
+            let payload = crate::binding_services::plan_revisions(
+                &repo,
+                &args.plan_id,
+                &binding_plan_scope(&args.scope),
+            )?;
             if args.scope.json {
                 return print_json(&payload);
             }
-            let rows = expect_array(&payload)?;
-            let mut all_command = format!("ait plan revisions {} --all", args.plan_id);
-            if args.scope.local {
-                all_command.push_str(" --local");
-            } else if let Some(remote) = args.scope.remote.as_deref() {
-                all_command.push_str(&format!(" --remote {remote}"));
-            }
-            print_key_values(
-                &format!("ait plan revisions {}", args.plan_id),
-                &[
-                    ("revisions", rows.len().to_string()),
-                    ("order", "newest first".to_string()),
-                ],
-            );
-            if !rows.is_empty() {
-                println!();
-                println!("history");
-            }
-            print_bounded_evidence(
-                &rows,
-                &[
-                    "revision_number",
-                    "plan_revision_id",
-                    "title_snapshot",
-                    "summary",
-                    "created_at",
-                    "publication_state",
-                ],
-                args.all,
-                DEFAULT_AGENT_TEXT_LIST_LIMIT,
-                &all_command,
+            println!(
+                "{}",
+                format_plan_revisions_text(
+                    &payload,
+                    &args.plan_id,
+                    args.all,
+                    &binding_plan_scope(&args.scope)
+                )?
             );
             Ok(())
         }
         PlanCommand::Items(args) => {
             let payload =
-                execute_plan_items_command_request_json(&build_show_request(&repo, &args)?)?;
+                crate::binding_services::plan_items(&repo, &binding_plan_selection(&args))?;
             if args.scope.json {
                 return print_json(&payload);
             }
             render_items_like("ait-cli plan items", &payload)
         }
         PlanCommand::Candidates(args) => {
-            let payload = execute_plan_candidates_command_request_json(&build_candidates_request(
-                &repo, &args,
-            )?)?;
+            let payload = crate::binding_services::plan_candidates(
+                &repo,
+                &crate::binding_services::PlanCandidatesRequest {
+                    scope: crate::binding_services::PlanScope {
+                        local: args.local,
+                        remote_name: args.remote.clone(),
+                    },
+                    include_all: args.include_all,
+                    contains: args.contains.clone(),
+                },
+            )?;
             if args.json {
                 return print_json(&payload);
             }
@@ -105,36 +69,26 @@ fn run_plan(repo: RepoRuntime, command: PlanCommand) -> Result<(), String> {
         }
         PlanCommand::Inspect(args) => {
             let payload =
-                execute_plan_inspect_command_request_json(&build_show_request(&repo, &args)?)?;
+                crate::binding_services::inspect_plan(&repo, &binding_plan_selection(&args))?;
             if args.scope.json {
                 return print_json(&payload);
             }
             render_inspect_like(&payload)
         }
         PlanCommand::Sync(args) => {
-            let mut payload = run_locked_workspace_command(&repo, "ait-cli plan sync", || {
-                execute_plan_sync_command_request_json(&build_sync_request(&repo, &args)?)
-            })
-            .map_err(|error| plan_sync_missing_path_hint(&args, error))?;
-            match payload.get("error").cloned() {
-                Some(JsonValue::String(error)) => {
-                    payload["error"] = JsonValue::String(plan_sync_missing_path_hint(&args, error));
-                }
-                Some(JsonValue::Object(mut error)) => {
-                    if let Some(message) = error
-                        .get("message")
-                        .and_then(JsonValue::as_str)
-                        .map(ToString::to_string)
-                    {
-                        error.insert(
-                            "message".to_string(),
-                            JsonValue::String(plan_sync_missing_path_hint(&args, message)),
-                        );
-                        payload["error"] = JsonValue::Object(error);
-                    }
-                }
-                _ => {}
-            }
+            let payload = crate::binding_services::sync_plan(
+                &repo,
+                &crate::binding_services::PlanSyncRequest {
+                    target: args.target.clone(),
+                    plan_ref: args.plan_ref.clone(),
+                    prune: args.prune,
+                    scope: crate::binding_services::PlanScope {
+                        local: args.local,
+                        remote_name: args.remote.clone(),
+                    },
+                    reconcile: args.reconcile,
+                },
+            )?;
             if args.json {
                 print_json(&payload)?;
                 return match plan_sync_terminal_error(&payload) {
@@ -144,6 +98,21 @@ fn run_plan(repo: RepoRuntime, command: PlanCommand) -> Result<(), String> {
             }
             render_sync_like(&payload)
         }
+    }
+}
+
+fn binding_plan_scope(args: &QueryScopeArgs) -> crate::binding_services::PlanScope {
+    crate::binding_services::PlanScope {
+        local: args.local,
+        remote_name: args.remote.clone(),
+    }
+}
+
+fn binding_plan_selection(args: &ShowArgs) -> crate::binding_services::PlanSelection {
+    crate::binding_services::PlanSelection {
+        plan_id: args.plan_id.clone(),
+        revision: args.revision.clone(),
+        scope: binding_plan_scope(&args.scope),
     }
 }
 
@@ -339,15 +308,14 @@ fn annotate_plan_rows_with_workspace_match(repo: &RepoRuntime, payload: &mut Jso
         object.insert("head_artifact_matches_workspace".to_string(), matches);
         object.insert(
             "workspace_artifact_blob_id".to_string(),
-            workspace_blob.map(JsonValue::String).unwrap_or(JsonValue::Null),
+            workspace_blob
+                .map(JsonValue::String)
+                .unwrap_or(JsonValue::Null),
         );
     }
 }
 
 fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, String> {
-    if args.rebase && args.reconcile {
-        return Err("--rebase cannot be combined with --reconcile".to_string());
-    }
     let scope = resolve_plan_scope(repo, args.local, args.remote.as_deref())?;
     let use_local_scope = matches!(scope, ResolvedPlanScope::Local);
     // Markdown is authored in the active workspace, while plan_storage below
@@ -358,6 +326,8 @@ fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, Str
         "repository_index": repo.repository_index(),
         "id_namespace_prefix": repo.id_namespace_prefix(),
         "created_by": repo.actor_identity(),
+        "user_name": repo.config.get("user_name"),
+        "user_email": repo.config.get("user_email"),
         "target": args.target,
         "plan_ref": args.plan_ref,
         "prune": args.prune,
@@ -365,9 +335,8 @@ fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, Str
         "remote_name": JsonValue::Null,
         "remote_repo_name": JsonValue::Null,
         "base_url": JsonValue::Null,
-        "rebase": args.rebase,
         "reconcile": args.reconcile,
-        "plan_storage": repo.plan_binary_db_storage_request::<PLAN_BINARY_DB_WRITE_LAYOUT>()?,
+        "plan_storage": repo.standalone_plan_sync_storage_request()?,
     });
     if let ResolvedPlanScope::Remote {
         name,
@@ -379,37 +348,10 @@ fn build_sync_request(repo: &RepoRuntime, args: &SyncArgs) -> Result<String, Str
             .as_object_mut()
             .ok_or("Sync request payload must be an object.")?;
         obj.insert("remote_name".to_string(), JsonValue::String(name));
-        obj.insert(
-            "remote_repo_name".to_string(),
-            JsonValue::String(repo_name),
-        );
+        obj.insert("remote_repo_name".to_string(), JsonValue::String(repo_name));
         obj.insert("base_url".to_string(), JsonValue::String(url));
     }
     Ok(payload.to_string())
-}
-
-fn validate_scope(local: bool, remote_name: Option<&str>) -> Result<(), String> {
-    if local && remote_name.is_some() {
-        return Err("--local cannot be combined with --remote".to_string());
-    }
-    if remote_name.is_some_and(|name| name.trim().is_empty()) {
-        return Err("--remote requires a non-empty remote name".to_string());
-    }
-    Ok(())
-}
-
-fn resolve_task_land_scope(
-    repo: &RepoRuntime,
-    local: bool,
-    remote_name: Option<&str>,
-) -> Result<(bool, Option<String>), String> {
-    validate_scope(local, remote_name)?;
-    let use_local_scope = repo.task_uses_local_scope(local, remote_name)?;
-    if use_local_scope {
-        return Ok((true, None));
-    }
-    let remote = repo.remote_row(remote_name)?;
-    Ok((false, Some(remote.name)))
 }
 
 fn parse_contains_terms(raw: &str) -> Result<Vec<String>, String> {
@@ -439,12 +381,17 @@ fn expect_array(value: &JsonValue) -> Result<Vec<JsonValue>, String> {
 }
 
 fn render_show_like(title: &str, payload: &JsonValue) -> Result<(), String> {
+    println!("{}", format_plan_show_like(title, payload)?);
+    Ok(())
+}
+
+pub(crate) fn format_plan_show_like(title: &str, payload: &JsonValue) -> Result<String, String> {
     let plan = payload
         .get("plan")
         .and_then(JsonValue::as_object)
         .or_else(|| payload.as_object())
         .ok_or("Plan show payload must decode to an object.")?;
-    print_key_values(
+    let mut output = crate::render::key_values_text(
         title,
         &[
             ("plan_id", string_field(plan.get("plan_id"))),
@@ -467,8 +414,8 @@ fn render_show_like(title: &str, payload: &JsonValue) -> Result<(), String> {
         .and_then(JsonValue::as_object)
         .or_else(|| payload.get("head_revision").and_then(JsonValue::as_object))
     {
-        println!();
-        print_key_values(
+        output.push_str("\n\n");
+        output.push_str(&crate::render::key_values_text(
             "revision",
             &[
                 (
@@ -495,17 +442,22 @@ fn render_show_like(title: &str, payload: &JsonValue) -> Result<(), String> {
                 ),
                 ("created_at", string_field(revision.get("created_at"))),
             ],
-        );
+        ));
     }
-    Ok(())
+    Ok(output)
 }
 
 fn render_items_like(title: &str, payload: &JsonValue) -> Result<(), String> {
+    println!("{}", format_plan_items_like(title, payload)?);
+    Ok(())
+}
+
+pub(crate) fn format_plan_items_like(title: &str, payload: &JsonValue) -> Result<String, String> {
     let items = payload
         .get("items")
         .and_then(JsonValue::as_array)
         .ok_or("Plan items payload is missing `items`.")?;
-    print_key_values(
+    let mut output = crate::render::key_values_text(
         title,
         &[
             ("plan_id", string_field(payload.get("plan_id"))),
@@ -516,20 +468,25 @@ fn render_items_like(title: &str, payload: &JsonValue) -> Result<(), String> {
             ("item_count", items.len().to_string()),
         ],
     );
-    println!();
-    print_list(
+    output.push_str("\n\n");
+    output.push_str(&crate::render::list_text(
         items,
         &["plan_item_ref", "checkbox_state", "text", "line_number"],
-    );
-    Ok(())
+    ));
+    Ok(output)
 }
 
 fn render_candidates_like(payload: &JsonValue) -> Result<(), String> {
+    println!("{}", format_plan_candidates_like(payload)?);
+    Ok(())
+}
+
+pub(crate) fn format_plan_candidates_like(payload: &JsonValue) -> Result<String, String> {
     let summary = payload
         .get("summary")
         .and_then(JsonValue::as_object)
         .ok_or("Plan candidates payload is missing `summary`.")?;
-    print_key_values(
+    let mut output = crate::render::key_values_text(
         "ait-cli plan candidates",
         &[
             ("scope", string_field(payload.get("scope"))),
@@ -549,12 +506,12 @@ fn render_candidates_like(payload: &JsonValue) -> Result<(), String> {
             ),
         ],
     );
-    println!();
+    output.push_str("\n\n");
     let rows = payload
         .get("candidates")
         .and_then(JsonValue::as_array)
         .ok_or("Plan candidates payload is missing `candidates`.")?;
-    print_list(
+    output.push_str(&crate::render::list_text(
         rows,
         &[
             "plan_id",
@@ -565,16 +522,21 @@ fn render_candidates_like(payload: &JsonValue) -> Result<(), String> {
             "taskable_item_count",
             "linked_task_count",
         ],
-    );
-    Ok(())
+    ));
+    Ok(output)
 }
 
 fn render_inspect_like(payload: &JsonValue) -> Result<(), String> {
+    println!("{}", format_plan_inspect_like(payload)?);
+    Ok(())
+}
+
+pub(crate) fn format_plan_inspect_like(payload: &JsonValue) -> Result<String, String> {
     let plan = payload
         .get("plan")
         .and_then(JsonValue::as_object)
         .ok_or("Plan inspect payload is missing `plan`.")?;
-    print_key_values(
+    let mut output = crate::render::key_values_text(
         "ait-cli plan inspect",
         &[
             ("plan_id", string_field(plan.get("plan_id"))),
@@ -600,12 +562,12 @@ fn render_inspect_like(payload: &JsonValue) -> Result<(), String> {
             ),
         ],
     );
-    println!();
+    output.push_str("\n\n");
     let rows = plan
         .get("items")
         .and_then(JsonValue::as_array)
         .ok_or("Plan inspect payload is missing `items`.")?;
-    print_list(
+    output.push_str(&crate::render::list_text(
         rows,
         &[
             "plan_item_ref",
@@ -615,18 +577,21 @@ fn render_inspect_like(payload: &JsonValue) -> Result<(), String> {
             "line_number",
             "text",
         ],
-    );
-    Ok(())
+    ));
+    Ok(output)
 }
 
 fn render_sync_like(payload: &JsonValue) -> Result<(), String> {
+    println!("{}", format_plan_sync_like(payload)?);
+    Ok(())
+}
+
+pub(crate) fn format_plan_sync_like(payload: &JsonValue) -> Result<String, String> {
     if let Some(error) = plan_sync_terminal_error(payload) {
         return Err(error);
     }
-    let summary = payload
-        .get("summary")
-        .and_then(JsonValue::as_object);
-    print_key_values(
+    let summary = payload.get("summary").and_then(JsonValue::as_object);
+    let mut output = crate::render::key_values_text(
         "ait-cli plan sync",
         &[
             ("target", string_field(payload.get("target"))),
@@ -659,12 +624,12 @@ fn render_sync_like(payload: &JsonValue) -> Result<(), String> {
             ),
         ],
     );
-    println!();
+    output.push_str("\n\n");
     let results = payload
         .get("results")
         .and_then(JsonValue::as_array)
         .ok_or("Plan sync payload is missing `results`.")?;
-    print_list(
+    output.push_str(&crate::render::list_text(
         results,
         &[
             "action",
@@ -674,11 +639,11 @@ fn render_sync_like(payload: &JsonValue) -> Result<(), String> {
             "plan_revision_id",
             "status",
         ],
-    );
-    Ok(())
+    ));
+    Ok(output)
 }
 
-fn plan_sync_terminal_error(payload: &JsonValue) -> Option<String> {
+pub(crate) fn plan_sync_terminal_error(payload: &JsonValue) -> Option<String> {
     let status = payload.get("status").and_then(JsonValue::as_str)?;
     if !matches!(status, "failed" | "partial_success") {
         return None;

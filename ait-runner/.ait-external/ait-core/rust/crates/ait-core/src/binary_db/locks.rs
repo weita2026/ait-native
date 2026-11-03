@@ -107,6 +107,9 @@ impl BinaryDbCommandLockSet {
                 .release()
                 .map_err(|e| file_io_error_to_binary("release Binary DB command lock", e))?;
         }
+        // Close the handles too; an unlocked Windows handle can still prevent
+        // replacement of the authority directory after a committed transaction.
+        self.locks.clear();
         self.released = true;
         Ok(())
     }
@@ -299,6 +302,7 @@ impl BinaryDbReadLockSet {
                 .release()
                 .map_err(|e| file_io_error_to_binary("release Binary DB read lock", e))?;
         }
+        self.locks.clear();
         self.released = true;
         Ok(())
     }

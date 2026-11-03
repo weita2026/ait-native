@@ -257,6 +257,9 @@ def test_named_scope_is_passed_without_selecting_a_remote(
     ["diff", "--name-only", "--json"],
     ["diff", "--name-only", "--stat"],
     ["diff", "first", "--unsupported", "second"],
+    ["diff", "--unsupported", "--", "-name"],
+    ["diff", "--stat", "--name-only", "--", "-name"],
+    ["diff", "--stat", "--stat", "--", "-name"],
     ["blame", "file.py", "--line", "0"],
     ["blame", "file.py", "--start", "1"],
     ["blame", "file.py", "--end", "2"],
@@ -1775,6 +1778,11 @@ def test_attestation_and_policy_native_scalar_errors_keep_parser_status_two(
     (["--name-only", "first", "second"], ["first", "second"], "render_workspace_diff_names"),
     (["first", "second", "--stat"], ["first", "second"], "render_workspace_diff_stat"),
     (["--", "--stat", "-name"], ["--stat", "-name"], "render_workspace_diff_text"),
+    (["--", "--json", "--", "help"], ["--json", "--", "help"], "render_workspace_diff_text"),
+    (["first", "--stat", "second", "--", "--name-only", "-name"],
+     ["first", "second", "--name-only", "-name"], "render_workspace_diff_stat"),
+    (["--stat", "first", "--", "--stat", "-name"],
+     ["first", "--stat", "-name"], "render_workspace_diff_stat"),
 ])
 def test_workspace_diff_preserves_path_order_and_exact_native_stdout(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
@@ -2049,6 +2057,10 @@ def test_worktree_sync_returns_the_native_exit_after_emitting_the_result(
     (["--all-stale", "--dry-run"], [], True),
     (["single", "--dry-run"], ["single"], False),
     (["first", "--dry-run", "second"], ["first", "second"], False),
+    (["--dry-run", "--", "--all-stale", "-name"], ["--all-stale", "-name"], False),
+    (["first", "--dry-run", "--", "--yes", "--", "-name"],
+     ["first", "--yes", "--", "-name"], False),
+    (["--dry-run", "--", "--json"], ["--json"], False),
 ])
 def test_worktree_remove_text_uses_requested_count_and_native_preview_branches(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], json_output: bool,
@@ -2068,7 +2080,7 @@ def test_worktree_remove_text_uses_requested_count_and_native_preview_branches(
         return native_presentation(name, args, kwargs)
 
     use_native_calls(monkeypatch, invoke)
-    assert cli.main(["worktree", "remove", *argv] + (["--json"] if json_output else [])) == 0
+    assert cli.main(["worktree", "remove"] + (["--json"] if json_output else []) + argv) == 0
     output = capsys.readouterr().out
     if json_output:
         assert json.loads(output) == payload

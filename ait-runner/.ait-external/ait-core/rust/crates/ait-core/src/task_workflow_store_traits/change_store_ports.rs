@@ -4,6 +4,13 @@ use crate::plan_store::PlanStoreResult;
 
 pub trait TaskWorkflowChangeLister {
     fn list_changes(&self) -> PlanStoreResult<Vec<Value>>;
+    fn list_task_changes(&self, task_id: &str) -> PlanStoreResult<Vec<Value>> {
+        Ok(self
+            .list_changes()?
+            .into_iter()
+            .filter(|row| row["task_id"].as_str() == Some(task_id))
+            .collect())
+    }
 }
 
 pub trait TaskWorkflowChangeReader {

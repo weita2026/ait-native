@@ -254,7 +254,7 @@ fn fixture() -> (TempDir, DiscordWorkerConfig, WorkerRunContext) {
     std::fs::create_dir_all(temp.path().join(".ait/agent-runtime")).expect("runtime dir");
     std::fs::write(
         temp.path().join(".ait/config.json"),
-        r#"{"repo_name":"fixture","workflow_mode":"solo_local"}"#,
+        r#"{"repo_name":"fixture"}"#,
     )
     .expect("repo config");
     let config = resolve_agent_worker_config(AgentWorkerConfigInput {

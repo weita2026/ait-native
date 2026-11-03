@@ -300,6 +300,102 @@ fn exact_task_cargo_config_with_aliases_stays_out_of_visible_workspace_paths() {
 }
 
 #[test]
+fn task_ram_and_ssd_projections_with_aliases_are_capacity_independent() {
+    let root = temp_dir("plan-filesystem-task-build-placements");
+    fs::create_dir_all(root.join(".ait/cargo-build-ssd")).unwrap();
+    fs::create_dir_all(root.join(".cargo")).unwrap();
+    fs::write(
+        root.join(WORKTREE_CONFIG_NAME),
+        r#"{"worktree_name":"task-one"}"#,
+    )
+    .unwrap();
+    let shared = fs::canonicalize(root.join(".ait")).unwrap();
+    for leaf in ["cargo-build", "cargo-build-ssd"] {
+        let build = shared.join(leaf).join("task-workspaces/task-one");
+        fs::write(root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH), format!(
+            "{GENERATED_CARGO_CONFIG_HEADER}\n[build]\ntarget-dir = {}\nbuild-dir = {}\n\n[alias]\nfixture-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
+            encoded_cargo_path(&worktree_cargo_target_dir(&root)), encoded_cargo_path(&build),
+        )).unwrap();
+        assert!(
+            list_visible_workspace_paths(root.to_str().unwrap(), None, None)
+                .unwrap()
+                .is_empty(),
+            "{leaf}"
+        );
+    }
+    // An exact target does not legitimize another Task's SSD build directory.
+    fs::write(
+        root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH),
+        format!(
+            "{GENERATED_CARGO_CONFIG_HEADER}\n[build]\ntarget-dir = {}\nbuild-dir = {}\n",
+            encoded_cargo_path(&worktree_cargo_target_dir(&root)),
+            encoded_cargo_path(&shared.join("cargo-build-ssd/task-workspaces/foreign-task")),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        list_visible_workspace_paths(root.to_str().unwrap(), None, None).unwrap(),
+        vec![WORKTREE_CARGO_CONFIG_RELATIVE_PATH]
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn resolved_ram_and_logical_ram_projections_remain_recognized_with_ssd_present() {
+    let root = temp_dir("plan-filesystem-resolved-ram");
+    fs::create_dir_all(root.join(".ait/cargo-build-ssd")).unwrap();
+    fs::create_dir_all(root.join("ram-cache")).unwrap();
+    fs::create_dir_all(root.join(".cargo")).unwrap();
+    std::os::unix::fs::symlink(root.join("ram-cache"), root.join(".ait/cargo-build")).unwrap();
+    fs::write(
+        root.join(WORKTREE_CONFIG_NAME),
+        r#"{"worktree_name":"task-one"}"#,
+    )
+    .unwrap();
+    let shared = fs::canonicalize(root.join(".ait")).unwrap();
+    for base in [
+        shared.join("cargo-build"),
+        fs::canonicalize(root.join("ram-cache")).unwrap(),
+    ] {
+        let build = base.join("task-workspaces/task-one");
+        fs::write(root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH), format!(
+            "{GENERATED_CARGO_CONFIG_HEADER}\n[build]\ntarget-dir = {}\nbuild-dir = {}\n\n[alias]\nfixture-test = \"test\"\n",
+            encoded_cargo_path(&worktree_cargo_target_dir(&root)), encoded_cargo_path(&build),
+        )).unwrap();
+        assert!(
+            list_visible_workspace_paths(root.to_str().unwrap(), None, None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    fs::remove_dir(root.join(".ait/cargo-build-ssd")).unwrap();
+    fs::create_dir_all(root.join("foreign-cache")).unwrap();
+    std::os::unix::fs::symlink(
+        root.join("foreign-cache"),
+        root.join(".ait/cargo-build-ssd"),
+    )
+    .unwrap();
+    let foreign = fs::canonicalize(root.join("foreign-cache"))
+        .unwrap()
+        .join("task-workspaces/task-one");
+    fs::write(
+        root.join(WORKTREE_CARGO_CONFIG_RELATIVE_PATH),
+        format!(
+            "{GENERATED_CARGO_CONFIG_HEADER}\n[build]\ntarget-dir = {}\nbuild-dir = {}\n",
+            encoded_cargo_path(&worktree_cargo_target_dir(&root)),
+            encoded_cargo_path(&foreign),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        list_visible_workspace_paths(root.to_str().unwrap(), None, None).unwrap(),
+        vec![WORKTREE_CARGO_CONFIG_RELATIVE_PATH]
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn canonical_source_cargo_config_remains_visible_in_a_worktree() {
     let root = temp_dir("plan-filesystem-source-cargo-config");
     fs::create_dir_all(root.join(".ait")).unwrap();
@@ -450,7 +546,7 @@ fn file_reads_and_zip_bridge_work() {
     let file = File::create(&archive_path).unwrap();
     let mut writer = zip::ZipWriter::new(file);
     writer
-        .start_file("docs/plan.md", zip::write::FileOptions::default())
+        .start_file("docs/plan.md", zip::write::SimpleFileOptions::default())
         .unwrap();
     writer.write_all(b"# Plan\n").unwrap();
     writer.finish().unwrap();
@@ -464,6 +560,72 @@ fn file_reads_and_zip_bridge_work() {
 }
 
 #[test]
+fn zip_bridge_preserves_legacy_compression_methods() {
+    for method in [
+        zip::CompressionMethod::Stored,
+        zip::CompressionMethod::Deflated,
+        zip::CompressionMethod::Bzip2,
+        zip::CompressionMethod::Zstd,
+    ] {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                "docs/plan.md",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(method)
+                    .last_modified_time(
+                        zip::DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap(),
+                    ),
+            )
+            .unwrap();
+        writer.write_all(b"# Legacy Plan\r\n").unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        let store = FakePlanFilesystemFileIoStore::default();
+        store.insert_file("/home/ait/archive.zip", &bytes);
+
+        assert!(
+            zip_archive_has_member_with_file_io_store(&store, "~/archive.zip", "docs/plan.md")
+                .unwrap()
+        );
+        assert_eq!(
+            read_zip_archive_member_with_file_io_store(&store, "~/archive.zip", "docs/plan.md")
+                .unwrap(),
+            b"# Legacy Plan\r\n",
+            "legacy compression method {method:?} must preserve exact member bytes"
+        );
+    }
+}
+
+#[test]
+fn zip_bridge_rejects_mismatched_local_header_name() {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            "docs/plan.md",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+    writer.write_all(b"# Plan\n").unwrap();
+    let mut bytes = writer.finish().unwrap().into_inner();
+    assert_eq!(&bytes[..4], b"PK\x03\x04");
+    // A ZIP local header has a fixed 30-byte prefix before its member name.
+    assert_eq!(&bytes[30..42], b"docs/plan.md");
+    bytes[30] = b'e';
+    let store = FakePlanFilesystemFileIoStore::default();
+    store.insert_file("/home/ait/archive.zip", &bytes);
+
+    assert!(
+        !zip_archive_has_member_with_file_io_store(&store, "~/archive.zip", "docs/plan.md")
+            .unwrap()
+    );
+    assert!(
+        read_zip_archive_member_with_file_io_store(&store, "~/archive.zip", "docs/plan.md")
+            .is_err()
+    );
+}
+
+#[test]
 fn file_reads_use_file_io_store_entrypoints() {
     let store = FakePlanFilesystemFileIoStore::default();
     store.insert_file("/home/ait/docs/plan.md", b"line one\r\nline two\r");
@@ -473,7 +635,7 @@ fn file_reads_use_file_io_store_entrypoints() {
     {
         let mut writer = zip::ZipWriter::new(&mut zip_buffer);
         writer
-            .start_file("docs/plan.md", zip::write::FileOptions::default())
+            .start_file("docs/plan.md", zip::write::SimpleFileOptions::default())
             .unwrap();
         writer.write_all(b"# Plan\n").unwrap();
         writer.finish().unwrap();

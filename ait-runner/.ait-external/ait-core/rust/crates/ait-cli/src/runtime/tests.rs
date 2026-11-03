@@ -84,9 +84,9 @@ fn generated_worktree_cargo_config_text(root: &Path) -> String {
         .join("task-workspaces")
         .join("lct-test");
     format!(
-        "# Managed by ait: workspace-isolated final artifacts and intermediates.\n[build]\ntarget-dir = \"{}\"\nbuild-dir = \"{}\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
-        target_dir.to_string_lossy(),
-        build_dir.to_string_lossy(),
+        "# Managed by ait: workspace-isolated final artifacts and intermediates.\n[build]\ntarget-dir = {}\nbuild-dir = {}\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
+        json!(target_dir),
+        json!(build_dir),
     )
 }
 
@@ -194,11 +194,8 @@ fn activated_task_worktree_uses_canonical_repository_and_scans_only_its_workspac
     );
     write_file(
         &workspace.join(".ait-worktree.json"),
-        &format!(
-            r#"{{"repo_root":"{}","workspace_root":"{}","worktree_name":"rct-test"}}"#,
-            repo.to_string_lossy(),
-            workspace.to_string_lossy()
-        ),
+        &json!({"repo_root": repo, "workspace_root": workspace, "worktree_name": "rct-test"})
+            .to_string(),
     );
     write_file(&workspace.join("worktree.txt"), "worktree content\n");
 
@@ -473,6 +470,7 @@ fn plan_binary_db_selected_command_request_admits_direct_authority_without_retir
         .append_plan(
             &mut write,
             ait_core::plan_binary_db::PlanRecord {
+                actor_index_plus1: 0,
                 plan_meta: 0,
                 reserved0: 0,
                 payload_len: 0,
@@ -2393,10 +2391,7 @@ fn binary_db_store_factory_uses_task_scope_for_worktrees() {
     write_file(&root.join(".ait/config.json"), r#"{"repo_name":"ait"}"#);
     write_file(
         &root.join(".ait-worktree.json"),
-        &format!(
-            r#"{{"repo_root":"{}","worktree_name":"rt-1"}}"#,
-            authoritative_root.to_string_lossy()
-        ),
+        &json!({"repo_root": authoritative_root, "worktree_name": "rt-1"}).to_string(),
     );
 
     let ctx = RepoRuntime::discover_from(root).unwrap();
@@ -2420,10 +2415,7 @@ fn binary_store_factory_uses_authoritative_repo_root() {
     write_file(&root.join(".ait/config.json"), r#"{"repo_name":"ait"}"#);
     write_file(
         &root.join(".ait-worktree.json"),
-        &format!(
-            r#"{{"repo_root":"{}","worktree_name":"rt-1"}}"#,
-            authoritative_root.to_string_lossy()
-        ),
+        &json!({"repo_root": authoritative_root, "worktree_name": "rt-1"}).to_string(),
     );
 
     let ctx = RepoRuntime::discover_from(root).unwrap();
@@ -2444,42 +2436,41 @@ fn binary_store_factory_uses_authoritative_repo_root() {
 fn authoritative_repo_root_prefers_overlay_repo_root() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
+    let authoritative_root = root.join("ait-root");
     fs::create_dir_all(root.join(".ait")).unwrap();
     write_file(&root.join(".ait/config.json"), r#"{"repo_name":"ait"}"#);
     write_file(
         &root.join(".ait-worktree.json"),
-        r#"{"repo_root":"/tmp/ait-root","worktree_name":"rt-1"}"#,
+        &json!({"repo_root": authoritative_root, "worktree_name": "rt-1"}).to_string(),
     );
     let ctx = RepoRuntime::discover_from(root).unwrap();
-    assert_eq!(
-        ctx.authoritative_repo_root(),
-        PathBuf::from("/tmp/ait-root")
-    );
+    assert_eq!(ctx.authoritative_repo_root(), authoritative_root);
 }
 
 #[test]
 fn workspace_root_prefers_overlay_workspace_root() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
+    let workspace_root = root.join("ait-worktree");
     fs::create_dir_all(root.join(".ait")).unwrap();
     fs::write(root.join(".ait/config.json"), r#"{"repo_name":"fixture"}"#).unwrap();
     fs::write(
         root.join(".ait-worktree.json"),
-        r#"{"workspace_root":"/tmp/ait-worktree","worktree_name":"rt-1"}"#,
+        json!({"workspace_root": workspace_root, "worktree_name": "rt-1"}).to_string(),
     )
     .unwrap();
     let ctx = RepoRuntime::discover_from(root).unwrap();
-    assert_eq!(ctx.workspace_root(), PathBuf::from("/tmp/ait-worktree"));
+    assert_eq!(ctx.workspace_root(), workspace_root);
 }
 
 #[test]
-fn team_review_enabled_only_in_team_remote_mode() {
+fn team_review_follows_independent_teams_flag() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     fs::create_dir_all(root.join(".ait")).unwrap();
     fs::write(
         root.join(".ait/config.json"),
-        r#"{"repo_name":"fixture","workflow_mode":"team_remote","workflow_default_scope":"remote","task_default_scope":"remote","change_default_scope":"remote"}"#,
+        r#"{"repo_name":"fixture","agent_teams":true,"workflow_default_scope":"remote","task_default_scope":"remote","change_default_scope":"remote"}"#,
     )
     .unwrap();
     let ctx = RepoRuntime::discover_from(root).unwrap();
@@ -2487,7 +2478,7 @@ fn team_review_enabled_only_in_team_remote_mode() {
 
     fs::write(
         root.join(".ait/config.json"),
-        r#"{"repo_name":"fixture","workflow_mode":"solo_remote","workflow_default_scope":"remote","task_default_scope":"remote","change_default_scope":"remote"}"#,
+        r#"{"repo_name":"fixture","workflow_default_scope":"remote","task_default_scope":"remote","change_default_scope":"remote"}"#,
     )
     .unwrap();
     let ctx = RepoRuntime::discover_from(root).unwrap();
@@ -2509,7 +2500,7 @@ fn change_scope_resolution_uses_change_default_and_explicit_solo_overrides() {
     assert!(ctx.change_uses_local_scope(false, None));
     assert!(ctx.change_uses_local_scope(true, None));
     assert!(!ctx.change_uses_local_scope(false, Some("origin")));
-    assert!(!ctx.task_uses_local_scope(false, None).unwrap());
+    assert!(ctx.task_uses_local_scope(false, None).unwrap());
     assert!(ctx
         .task_uses_local_scope(true, Some("origin"))
         .unwrap_err()
@@ -2517,7 +2508,7 @@ fn change_scope_resolution_uses_change_default_and_explicit_solo_overrides() {
 }
 
 #[test]
-fn ai_code_review_identity_uses_executable_basename_without_human_fallback() {
+fn ai_code_review_identity_requires_native_binding_without_app_or_human_fallback() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     fs::create_dir_all(root.join(".ait")).unwrap();
@@ -2528,12 +2519,7 @@ fn ai_code_review_identity_uses_executable_basename_without_human_fallback() {
     .unwrap();
     let ctx = RepoRuntime::discover_from(root).unwrap();
     let identity = ctx.ai_code_review_reviewer_identity();
-    assert!(identity.is_some());
-    assert_ne!(identity.as_deref(), Some("custom-reviewer"));
-    assert_ne!(
-        identity.as_deref(),
-        Some("Alice Example <alice@example.com>")
-    );
+    assert_eq!(identity, None);
 }
 
 #[test]
@@ -2554,6 +2540,36 @@ fn task_review_identity_uses_configured_user_name_only() {
 }
 
 #[test]
+fn remote_actor_identity_uses_only_the_effective_config_pair() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join(".git")).unwrap();
+    fs::write(
+        temp.path().join(".git/config"),
+        "[user]\nname = Git User\nemail = git@example\n",
+    )
+    .unwrap();
+    let mut config = JsonMap::new();
+    config.insert("user_name".into(), json!(" Alice 名 "));
+    config.insert("user_email".into(), json!(" A@Example.test "));
+    let mut runtime = RepoRuntime {
+        root: temp.path().into(),
+        ait_dir: temp.path().join(".ait"),
+        config,
+        worktree_config_path: None,
+    };
+    let identity = runtime.remote_actor_identity().unwrap();
+    assert_eq!(identity.user_name(), "Alice 名");
+    assert_eq!(identity.user_email(), "A@Example.test");
+    runtime.config.remove("user_email");
+    assert!(runtime
+        .remote_actor_identity()
+        .unwrap_err()
+        .contains("user_email"));
+    runtime.config.remove("user_name");
+    assert!(runtime.remote_actor_identity().is_err());
+}
+
+#[test]
 fn actor_identity_prefers_configured_user_email_over_formatted_user_identity() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -2565,4 +2581,82 @@ fn actor_identity_prefers_configured_user_email_over_formatted_user_identity() {
     .unwrap();
     let ctx = RepoRuntime::discover_from(root).unwrap();
     assert_eq!(ctx.actor_identity().as_deref(), Some("alice@example.com"));
+}
+
+#[test]
+fn effective_author_mode_uses_explicit_then_team_then_saved_solo_default_without_writes() {
+    let temp = TempDir::new().unwrap();
+    let mut repo = RepoRuntime {
+        root: temp.path().to_path_buf(),
+        ait_dir: temp.path().join(".ait"),
+        config: JsonMap::new(),
+        worktree_config_path: None,
+    };
+    for stored in [
+        None,
+        Some("human_only"),
+        Some("human_with_ai_assist"),
+        Some("ai_with_human_review"),
+        Some("ai_only_experimental"),
+    ] {
+        match stored {
+            Some(mode) => {
+                repo.config
+                    .insert("default_author_mode".into(), json!(mode));
+            }
+            None => {
+                repo.config.remove("default_author_mode");
+            }
+        }
+        for teams in [false, true, false] {
+            repo.config.insert("agent_teams".into(), json!(teams));
+            let before = repo.config.clone();
+            assert_eq!(
+                repo.effective_author_mode(None),
+                if teams {
+                    "ai_only_experimental"
+                } else {
+                    stored.unwrap_or(DEFAULT_AUTHOR_MODE)
+                },
+            );
+            for requested in ait_core::policy::author_mode_values() {
+                assert_eq!(repo.effective_author_mode(Some(&requested)), requested);
+            }
+            assert_eq!(repo.config, before);
+        }
+    }
+    assert!(!repo.ait_dir.exists());
+}
+
+#[test]
+fn explicit_invalid_modes_reach_existing_provenance_validation_instead_of_team_fallback() {
+    use ait_core::attest_json::{AttestJson, RemoteAttestationStatement};
+    let temp = TempDir::new().unwrap();
+    let mut repo = RepoRuntime {
+        root: temp.path().to_path_buf(),
+        ait_dir: temp.path().join(".ait"),
+        config: JsonMap::new(),
+        worktree_config_path: None,
+    };
+    repo.config
+        .insert("default_author_mode".into(), json!("ai_with_human_review"));
+    for teams in [false, true] {
+        repo.config.insert("agent_teams".into(), json!(teams));
+        for invalid in ["", " ", "not_a_mode"] {
+            let selected = repo.effective_author_mode(Some(invalid));
+            assert!(
+                AttestJson::stateless()
+                    .build_minimum_provenance(&selected, Some("test-model"),)
+                    .is_err(),
+                "invalid explicit mode {invalid:?} silently fell back"
+            );
+        }
+        let selected = repo.effective_author_mode(None);
+        let body = AttestJson::stateless()
+            .build_put_attestation_body(&selected, &RemoteAttestationStatement::default())
+            .unwrap();
+        assert_eq!(body["author_mode"], selected);
+        assert_eq!(body["require_human_review"], false);
+        assert!(body.get("human_reviewed").is_none());
+    }
 }

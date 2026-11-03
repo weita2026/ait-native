@@ -1,5 +1,6 @@
-const DEFAULT_REQUEST_TIMEOUT_SECONDS: f64 = 30.0;
-const LONG_RUNNING_REQUEST_TIMEOUT_SECONDS: f64 = 1_800.0;
+use ait_core::plan_http_sdk::{DEFAULT_REQUEST_TIMEOUT_SECONDS, LONG_RUNNING_REQUEST_TIMEOUT_SECONDS};
+
+use ait_core::plan_http_sdk::parse_compact_attestation_statement;
 
 #[pyclass(name = "PlanRemoteTransportConfig")]
 struct PlanRemoteTransportConfigPy {
@@ -1087,30 +1088,25 @@ impl HttpWorkflowCloseoutRemotePy {
         render_json_dict(py, payload)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (patchset_id, author_mode, evaluation_summary, provenance_summary, detail, repo_name=None, exact_id=false))]
+    #[pyo3(signature = (patchset_id, author_mode, statement, repo_name=None, exact_id=false))]
     fn put_attestation(
         &mut self,
         py: Python<'_>,
         patchset_id: &str,
         author_mode: &str,
-        evaluation_summary: Bound<'_, PyAny>,
-        provenance_summary: Bound<'_, PyAny>,
-        detail: Bound<'_, PyAny>,
+        statement: Bound<'_, PyAny>,
         repo_name: Option<&str>,
         exact_id: bool,
     ) -> PyResult<Py<PyDict>> {
-        let evaluation_summary = parse_json_value(evaluation_summary, "evaluation_summary")?;
-        let provenance_summary = parse_json_value(provenance_summary, "provenance_summary")?;
-        let detail = parse_json_value(detail, "detail")?;
+        let statement =
+            parse_compact_attestation_statement(parse_json_value(statement, "statement")?)
+                .map_err(PyValueError::new_err)?;
         let payload = py
             .detach(|| {
                 self.adapter.put_attestation(
                     patchset_id,
                     author_mode,
-                    &evaluation_summary,
-                    &provenance_summary,
-                    &detail,
+                    &statement,
                     repo_name,
                     exact_id,
                 )
@@ -1256,7 +1252,6 @@ impl HttpWorkflowCloseoutRemotePy {
             .map_err(plan_http_py_error)?;
         render_json_dict(py, payload)
     }
-
 }
 
 #[pyfunction(name = "normalize_remote_text")]
@@ -1310,3 +1305,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "remote_clients_attestation_tests.rs"]
+mod remote_clients_attestation_tests;

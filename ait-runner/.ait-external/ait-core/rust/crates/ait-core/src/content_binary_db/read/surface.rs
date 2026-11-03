@@ -173,6 +173,7 @@ content_record_decoder!(
     "tree"
 );
 mod blob_surface;
+pub(crate) use blob_surface::BinaryBlobReadSession;
 mod index_lookup;
 mod local_snapshot_adapter;
 mod pack_surface;

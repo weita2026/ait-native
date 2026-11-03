@@ -1,5 +1,3 @@
-use crate::json_support::{encode_json_value_compact, encode_json_value_compact_or_default};
-
 #[pyfunction(name = "artifact_blob_id")]
 fn artifact_blob_id_py(markdown: &str) -> String {
     artifact_blob_id(markdown)
@@ -319,7 +317,6 @@ fn repo_state_write_worktree_metadata_json_py(
     rust_write_worktree_metadata_json_file(path_value, &payload).map_err(PyValueError::new_err)
 }
 
-
 #[pyfunction(name = "plan_pack_substrate_build_pack_members")]
 #[pyo3(signature = (blob_items, *, max_delta_chain_depth=plan_pack_substrate::DEFAULT_MAX_DELTA_CHAIN_DEPTH, initial_by_path=None))]
 fn plan_pack_substrate_build_pack_members_py(
@@ -608,7 +605,10 @@ fn plan_pack_substrate_build_tree_records_py(
     file_entries: Bound<'_, PyAny>,
 ) -> PyResult<Py<PyDict>> {
     let payload = parse_json_value(file_entries, "file_entries")?;
-    render_json_dict(py, build_tree_records_payload(&payload)?)
+    render_json_dict(
+        py,
+        ait_core::plan_storage_sdk::build_tree_records(&payload).map_err(PyValueError::new_err)?,
+    )
 }
 
 #[pyfunction(name = "plan_pack_substrate_build_snapshot_id")]
@@ -624,7 +624,7 @@ fn plan_pack_substrate_build_snapshot_id_py(
 ) -> PyResult<Py<PyDict>> {
     render_json_dict(
         py,
-        build_snapshot_id_payload(
+        ait_core::plan_storage_sdk::build_snapshot_id(
             repo_name,
             line_name,
             parent_snapshot_id,
@@ -633,222 +633,6 @@ fn plan_pack_substrate_build_snapshot_id_py(
             snapshot_kind,
         ),
     )
-}
-
-#[derive(Clone, Debug)]
-enum StorageTreeNode {
-    Tree {
-        children: BTreeMap<String, StorageTreeNode>,
-    },
-    Blob {
-        blob_id: String,
-        size_bytes: Option<i64>,
-        mode: String,
-    },
-}
-
-#[derive(Clone, Debug)]
-struct StorageTreeEntryRow {
-    tree_id: String,
-    entry_name: String,
-    entry_type: String,
-    target_id: String,
-    size_bytes: Option<i64>,
-    mode: String,
-}
-
-fn build_tree_records_payload(file_entries: &JsonValue) -> PyResult<JsonValue> {
-    let rows = file_entries
-        .as_array()
-        .ok_or_else(|| PyValueError::new_err("file_entries must be a list."))?;
-    let mut sorted_rows = rows.iter().collect::<Vec<_>>();
-    sorted_rows.sort_by_key(|row| {
-        row.as_object()
-            .and_then(|obj| optional_json_text_field(obj, "path"))
-            .unwrap_or_default()
-    });
-    let mut root: BTreeMap<String, StorageTreeNode> = BTreeMap::new();
-    for row in sorted_rows {
-        let obj = row
-            .as_object()
-            .ok_or_else(|| PyValueError::new_err("file entry must be an object."))?;
-        let path = required_json_text_field(obj, "path")?;
-        let parts = path
-            .trim_matches('/')
-            .split('/')
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        if parts.is_empty() {
-            continue;
-        }
-        let mut cursor = &mut root;
-        for part in &parts[..parts.len() - 1] {
-            cursor = match cursor
-                .entry(part.clone())
-                .or_insert_with(|| StorageTreeNode::Tree {
-                    children: BTreeMap::new(),
-                }) {
-                StorageTreeNode::Tree { children } => children,
-                StorageTreeNode::Blob { .. } => {
-                    return Err(PyValueError::new_err(format!(
-                        "Path collision while building tree metadata at {path:?}"
-                    )));
-                }
-            };
-        }
-        cursor.insert(
-            parts.last().unwrap().clone(),
-            StorageTreeNode::Blob {
-                blob_id: required_json_text_field(obj, "blob_id")?,
-                size_bytes: optional_json_i64_field(obj, "size_bytes")?,
-                mode: required_json_text_field(obj, "mode")?,
-            },
-        );
-    }
-
-    let mut tree_rows = BTreeMap::<String, JsonValue>::new();
-    let mut tree_entry_rows = BTreeMap::<(String, String), StorageTreeEntryRow>::new();
-    let root_tree_id = materialize_storage_tree(&root, &mut tree_rows, &mut tree_entry_rows)?;
-    Ok(json!({
-        "root_tree_id": root_tree_id,
-        "tree_rows": tree_rows.into_values().collect::<Vec<_>>(),
-        "tree_entry_rows": tree_entry_rows.into_values().map(|row| json!({
-            "tree_id": row.tree_id,
-            "entry_name": row.entry_name,
-            "entry_type": row.entry_type,
-            "target_id": row.target_id,
-            "size_bytes": row.size_bytes,
-            "mode": row.mode,
-        })).collect::<Vec<_>>(),
-    }))
-}
-
-fn materialize_storage_tree(
-    children: &BTreeMap<String, StorageTreeNode>,
-    tree_rows: &mut BTreeMap<String, JsonValue>,
-    tree_entry_rows: &mut BTreeMap<(String, String), StorageTreeEntryRow>,
-) -> PyResult<String> {
-    let mut serialized_entries = Vec::<JsonValue>::new();
-    let mut pending_rows = Vec::<StorageTreeEntryRow>::new();
-    for (name, node) in children {
-        match node {
-            StorageTreeNode::Tree { children } => {
-                let child_tree_id = materialize_storage_tree(children, tree_rows, tree_entry_rows)?;
-                serialized_entries.push(json!({
-                    "name": name,
-                    "type": "tree",
-                    "target_id": child_tree_id,
-                }));
-                pending_rows.push(StorageTreeEntryRow {
-                    tree_id: String::new(),
-                    entry_name: name.clone(),
-                    entry_type: "tree".to_string(),
-                    target_id: child_tree_id,
-                    size_bytes: None,
-                    mode: "tree".to_string(),
-                });
-            }
-            StorageTreeNode::Blob {
-                blob_id,
-                size_bytes,
-                mode,
-            } => {
-                serialized_entries.push(json!({
-                    "name": name,
-                    "type": "blob",
-                    "target_id": blob_id,
-                    "size_bytes": size_bytes,
-                    "mode": mode,
-                }));
-                pending_rows.push(StorageTreeEntryRow {
-                    tree_id: String::new(),
-                    entry_name: name.clone(),
-                    entry_type: "blob".to_string(),
-                    target_id: blob_id.clone(),
-                    size_bytes: *size_bytes,
-                    mode: mode.clone(),
-                });
-            }
-        }
-    }
-    let digest_payload = JsonValue::Array(serialized_entries.clone());
-    let digest_text = encode_json_value_compact(&digest_payload).map_err(PyValueError::new_err)?;
-    let digest = sha256_hex_py(digest_text.as_bytes());
-    let tree_id = format!("TRE-{}", digest[..20].to_ascii_uppercase());
-    let row_tree_id = tree_id.clone();
-    tree_rows.entry(tree_id.clone()).or_insert_with(|| {
-        json!({
-            "tree_id": row_tree_id,
-            "entry_count": serialized_entries.len(),
-        })
-    });
-    for mut row in pending_rows {
-        row.tree_id = tree_id.clone();
-        tree_entry_rows.insert((row.tree_id.clone(), row.entry_name.clone()), row);
-    }
-    Ok(tree_id)
-}
-
-fn build_snapshot_id_payload(
-    repo_name: &str,
-    line_name: &str,
-    parent_snapshot_id: Option<&str>,
-    message: Option<&str>,
-    root_tree_id: &str,
-    snapshot_kind: &str,
-) -> JsonValue {
-    let payload = json!({
-        "repo_name": repo_name,
-        "line_name": line_name,
-        "parent_snapshot_id": parent_snapshot_id,
-        "message": message,
-        "root_tree_id": root_tree_id,
-        "snapshot_kind": snapshot_kind,
-    });
-    let revision_text = encode_json_value_compact_or_default(&payload);
-    let revision_hash = sha256_hex_py(revision_text.as_bytes());
-    json!({
-        "snapshot_id": format!("SNP-{}", revision_hash[..12].to_ascii_uppercase()),
-        "revision_hash": revision_hash,
-    })
-}
-
-fn required_json_text_field(obj: &Map<String, JsonValue>, field: &str) -> PyResult<String> {
-    optional_json_text_field(obj, field)
-        .ok_or_else(|| PyValueError::new_err(format!("{field} must be a non-empty string.")))
-}
-
-fn optional_json_text_field(obj: &Map<String, JsonValue>, field: &str) -> Option<String> {
-    match obj.get(field) {
-        None | Some(JsonValue::Null) => None,
-        Some(JsonValue::String(value)) => {
-            let text = value.trim();
-            (!text.is_empty()).then(|| text.to_string())
-        }
-        Some(value) => Some(value.to_string()),
-    }
-}
-
-fn optional_json_i64_field(obj: &Map<String, JsonValue>, field: &str) -> PyResult<Option<i64>> {
-    match obj.get(field) {
-        None | Some(JsonValue::Null) => Ok(None),
-        Some(JsonValue::Number(value)) => value
-            .as_i64()
-            .ok_or_else(|| PyValueError::new_err(format!("{field} must fit in i64.")))
-            .map(Some),
-        Some(value) => value
-            .to_string()
-            .parse::<i64>()
-            .map(Some)
-            .map_err(|_| PyValueError::new_err(format!("{field} must be an integer."))),
-    }
-}
-
-fn sha256_hex_py(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    format!("{:x}", hasher.finalize())
 }
 
 fn coerce_path_string(value: Bound<'_, PyAny>, field_name: &str) -> PyResult<String> {

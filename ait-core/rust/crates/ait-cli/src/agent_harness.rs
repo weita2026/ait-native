@@ -23,6 +23,14 @@ const TOOL_DISCIPLINE: &str = "\
 Before a query, identify the missing fact and reuse authoritative facts still
 valid in context. Batch independent searches and reads; filter results before
 returning them to the model. After truncation, retrieve only the missing segment.";
+const REBASE_GUIDANCE: &str = "\
+Rebase as needed when main or the target Line advances, preserving others'
+accepted changes. With teams disabled, the current executor rebases and resolves
+in-scope conflicts. With teams enabled, Developer does this work and Reviewer
+verifies the integration before finish. Ordinary advancement and in-scope rebase
+need no PM relay or approval. Escalate only out-of-scope decisions or unresolved
+blockers. Existing owner authorization requirements, CI, Review, Policy and
+native finish guards still apply.";
 const WORKSPACE_IGNORE_GUIDANCE: &str = "\
 Before the first build/test or Snapshot-producing finish, review `.aitignore`
 in `edit_root`. AIT does not automatically load `.gitignore`. Exclude only
@@ -494,6 +502,8 @@ retain the returned Task ID and verify that its `edit_root` is the selected path
 
 {task_path}
 
+{REBASE_GUIDANCE}
+
 {WORKSPACE_IGNORE_GUIDANCE}
 
 {supplemental_guidance}
@@ -821,6 +831,7 @@ mod tests {
                     + WORKSPACE_IGNORE_GUIDANCE.len()
                     + GUIDANCE_REUSE.len()
                     + TOOL_DISCIPLINE.len()
+                    + REBASE_GUIDANCE.len()
                     + if teams { TEAM_REVIEW_GUIDANCE.len() } else { 0 }
                     + 40;
                 let word_limit = base_word_limit
@@ -829,6 +840,7 @@ mod tests {
                     + WORKSPACE_IGNORE_GUIDANCE.split_whitespace().count()
                     + GUIDANCE_REUSE.split_whitespace().count()
                     + TOOL_DISCIPLINE.split_whitespace().count()
+                    + REBASE_GUIDANCE.split_whitespace().count()
                     + if teams {
                         TEAM_REVIEW_GUIDANCE.split_whitespace().count()
                     } else {
@@ -897,6 +909,7 @@ mod tests {
                     assert_eq!(guidance.matches(WORKSPACE_IGNORE_GUIDANCE).count(), 1);
                     assert_eq!(guidance.matches(GUIDANCE_REUSE).count(), 1);
                     assert_eq!(guidance.matches(TOOL_DISCIPLINE).count(), 1);
+                    assert_eq!(guidance.matches(REBASE_GUIDANCE).count(), 1);
                     for team_rule in [
                         "docs/roles/",
                         "ait team",
@@ -991,6 +1004,8 @@ mod tests {
                     }
                     assert_eq!(team.matches(MANAGED_START).count(), 1);
                     assert_eq!(team.matches(WORKSPACE_IGNORE_GUIDANCE).count(), 1);
+                    assert_eq!(team.matches(REBASE_GUIDANCE).count(), 1);
+                    assert_eq!(solo.matches(REBASE_GUIDANCE).count(), 1);
                     assert_eq!(
                         team.contains("--from <sprint-card-path>#<exact-ref>"),
                         sprint == "on"
@@ -1043,7 +1058,7 @@ mod tests {
     fn managed_refresh_is_idempotent_and_preserves_surrounding_governance() {
         let first = replace_or_insert_managed_block(
             "# AGENTS\n\nCustom before.\n",
-            &render_agent_workflow_block(&repo(false, "on")).unwrap(),
+            &render_agent_workflow_block(&repo(true, "on")).unwrap(),
             AGENT_HARNESS_PATH,
         )
         .unwrap();
@@ -1057,6 +1072,16 @@ mod tests {
         assert!(second.contains("Route: sprint=`off`; scope=`local`"));
         assert_eq!(second.matches(MANAGED_START).count(), 1);
         assert_eq!(second.matches(MANAGED_END).count(), 1);
+        assert_eq!(first.matches(REBASE_GUIDANCE).count(), 1);
+        assert_eq!(second.matches(REBASE_GUIDANCE).count(), 1);
+        assert!(!second.contains("Fresh team candidates"));
+        let regenerated = replace_or_insert_managed_block(
+            &second,
+            &render_agent_workflow_block(&repo(false, "off")).unwrap(),
+            AGENT_HARNESS_PATH,
+        )
+        .unwrap();
+        assert_eq!(regenerated, second);
     }
 
     #[test]

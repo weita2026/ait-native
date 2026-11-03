@@ -367,6 +367,7 @@ impl<const WRITE_LAYOUT: u32> PlanSyncLocalArtifactWriter
             )
         })?;
         let plan_record = PlanRecord {
+            actor_index_plus1: 0,
             plan_meta: plan_meta(request.status, request.publication_state)?,
             reserved0: 0,
             payload_len: 0,
@@ -388,6 +389,7 @@ impl<const WRITE_LAYOUT: u32> PlanSyncLocalArtifactWriter
         )
         .map_err(|err| err.to_string())?;
         let revision_record = PlanRevisionRecord {
+            actor_index_plus1: 0,
             revision_meta: revision_meta(request.publication_state),
             reserved0: 0,
             payload_len: 0,
@@ -525,6 +527,7 @@ impl<const WRITE_LAYOUT: u32> PlanSyncLocalArtifactWriter
             )
         })?;
         let revision_record = PlanRevisionRecord {
+            actor_index_plus1: 0,
             revision_meta: 0,
             reserved0: 0,
             payload_len: 0,

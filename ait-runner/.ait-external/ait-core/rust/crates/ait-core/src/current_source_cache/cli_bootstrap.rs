@@ -61,14 +61,18 @@ where
         )));
     }
 
-    let current_source_mtime = {
-        let _range = crate::perfetto_range!("ait.core.current_source_cli.source_mtime");
-        current_core_source_mtime_ns_with_source_store(source_store, &request.core_repo_root)?
+    let current_identity = {
+        let _range = crate::perfetto_range!("ait.core.current_source_cli.source_identity");
+        current_core_source_identity_with_source_store(source_store, &request.core_repo_root)?
     };
+    let current_source_mtime = current_identity.source_mtime_ns;
     if recorded_source_mtime != current_source_mtime {
         return Err(stale_cli_error(format!(
             "core source mtime changed (built={recorded_source_mtime}, current={current_source_mtime})"
         )));
+    }
+    if recorded_fingerprint != current_identity.source_fingerprint {
+        return Err(stale_cli_error("core source content changed"));
     }
 
     let executable_is_valid = {
@@ -95,6 +99,13 @@ where
         return Err(stale_cli_error(format!(
             "bootstrap executable mtime changed (built={recorded_cli_mtime}, current={current_cli_mtime})"
         )));
+    }
+    let current_cli_sha256 = artifact_sha256_hex_with_current_source_native_cache_artifact_store(
+        artifact_store,
+        &request.executable_path,
+    )?;
+    if recorded_sha256 != current_cli_sha256 {
+        return Err(stale_cli_error("bootstrap executable content changed"));
     }
 
     Ok(CurrentSourceCliBootstrapValidation {

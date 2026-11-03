@@ -322,6 +322,13 @@ pub fn worktree_recreate(
             "Worktree {worktree_name} is not task-bound; automatic recreate is only supported for task worktrees."
         ));
     }
+    let task_id = metadata_string(&metadata, "bound_task_id").expect("checked Task binding");
+    let expected_name = task_bound_worktree_name(&task_id)?;
+    if worktree_name != expected_name {
+        return Err(format!(
+            "Task {task_id} requires fixed worktree name {expected_name}; refusing to recreate {worktree_name}."
+        ));
+    }
     let line_name = string_field(&summary, "registered_line_name")
         .or_else(|| metadata_string(&metadata, "line_name"))
         .ok_or_else(|| format!("Worktree {worktree_name} has no registered line to recreate."))?;
@@ -349,6 +356,7 @@ pub fn worktree_recreate(
     }
     if let Some(change_ref) = metadata_string(&metadata, "bound_change_ref")
         .or_else(|| metadata_string(&metadata, "bound_change_id"))
+        .or_else(|| metadata_string(&metadata, "bound_task_id").filter(|id| id.starts_with('R')))
     {
         if let Ok((remote_row, repo_name)) = remote_context(repo, None, None) {
             if let Ok(mut task_remote) = http_task_remote(repo, &remote_row) {

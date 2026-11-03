@@ -638,20 +638,11 @@ impl InteractionJobInput {
                     .to_string(),
             );
         }
-        let workflow_mode =
-            required_text(target.get("workflow_mode"), "runtime_target.workflow_mode")?;
+        if request.contains_key("workflow_mode") || target.contains_key("workflow_mode") {
+            return Err("Retired execution field `workflow_mode`; resubmit with explicit runtime_target.mode.".to_string());
+        }
         if mode == "remote" {
-            if !matches!(workflow_mode.as_str(), "solo_remote" | "team_remote") {
-                return Err(
-                    "Discord interaction job remote workflow_mode must be `solo_remote` or `team_remote`."
-                        .to_string(),
-                );
-            }
             required_text(target.get("server_url"), "runtime_target.server_url")?;
-        } else if workflow_mode != "solo_local" {
-            return Err(
-                "Discord interaction job local workflow_mode must be `solo_local`.".to_string(),
-            );
         }
         let local_reply = request.get("local_reply").filter(|value| !value.is_null());
         if local_reply.is_some_and(|value| !value.is_object()) {

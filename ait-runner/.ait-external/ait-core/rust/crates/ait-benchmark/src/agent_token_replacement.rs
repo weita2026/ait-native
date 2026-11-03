@@ -851,7 +851,6 @@ pub(crate) fn validate_replacement_run(
             != replacement_manifest.benchmark_disabled_feature_overrides
         || source_manifest.project_document_loading != replacement_manifest.project_document_loading
         || source_manifest.project_doc_max_bytes != replacement_manifest.project_doc_max_bytes
-        || source_manifest.workflow_mode != replacement_manifest.workflow_mode
         || source_manifest.sprint_mode != replacement_manifest.sprint_mode
         || source_manifest.ait_server_allowed != replacement_manifest.ait_server_allowed
     {
@@ -930,7 +929,6 @@ fn environments_match(left: &AgentTokenEnvironment, right: &AgentTokenEnvironmen
         && left.git_version == right.git_version
         && left.node_version == right.node_version
         && left.browser_version == right.browser_version
-        && left.workflow_mode == right.workflow_mode
         && left.sprint_mode == right.sprint_mode
         && left.ait_server_connected == right.ait_server_connected
         && left.network_policy == right.network_policy

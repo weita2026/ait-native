@@ -4,13 +4,14 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
             let _command_range = perfetto_range!("ait.cli.snapshot_create.command");
             let payload = {
                 let _range = perfetto_range!("ait.cli.snapshot_create.lock_and_author");
-                run_locked_workspace_command(&repo, "ait-cli snapshot create", || {
-                    crate::primitives::snapshot_create_for_reference(
-                        &repo,
-                        &args.change_id,
-                        args.message.as_deref(),
-                    )
-                })?
+                crate::binding_services::capture_snapshot(
+                    &repo,
+                    &crate::binding_services::SnapshotCaptureRequest {
+                        reference: args.change_id.clone(),
+                        message: args.message.clone(),
+                        resume_snapshot_id: args.resume_snapshot_id.clone(),
+                    },
+                )?
             };
             {
                 let _range = perfetto_range!("ait.cli.snapshot_create.render");
@@ -52,48 +53,30 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
             Ok(ExitCode::SUCCESS)
         }
         SnapshotCommand::Show(args) => {
-            let snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.snapshot_id)?;
-            let payload = snapshot_show(&repo, &snapshot_id)?;
+            let inspection =
+                crate::binding_services::inspect_snapshot(&repo, &args.snapshot_id, !args.json)?;
             if args.json {
-                print_json(&payload)?;
+                print_json(&inspection["payload"])?;
             } else {
-                let parent_snapshot_id = string_field(payload.get("parent_snapshot_id"));
-                let delta = if parent_snapshot_id.is_empty() {
-                    None
-                } else {
-                    Some(snapshot_diff(
-                        &repo,
-                        &parent_snapshot_id,
-                        &snapshot_id,
-                        false,
-                        DEFAULT_SNAPSHOT_DIFF_MAX_BYTES,
-                    )?)
-                };
-                render_snapshot_identity(&payload, delta.as_ref(), !args.files)?;
-                if args.files {
-                    if let Some(files) = payload.get("files").and_then(JsonValue::as_array) {
-                        println!();
-                        println!("files");
-                        print_list(files, &["path", "blob_id", "size_bytes", "mode"]);
-                    }
-                }
+                println!(
+                    "{}",
+                    crate::binding_output::format_snapshot_show(&inspection, args.files)?
+                );
             }
             Ok(ExitCode::SUCCESS)
         }
         SnapshotCommand::Diff(args) => {
-            let old_snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.old_snapshot_id)?;
-            let new_snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.new_snapshot_id)?;
-            let payload = snapshot_diff(
+            let payload = crate::binding_services::diff_snapshot_selectors(
                 &repo,
-                &old_snapshot_id,
-                &new_snapshot_id,
+                &args.old_snapshot_id,
+                &args.new_snapshot_id,
                 args.include_text,
                 args.max_bytes,
             )?;
             if args.json {
                 print_json(&payload)?;
-            } else if let Some(rows) = payload.get("files").and_then(JsonValue::as_array) {
-                print_list(rows, &["status", "path", "diff"]);
+            } else if payload.get("files").is_some_and(JsonValue::is_array) {
+                println!("{}", crate::binding_output::format_snapshot_diff(&payload)?);
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -109,88 +92,62 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
                     apply: args.yes,
                 },
             )?;
-            emit_result(
-                "ait-cli snapshot restore-lines",
-                &payload,
-                args.json,
-                &[
-                    "mode",
-                    "snapshot_id",
-                    "path",
-                    "blob_id",
-                    "selected_range",
-                    "selected_line_count",
-                    "source_line_count",
-                    "workspace_line_count",
-                    "changed_line_count",
-                    "would_overwrite_selected_local_edits",
-                    "unchanged_outside_selected_range",
-                    "creates_snapshot",
-                    "applied",
-                ],
-            )?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!(
+                    "{}",
+                    crate::binding_output::format_snapshot_restore_lines(&payload)?
+                );
+            }
             Ok(ExitCode::SUCCESS)
         }
         SnapshotCommand::Revert(args) => {
-            let snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.snapshot_id)?;
-            let payload = run_locked_workspace_command(&repo, "ait-cli snapshot revert", || {
-                snapshot_revert(&repo, &snapshot_id, args.force, args.dry_run)
-            })?;
-            emit_result(
-                "ait-cli snapshot revert",
-                &payload,
-                args.json,
-                &[
-                    "snapshot_id",
-                    "parent_snapshot_id",
-                    "current_line",
-                    "applied",
-                    "affected_path_count",
-                ],
+            let payload = crate::binding_services::revert_snapshot_selector(
+                &repo,
+                &args.snapshot_id,
+                args.force,
+                args.dry_run,
             )?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!(
+                    "{}",
+                    crate::binding_output::format_snapshot_revert(&payload)?
+                );
+            }
             Ok(ExitCode::SUCCESS)
         }
         SnapshotCommand::Replay(args) => {
-            let snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.snapshot_id)?;
-            let payload = run_locked_workspace_command(&repo, "ait-cli snapshot replay", || {
-                let onto_line = match args.onto.as_deref() {
-                    Some(onto_line) => onto_line.to_string(),
-                    None => repo.current_line_name()?,
-                };
-                snapshot_replay(&repo, &snapshot_id, &onto_line, args.force, args.dry_run)
-            })?;
-            emit_result(
-                "ait-cli snapshot replay",
-                &payload,
-                args.json,
-                &[
-                    "snapshot_id",
-                    "parent_snapshot_id",
-                    "onto_line",
-                    "applied",
-                    "affected_path_count",
-                    "conflict_paths",
-                ],
+            let payload = crate::binding_services::replay_snapshot_selector(
+                &repo,
+                &args.snapshot_id,
+                args.onto.as_deref(),
+                args.force,
+                args.dry_run,
             )?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!(
+                    "{}",
+                    crate::binding_output::format_snapshot_replay(&payload)?
+                );
+            }
             Ok(ExitCode::SUCCESS)
         }
         SnapshotCommand::Ancestry(args) => {
-            let result = (|| {
-                let snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.snapshot_id)?;
-                let direction = if args.descendants {
-                    SnapshotAncestryDirection::Descendants
-                } else {
-                    SnapshotAncestryDirection::Ancestors
-                };
-                snapshot_ancestry(
-                    &repo,
-                    &snapshot_id,
-                    direction,
-                    args.first_parent,
-                    args.max_depth,
-                    args.limit,
-                )
-            })();
+            let result = crate::binding_services::query_snapshot_ancestry(
+                &repo,
+                &crate::binding_services::SnapshotAncestryRequest {
+                    selector: args.snapshot_id,
+                    descendants: args.descendants,
+                    first_parent: args.first_parent,
+                    max_depth: args.max_depth,
+                    limit: args.limit,
+                },
+            );
             let payload = match snapshot_query_result(result) {
                 Ok(payload) => payload,
                 Err(code) => return Ok(code),
@@ -203,15 +160,17 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
             Ok(ExitCode::SUCCESS)
         }
         SnapshotCommand::IsAncestor(args) => {
-            let result = (|| {
-                let older_snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.older_snapshot_id)?;
-                let newer_snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.newer_snapshot_id)?;
-                snapshot_is_ancestor_query(&repo, &older_snapshot_id, &newer_snapshot_id)
-            })();
-            let (payload, is_ancestor) = match snapshot_query_result(result) {
-                Ok(payload) => payload,
+            let result = crate::binding_services::query_snapshot_is_ancestor(
+                &repo,
+                &args.older_snapshot_id,
+                &args.newer_snapshot_id,
+            );
+            let result = match snapshot_query_result(result) {
+                Ok(result) => result,
                 Err(code) => return Ok(code),
             };
+            let payload = result.payload;
+            let is_ancestor = result.exit_code == 0;
             if args.json {
                 print_json(&payload)?;
             } else {
@@ -231,15 +190,18 @@ fn run_snapshot(repo: RepoRuntime, command: SnapshotCommand) -> Result<ExitCode,
             })
         }
         SnapshotCommand::MergeBase(args) => {
-            let result = (|| {
-                let left_snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.left_snapshot_id)?;
-                let right_snapshot_id = resolve_snapshot_ref_cmd(&repo, &args.right_snapshot_id)?;
-                snapshot_merge_base_query(&repo, &left_snapshot_id, &right_snapshot_id, args.all)
-            })();
-            let (payload, found) = match snapshot_query_result(result) {
-                Ok(payload) => payload,
+            let result = crate::binding_services::query_snapshot_merge_base(
+                &repo,
+                &args.left_snapshot_id,
+                &args.right_snapshot_id,
+                args.all,
+            );
+            let result = match snapshot_query_result(result) {
+                Ok(result) => result,
                 Err(code) => return Ok(code),
             };
+            let payload = result.payload;
+            let found = result.exit_code == 0;
             if args.json {
                 print_json(&payload)?;
             } else if let Some(snapshot_ids) = payload
@@ -314,18 +276,19 @@ fn snapshot_change_summary(delta: &JsonValue) -> String {
     }
 }
 
-fn render_snapshot_identity(
+pub(crate) fn format_snapshot_identity_text(
     payload: &JsonValue,
     delta: Option<&JsonValue>,
     include_evidence: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
+    let mut blocks = Vec::new();
     let snapshot_id = string_field(payload.get("snapshot_id"));
     let parents = snapshot_parent_text(payload);
     let file_count = string_field(payload.get("file_count"));
     let change = delta
         .map(snapshot_change_summary)
         .unwrap_or_else(|| format!("root tree ({file_count} files)"));
-    print_key_values(
+    blocks.push(crate::render::key_values_text(
         "ait snapshot show",
         &[
             ("snapshot", snapshot_id.clone()),
@@ -336,9 +299,9 @@ fn render_snapshot_identity(
             ("change", change),
             ("message", string_field(payload.get("message"))),
         ],
-    );
+    ));
     if !include_evidence {
-        return Ok(());
+        return Ok(blocks.join("\n"));
     }
 
     if let Some(delta) = delta {
@@ -358,18 +321,18 @@ fn render_snapshot_identity(
                 .then_with(|| string_field(left.get("path")).cmp(&string_field(right.get("path"))))
         });
         if !rows.is_empty() {
-            println!();
-            println!("changed paths");
-            print_bounded_evidence(
+            blocks.push(String::new());
+            blocks.push("changed paths".to_string());
+            blocks.push(bounded_evidence_text(
                 &rows,
                 &["status", "path"],
                 false,
                 DEFAULT_AGENT_TEXT_LIST_LIMIT,
                 &format!("ait snapshot diff {delta_parent} {snapshot_id}"),
-            );
+            ));
         }
-        println!("tree: ait snapshot show {snapshot_id} --files");
-        return Ok(());
+        blocks.push(format!("tree: ait snapshot show {snapshot_id} --files"));
+        return Ok(blocks.join("\n"));
     }
 
     let files = payload
@@ -378,17 +341,17 @@ fn render_snapshot_identity(
         .cloned()
         .unwrap_or_default();
     if !files.is_empty() {
-        println!();
-        println!("root tree sample");
-        print_bounded_evidence(
+        blocks.push(String::new());
+        blocks.push("root tree sample".to_string());
+        blocks.push(bounded_evidence_text(
             &files,
             &["path", "size_bytes", "mode"],
             false,
             DEFAULT_AGENT_TEXT_LIST_LIMIT,
             &format!("ait snapshot show {snapshot_id} --files"),
-        );
+        ));
     }
-    Ok(())
+    Ok(blocks.join("\n"))
 }
 
 fn snapshot_change_priority(row: &JsonValue) -> u8 {
@@ -401,6 +364,15 @@ fn snapshot_change_priority(row: &JsonValue) -> u8 {
 }
 
 fn render_snapshot_ancestry(payload: &JsonValue, show_all: bool) -> Result<(), String> {
+    println!("{}", format_snapshot_ancestry_text(payload, show_all)?);
+    Ok(())
+}
+
+pub(crate) fn format_snapshot_ancestry_text(
+    payload: &JsonValue,
+    show_all: bool,
+) -> Result<String, String> {
+    let mut blocks = Vec::new();
     let query_snapshot_id = string_field(payload.get("query_snapshot_id"));
     let direction = string_field(payload.get("direction"));
     let parent_mode = string_field(payload.get("parent_mode"));
@@ -421,7 +393,7 @@ fn render_snapshot_ancestry(payload: &JsonValue, show_all: bool) -> Result<(), S
         .and_then(JsonValue::as_array)
         .cloned()
         .unwrap_or_default();
-    print_key_values(
+    blocks.push(crate::render::key_values_text(
         "ait snapshot ancestry",
         &[
             ("query", query_snapshot_id.clone()),
@@ -437,7 +409,7 @@ fn render_snapshot_ancestry(payload: &JsonValue, show_all: bool) -> Result<(), S
                 },
             ),
         ],
-    );
+    ));
 
     let mut display_rows = rows.clone();
     let mut all_command = format!("ait snapshot ancestry {query_snapshot_id} --{direction}");
@@ -469,22 +441,22 @@ fn render_snapshot_ancestry(payload: &JsonValue, show_all: bool) -> Result<(), S
         });
     }
     if !display_rows.is_empty() {
-        println!();
-        println!(
-            "{}",
+        blocks.push(String::new());
+        blocks.push(
             if show_all {
                 "history"
             } else {
                 "nearest history"
             }
+            .to_string(),
         );
-        print_bounded_evidence(
+        blocks.push(bounded_evidence_text(
             &display_rows,
             &["depth", "snapshot_id", "parent_snapshot_ids"],
             show_all,
             DEFAULT_AGENT_TEXT_LIST_LIMIT,
             &all_command,
-        );
+        ));
     }
     if truncated {
         let next_limit = limit.saturating_mul(2).max(limit.saturating_add(1));
@@ -499,14 +471,17 @@ fn render_snapshot_ancestry(payload: &JsonValue, show_all: bool) -> Result<(), S
         if show_all {
             command.push_str(" --all");
         }
-        println!("continue: {command}");
+        blocks.push(format!("continue: {command}"));
     }
-    Ok(())
+    Ok(blocks.join("\n"))
 }
 
 fn snapshot_query_result<T>(result: Result<T, String>) -> Result<T, ExitCode> {
     result.map_err(|error| {
-        eprintln!("Error: {error}");
-        ExitCode::from(2)
+        eprintln!(
+            "{}",
+            crate::binding_output::format_snapshot_query_error(&error)
+        );
+        ExitCode::from(crate::binding_output::SNAPSHOT_QUERY_ERROR_EXIT_CODE)
     })
 }

@@ -144,9 +144,7 @@ fn task_workflow_closeout_remote_helpers_accept_trait_object() {
             remote_port,
             "RCP-1",
             "manual",
-            &json!({"state": "pass"}),
-            &json!({"source": "test"}),
-            &json!({"detail": true}),
+            &crate::attest_json::RemoteAttestationStatement::default(),
             Some("repo"),
             true,
         )

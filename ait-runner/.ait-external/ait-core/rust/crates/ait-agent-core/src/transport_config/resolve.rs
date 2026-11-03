@@ -14,8 +14,8 @@ use crate::transport::{
 
 use super::types::{
     AgentRuntimeMode, AgentRuntimeTarget, AgentSecret, AgentSharedWorkerConfig,
-    AgentWorkerRuntimeConfig, AgentWorkerRuntimePaths, AgentWorkflowMode, DiscordWorkerConfig,
-    LineWorkerConfig, SlackWorkerConfig, TelegramSttMode, TelegramWorkerConfig, TelegramWorkerMode,
+    AgentWorkerRuntimeConfig, AgentWorkerRuntimePaths, DiscordWorkerConfig, LineWorkerConfig,
+    SlackWorkerConfig, TelegramSttMode, TelegramWorkerConfig, TelegramWorkerMode,
 };
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -620,7 +620,6 @@ fn resolve_repo_settings(repo_root: &Path) -> Result<RepoSettings, String> {
     let config = config
         .as_object()
         .ok_or_else(|| "ait-agent repository config must be a JSON object".to_string())?;
-    let workflow_mode = resolve_workflow_mode(config)?;
     let repo_name = clean_json_text(config.get("repo_name"))
         .or_else(|| {
             repo_root
@@ -630,30 +629,14 @@ fn resolve_repo_settings(repo_root: &Path) -> Result<RepoSettings, String> {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "repo".to_string());
     let default_model = clean_json_text(config.get("default_model"));
-    if workflow_mode == AgentWorkflowMode::SoloLocal {
-        let optional_remote = resolve_configured_remote(config, false)?;
-        return Ok(RepoSettings {
-            runtime_target: AgentRuntimeTarget {
-                mode: AgentRuntimeMode::Local,
-                workflow_mode,
-                repo_name,
-                repo_root: repo_root.to_path_buf(),
-                remote_name: optional_remote.as_ref().map(|(name, _)| name.clone()),
-                server_url: optional_remote.map(|(_, url)| url),
-            },
-            default_model,
-        });
-    }
-    let (remote_name, server_url) = resolve_configured_remote(config, true)?
-        .ok_or_else(|| "ait-agent remote workflow requires a default remote name".to_string())?;
+    let optional_remote = resolve_configured_remote(config);
     Ok(RepoSettings {
         runtime_target: AgentRuntimeTarget {
-            mode: AgentRuntimeMode::Remote,
-            workflow_mode,
+            mode: AgentRuntimeMode::Local,
             repo_name,
             repo_root: repo_root.to_path_buf(),
-            remote_name: Some(remote_name),
-            server_url: Some(server_url),
+            remote_name: optional_remote.as_ref().map(|(name, _)| name.clone()),
+            server_url: optional_remote.map(|(_, url)| url),
         },
         default_model,
     })
@@ -661,88 +644,16 @@ fn resolve_repo_settings(repo_root: &Path) -> Result<RepoSettings, String> {
 
 fn resolve_configured_remote(
     config: &ait_core::json_support::JsonMap<String, JsonValue>,
-    required: bool,
-) -> Result<Option<(String, String)>, String> {
-    let Some(remote_name) = clean_json_text(config.get("default_remote")) else {
-        if required {
-            return Err("ait-agent remote workflow requires a default remote name".to_string());
-        }
-        return Ok(None);
-    };
-    let Some(remotes) = config.get("remotes").and_then(JsonValue::as_object) else {
-        return if required {
-            Err("ait-agent remote workflow requires a remotes map".to_string())
-        } else {
-            Ok(None)
-        };
-    };
-    let Some(remote) = remotes.get(&remote_name).and_then(JsonValue::as_object) else {
-        return if required {
-            Err("ait-agent default remote is not configured".to_string())
-        } else {
-            Ok(None)
-        };
-    };
-    let Some(raw_server_url) = clean_json_text(remote.get("url")) else {
-        return if required {
-            Err("the default ait remote is missing a server URL".to_string())
-        } else {
-            Ok(None)
-        };
-    };
-    let server_url = raw_server_url.trim_end_matches('/').to_string();
-    if server_url.is_empty() {
-        return if required {
-            Err("the default ait remote is missing a server URL".to_string())
-        } else {
-            Ok(None)
-        };
-    }
-    Ok(Some((remote_name, server_url)))
-}
-
-fn resolve_workflow_mode(
-    config: &ait_core::json_support::JsonMap<String, JsonValue>,
-) -> Result<AgentWorkflowMode, String> {
-    if let Some(value) = clean_json_text(config.get("workflow_mode")) {
-        match value.as_str() {
-            "solo_local" => return Ok(AgentWorkflowMode::SoloLocal),
-            "solo_remote" => return Ok(AgentWorkflowMode::SoloRemote),
-            "team_remote" => return Ok(AgentWorkflowMode::TeamRemote),
-            _ => {}
-        }
-    }
-    let workflow_scope = valid_scope(config.get("workflow_default_scope")).unwrap_or("local");
-    let task_scope = valid_scope(config.get("task_default_scope")).unwrap_or(workflow_scope);
-    let change_scope = valid_scope(config.get("change_default_scope")).unwrap_or(workflow_scope);
-    let binding_mode = config
-        .get("plan_task_binding")
-        .and_then(JsonValue::as_object)
-        .and_then(|binding| clean_json_text(binding.get("mode")))
-        .filter(|mode| matches!(mode.as_str(), "advisory" | "strict" | "required"))
-        .unwrap_or_else(|| "required".to_string());
-    match (
-        workflow_scope,
-        task_scope,
-        change_scope,
-        binding_mode.as_str(),
-    ) {
-        ("local", "local", "local", "required") => Ok(AgentWorkflowMode::SoloLocal),
-        ("remote", "remote", "remote", "advisory") => Ok(AgentWorkflowMode::SoloRemote),
-        ("remote", "remote", "remote", "required") => Ok(AgentWorkflowMode::TeamRemote),
-        _ => Err(
-            "ait-agent requires a repo workflow preset: solo_local, solo_remote, or team_remote"
-                .to_string(),
-        ),
-    }
-}
-
-fn valid_scope(value: Option<&JsonValue>) -> Option<&str> {
-    match value.and_then(JsonValue::as_str).map(str::trim) {
-        Some("local") => Some("local"),
-        Some("remote") => Some("remote"),
-        _ => None,
-    }
+) -> Option<(String, String)> {
+    let name = clean_json_text(config.get("default_remote"))?;
+    let remote = config
+        .get("remotes")?
+        .as_object()?
+        .get(&name)?
+        .as_object()?;
+    let url = clean_json_text(remote.get("url"))?;
+    let url = url.trim_end_matches('/').to_string();
+    (!url.is_empty()).then_some((name, url))
 }
 
 fn worker_scalar_text(value: Option<&JsonValue>) -> Option<String> {
@@ -1135,7 +1046,7 @@ fn required_request_text(
 }
 
 #[cfg(test)]
-mod solo_local_optional_remote_tests {
+mod local_optional_remote_tests {
     use std::fs;
 
     use ait_core::json_support::json;
@@ -1144,14 +1055,13 @@ mod solo_local_optional_remote_tests {
     use super::*;
 
     #[test]
-    fn solo_local_preserves_an_optional_remote_without_changing_local_runtime_mode() {
+    fn local_preserves_an_optional_remote_without_changing_local_runtime_mode() {
         let temp = tempdir().expect("tempdir");
         fs::create_dir(temp.path().join(".ait")).expect("ait dir");
         fs::write(
             temp.path().join(".ait/config.json"),
             json!({
                 "repo_name": "fixture",
-                "workflow_mode": "solo_local",
                 "default_remote": "origin",
                 "remotes": {"origin": {"url": "http://127.0.0.1:8088///"}}
             })
@@ -1163,10 +1073,6 @@ mod solo_local_optional_remote_tests {
 
         assert_eq!(settings.runtime_target.mode, AgentRuntimeMode::Local);
         assert_eq!(
-            settings.runtime_target.workflow_mode,
-            AgentWorkflowMode::SoloLocal
-        );
-        assert_eq!(
             settings.runtime_target.remote_name.as_deref(),
             Some("origin")
         );
@@ -1177,12 +1083,12 @@ mod solo_local_optional_remote_tests {
     }
 
     #[test]
-    fn solo_local_without_a_default_remote_remains_a_valid_local_target() {
+    fn local_without_a_default_remote_remains_a_valid_local_target() {
         let temp = tempdir().expect("tempdir");
         fs::create_dir(temp.path().join(".ait")).expect("ait dir");
         fs::write(
             temp.path().join(".ait/config.json"),
-            json!({"repo_name": "fixture", "workflow_mode": "solo_local"}).to_string(),
+            json!({"repo_name": "fixture"}).to_string(),
         )
         .expect("config");
 
@@ -1196,7 +1102,6 @@ mod solo_local_optional_remote_tests {
             temp.path().join(".ait/config.json"),
             json!({
                 "repo_name": "fixture",
-                "workflow_mode": "solo_local",
                 "default_remote": "origin",
                 "remotes": {"origin": {}}
             })

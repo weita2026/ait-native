@@ -1,4 +1,4 @@
-use crate::binary_db::{BinaryDbReadTxn, LocalBinaryDbFs};
+use crate::binary_db::{BinaryDbReadTxn, LocalBinaryDb, LocalBinaryDbFs};
 use crate::content_binary_db::{
     BinaryDbBlobStore, BinaryDbTreePackStore, BinaryDbTreeStore, BinaryObjectPackMemberKind,
     BinarySnapshotView, LocalContentBinaryDb,

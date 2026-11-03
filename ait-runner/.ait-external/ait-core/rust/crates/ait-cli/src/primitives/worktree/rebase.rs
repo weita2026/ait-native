@@ -1,6 +1,9 @@
 use super::*;
 use crate::runtime::SNAPSHOT_BINARY_DB_WRITE_LAYOUT;
-use ait_core::local_snapshot::{LocalSnapshotBlobReadStore, LocalSnapshotTreeReadStore};
+use ait_core::local_snapshot::{
+    LocalSnapshotBlobReadStore, LocalSnapshotTreeReadStore, SnapshotAuthoringOptions,
+};
+use ait_core::snapshot_rebase::rebase_snapshot_files;
 
 pub fn worktree_restore_owned_head(
     repo: &RepoRuntime,
@@ -388,22 +391,65 @@ pub(in crate::primitives) fn apply_prepared_worktree_rebase(
         Some(&prepared.new_base_snapshot_id),
         None,
     )?;
-    let new_head_snapshot_id = if new_workspace
-        .get("clean")
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false)
-    {
-        prepared.new_base_snapshot_id.clone()
-    } else {
-        let snapshot = create_snapshot_with_parent(
-            &prepared.worktree_repo,
-            &format!(
-                "Rebase {} onto {}",
-                prepared.line_name, prepared.onto_line_name
-            ),
-            &prepared.new_base_snapshot_id,
-        )?;
-        required_string_field(&snapshot, "snapshot_id")?
+    let authored = (|| -> Result<String, String> {
+        Ok(
+            if new_workspace
+                .get("clean")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false)
+            {
+                create_integrated_rebase_snapshot(
+                    &prepared.worktree_repo,
+                    &prepared.old_head_snapshot_id,
+                    &prepared.new_base_snapshot_id,
+                )?
+                .unwrap_or_else(|| prepared.new_base_snapshot_id.clone())
+            } else {
+                let snapshot = create_snapshot_with_parent(
+                    &prepared.worktree_repo,
+                    &format!(
+                        "Rebase {} onto {}",
+                        prepared.line_name, prepared.onto_line_name
+                    ),
+                    &prepared.new_base_snapshot_id,
+                )?;
+                required_string_field(&snapshot, "snapshot_id")?
+            },
+        )
+    })();
+    let new_head_snapshot_id = match authored {
+        Ok(id) => id,
+        Err(error) => {
+            // Applied rebase starts from a verified clean workspace. If
+            // capture did not advance its head, restore that exact workspace
+            // so the saved original capture intent can be retried.
+            let remote = current_worktree_metadata(&prepared.worktree_repo)?
+                .and_then(|m| m.bound_task_id)
+                .is_some_and(|id| id.starts_with('R'));
+            if remote
+                && local_line_head_snapshot_id(&prepared.worktree_repo, &prepared.line_name)?
+                    .as_deref()
+                    == Some(prepared.old_head_snapshot_id.as_str())
+            {
+                restore_workspace_all(
+                    &prepared.worktree_repo,
+                    Some(&prepared.old_head_snapshot_id),
+                    None,
+                    true,
+                    false,
+                )
+                .map_err(|recovery| {
+                    format!("{error}; rebase workspace recovery failed: {recovery}")
+                })?;
+                prepared
+                    .worktree_repo
+                    .set_worktree_materialized_snapshot(Some(&prepared.old_head_snapshot_id))
+                    .map_err(|recovery| {
+                        format!("{error}; rebase cursor recovery failed: {recovery}")
+                    })?;
+            }
+            return Err(error);
+        }
     };
     set_local_line_head(
         &prepared.worktree_repo,
@@ -501,7 +547,12 @@ pub fn worktree_continue_rebase(
         .and_then(JsonValue::as_bool)
         .unwrap_or(false)
     {
-        new_base_snapshot_id.clone()
+        create_integrated_rebase_snapshot(
+            &prepared.worktree_repo,
+            &old_head_snapshot_id,
+            &new_base_snapshot_id,
+        )?
+        .unwrap_or_else(|| new_base_snapshot_id.clone())
     } else {
         let snapshot = create_snapshot_with_parent(
             &prepared.worktree_repo,
@@ -690,96 +741,26 @@ pub(super) fn snapshot_owned_by_bound_slice(
     snapshot_id: &str,
     expected_task_id: &str,
     expected_change_id: Option<&str>,
-    expected_worktree_name: Option<&str>,
+    _expected_worktree_name: Option<&str>,
 ) -> JsonMap<String, JsonValue> {
-    let provenance_task_id = provenance.and_then(|value| string_field(value, "task_id"));
-    let provenance_change_id = provenance.and_then(|value| string_field(value, "change_id"));
-    let provenance_worktree_name =
-        provenance.and_then(|value| string_field(value, "worktree_name"));
-    let base = JsonMap::from_iter([
-        (
-            "snapshot_id".to_string(),
-            JsonValue::String(snapshot_id.to_string()),
-        ),
-        (
-            "owner_task_id".to_string(),
-            provenance_task_id
-                .clone()
-                .map(JsonValue::String)
-                .unwrap_or(JsonValue::Null),
-        ),
-        (
-            "owner_change_id".to_string(),
-            provenance_change_id
-                .clone()
-                .map(JsonValue::String)
-                .unwrap_or(JsonValue::Null),
-        ),
-        (
-            "owner_worktree_name".to_string(),
-            provenance_worktree_name
-                .clone()
-                .map(JsonValue::String)
-                .unwrap_or(JsonValue::Null),
-        ),
-    ]);
-    let mut owned = base.clone();
-    match provenance {
-        None => {
-            owned.insert("owned".to_string(), JsonValue::Bool(false));
-            owned.insert(
-                "reason".to_string(),
-                JsonValue::String("missing workflow provenance".to_string()),
-            );
-            owned
-        }
-        Some(_) if provenance_task_id.as_deref() != Some(expected_task_id) => {
-            owned.insert("owned".to_string(), JsonValue::Bool(false));
-            owned.insert(
-                "reason".to_string(),
-                JsonValue::String(format!(
-                    "task {}",
-                    provenance_task_id.as_deref().unwrap_or("none")
-                )),
-            );
-            owned
-        }
-        Some(_)
-            if expected_change_id.is_some()
-                && provenance_change_id.as_deref() != expected_change_id
-                && provenance_change_id.is_some() =>
-        {
-            owned.insert("owned".to_string(), JsonValue::Bool(false));
-            owned.insert(
-                "reason".to_string(),
-                JsonValue::String(format!(
-                    "change {}",
-                    provenance_change_id.as_deref().unwrap_or("none")
-                )),
-            );
-            owned
-        }
-        Some(_)
-            if expected_worktree_name.is_some()
-                && provenance_worktree_name.as_deref() != expected_worktree_name
-                && provenance_worktree_name.is_some() =>
-        {
-            owned.insert("owned".to_string(), JsonValue::Bool(false));
-            owned.insert(
-                "reason".to_string(),
-                JsonValue::String(format!(
-                    "worktree {}",
-                    provenance_worktree_name.as_deref().unwrap_or("none")
-                )),
-            );
-            owned
-        }
-        Some(_) => {
-            owned.insert("owned".to_string(), JsonValue::Bool(true));
-            owned.insert("reason".to_string(), JsonValue::Null);
-            owned
-        }
-    }
+    let task = provenance.and_then(|row| string_field(row, "task_id"));
+    let change = provenance.and_then(|row| string_field(row, "change_id"));
+    let reason = if provenance.is_none() {
+        Some("missing workflow provenance".to_string())
+    } else if task.as_deref() != Some(expected_task_id) {
+        Some(format!("task {}", task.as_deref().unwrap_or("none")))
+    } else if expected_change_id.is_some() && change.as_deref() != expected_change_id {
+        Some(format!("change {}", change.as_deref().unwrap_or("none")))
+    } else {
+        None
+    };
+    JsonMap::from_iter([
+        ("snapshot_id".into(), json!(snapshot_id)),
+        ("owner_task_id".into(), json!(task)),
+        ("owner_change_id".into(), json!(change)),
+        ("owned".into(), json!(reason.is_none())),
+        ("reason".into(), json!(reason)),
+    ])
 }
 
 pub(in crate::primitives) fn read_worktree_snapshot_blob_bytes(
@@ -882,69 +863,31 @@ pub(super) fn compute_worktree_rebase_plan(
     let base_files = snapshot_file_map(old_base_snapshot_id)?;
     let head_files = snapshot_file_map(old_head_snapshot_id)?;
     let target_files = snapshot_file_map(new_base_snapshot_id)?;
-    let changed_paths = |left: &BTreeMap<String, SnapshotFileRow>,
-                         right: &BTreeMap<String, SnapshotFileRow>| {
-        left.keys()
-            .chain(right.keys())
-            .filter(|path| left.get(*path) != right.get(*path))
-            .cloned()
-            .collect::<BTreeSet<_>>()
-    };
-    let feature_paths = changed_paths(&base_files, &head_files);
-    let target_paths = changed_paths(&base_files, &target_files);
-    let all_paths = feature_paths
-        .iter()
-        .chain(target_paths.iter())
-        .cloned()
-        .collect::<BTreeSet<_>>();
+    let plan = rebase_snapshot_files(&base_files, &head_files, &target_files);
     let mut files = Vec::new();
-    let mut apply_write_paths = Vec::new();
-    let mut apply_remove_paths = Vec::new();
-    let mut conflict_paths = Vec::new();
-    let feature_delta_count = feature_paths.len() as i64;
-    for path in all_paths {
-        let base_row = base_files.get(&path);
-        let head_row = head_files.get(&path);
-        let target_row = target_files.get(&path);
-        let feature_changed = head_row != base_row;
-        let target_changed = target_row != base_row;
-        let (resolution, apply_status) = if !feature_changed {
-            ("target", "unchanged")
-        } else if !target_changed {
-            if head_row.is_none() {
-                ("feature", "remove")
-            } else {
-                ("feature", "write")
-            }
-        } else if head_row == target_row {
-            ("same_result", "unchanged")
-        } else {
-            conflict_paths.push(path.clone());
-            ("conflict", "conflict")
-        };
-        if apply_status == "write" {
-            apply_write_paths.push(path.clone());
-        } else if apply_status == "remove" {
-            apply_remove_paths.push(path.clone());
-        }
+    for change in &plan.paths {
+        let path = &change.path;
+        let base_row = base_files.get(path);
+        let head_row = head_files.get(path);
+        let target_row = target_files.get(path);
         files.push(json!({
             "path": path,
-            "feature_changed": feature_changed,
-            "target_changed": target_changed,
-            "resolution": resolution,
-            "apply_status": apply_status,
+            "feature_changed": change.feature_changed,
+            "target_changed": change.target_changed,
+            "resolution": change.resolution.as_str(),
+            "apply_status": change.apply.as_str(),
             "old": base_row.map(worktree_snapshot_file_row_json).unwrap_or(JsonValue::Null),
             "feature": head_row.map(worktree_snapshot_file_row_json).unwrap_or(JsonValue::Null),
             "target": target_row.map(worktree_snapshot_file_row_json).unwrap_or(JsonValue::Null),
         }));
     }
     Ok(WorktreeRebasePlan {
-        feature_delta_count,
-        conflict_paths,
-        apply_write_paths,
-        apply_remove_paths,
+        feature_delta_count: plan.feature_delta_count as i64,
+        conflict_paths: plan.conflict_paths,
+        apply_write_paths: plan.write_paths,
+        apply_remove_paths: plan.remove_paths,
         files,
-        would_fast_forward: feature_delta_count == 0,
+        would_fast_forward: plan.feature_delta_count == 0,
     })
 }
 
@@ -1239,6 +1182,76 @@ pub(super) fn rebase_plan_payload(
     payload
 }
 
+/// Retain Task ownership when its submitted Snapshot is already included in
+/// the new base and rebase changes no content. This is a lineage receipt,
+/// not another integration; ordinary unchanged checkpoints remain refused.
+fn create_integrated_rebase_snapshot(
+    repo: &RepoRuntime,
+    old_head: &str,
+    new_base: &str,
+) -> Result<Option<String>, String> {
+    if old_head == new_base {
+        return Ok(None);
+    }
+    if current_worktree_metadata(repo)?
+        .and_then(|metadata| metadata.bound_task_id)
+        .is_none()
+    {
+        return Ok(None);
+    }
+    let (binding, local) = current_worktree_snapshot_binding(repo)?;
+    if !local {
+        if snapshot_distance_if_ancestor(repo, Some(old_head), Some(new_base))?.is_none() {
+            return Ok(None);
+        }
+        let snapshot = create_remote_snapshot_with_parent(
+            repo,
+            "Record Task-owned rebase of already-integrated changes",
+            new_base,
+            true,
+        )?;
+        return Ok(Some(required_string_field(&snapshot, "snapshot_id")?));
+    }
+    let latest = if binding.change_id.is_empty() {
+        repo.task_store()?
+            .latest_task_snapshot_id(&binding.task_id)
+            .map_err(|error| error.to_string())?
+    } else {
+        let change_ref = change_reference_for_context(Some(&binding.task_id), &binding.change_id)?;
+        repo.task_store()?
+            .latest_change_snapshot_id(&change_ref)
+            .map_err(|error| error.to_string())?
+    };
+    if latest.as_deref() != Some(old_head)
+        || snapshot_distance_if_ancestor(repo, Some(old_head), Some(new_base))?.is_none()
+    {
+        return Ok(None);
+    }
+    let line = local_line_row(repo, &binding.line_name)?;
+    if string_field(&line, "status").as_deref() == Some("archived")
+        || string_field(&line, "head_snapshot_id").as_deref() != Some(old_head)
+    {
+        return Err("Task Line changed before integrated rebase Snapshot authoring; inspect the bound worktree before retrying.".to_string());
+    }
+    let content = repo
+        .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
+        .content_for_root(repo.workspace_root());
+    let snapshot = content.create_snapshot_content_with_workflow_binding(
+        &repo.repo_name(),
+        &binding.line_name,
+        &[new_base.to_string()],
+        Some("Record Task-owned rebase of already-integrated changes"),
+        true,
+        SnapshotAuthoringOptions {
+            allow_unchanged_tree: true,
+        },
+        Some((&binding, repo.id_namespace_prefix().as_str())),
+    )?;
+    let id = required_string_field(&snapshot, "snapshot_id")?;
+    set_local_line_head(repo, &binding.line_name, Some(&id))?;
+    Ok(Some(id))
+}
+
 pub(super) fn create_snapshot_with_parent(
     repo: &RepoRuntime,
     message: &str,
@@ -1251,6 +1264,9 @@ pub(super) fn create_snapshot_with_parent(
         repo.local_snapshot_operation_store::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>(&workspace_root)?;
     if current_worktree_metadata(repo)?.is_some() {
         let (binding, local) = current_worktree_snapshot_binding(repo)?;
+        if !local {
+            return create_remote_snapshot_with_parent(repo, message, parent_snapshot_id, false);
+        }
         if local {
             snapshot_store =
                 snapshot_store.with_workflow_binding(binding, repo.id_namespace_prefix());
@@ -1368,14 +1384,14 @@ mod selected_binary_line_tests {
             Some(&base_id),
         )
         .unwrap();
-        let worktree_name = "remote-task";
-        let feature_line = "feature/remote-task";
+        let worktree_name = task_id.to_ascii_lowercase();
+        let feature_line = format!("feature/{worktree_name}");
         root_repo
             .binary_db_stores::<SNAPSHOT_BINARY_DB_WRITE_LAYOUT>()
             .lines()
-            .create_line(feature_line, Some(&base_id), "2026-07-08T00:00:02Z")
+            .create_line(&feature_line, Some(&base_id), "2026-07-08T00:00:02Z")
             .expect("feature line");
-        let worktree_root = root.join("managed").join(worktree_name);
+        let worktree_root = root.join("managed").join(&worktree_name);
         fs::create_dir_all(&worktree_root).expect("worktree root");
         std::os::unix::fs::symlink(root.join(".ait"), worktree_root.join(".ait"))
             .expect("shared .ait");
@@ -1393,7 +1409,7 @@ mod selected_binary_line_tests {
         write_file(&worktree_root.join("base.txt"), "base\n");
         fs::create_dir_all(root.join(".ait/worktrees")).expect("worktree registry");
         write_file(
-            &root.join(".ait/worktrees/remote-task.json"),
+            &root.join(format!(".ait/worktrees/{worktree_name}.json")),
             &json!({
                 "name": worktree_name,
                 "path": worktree_root,
@@ -1470,7 +1486,7 @@ mod selected_binary_line_tests {
         let metadata_before = fs::read(
             root_repo
                 .workspace_root()
-                .join(".ait/worktrees/remote-task.json"),
+                .join(".ait/worktrees/lt-0001.json"),
         )
         .expect("metadata before missing target");
         let missing =
@@ -1481,7 +1497,7 @@ mod selected_binary_line_tests {
             fs::read(
                 root_repo
                     .workspace_root()
-                    .join(".ait/worktrees/remote-task.json")
+                    .join(".ait/worktrees/lt-0001.json")
             )
             .expect("metadata after missing target"),
             metadata_before

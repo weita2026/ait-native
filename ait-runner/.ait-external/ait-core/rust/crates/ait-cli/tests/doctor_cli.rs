@@ -1,3 +1,5 @@
+#[path = "support/native_home.rs"]
+mod native_home;
 use ait_core::json_support::{JsonCodec, JsonValue};
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
@@ -8,7 +10,9 @@ use std::process::Command;
 use tempfile::TempDir;
 
 fn cargo_bin() -> Command {
-    Command::cargo_bin("ait-cli").unwrap()
+    let mut c = Command::cargo_bin("ait-cli").unwrap();
+    c.env("CODEX_HOME", native_home::path());
+    c
 }
 
 fn write_file(path: &Path, content: &str) {

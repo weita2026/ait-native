@@ -1,5 +1,9 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(unix)]
+use std::os::unix::fs::symlink as symlink_dir;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_dir;
 
 use ait_core::json_support::json;
 use ait_core::json_support::JsonMap;
@@ -529,7 +533,7 @@ fn task_worktree_external_update_materializes_the_active_workspace() {
 
     let worktree_root = repo_root.path().join("managed/task-one");
     std::fs::create_dir_all(&worktree_root).unwrap();
-    std::os::unix::fs::symlink(repo_root.path().join(".ait"), worktree_root.join(".ait")).unwrap();
+    symlink_dir(repo_root.path().join(".ait"), worktree_root.join(".ait")).unwrap();
     std::fs::copy(
         repo_root.path().join("ait-external.toml"),
         worktree_root.join("ait-external.toml"),

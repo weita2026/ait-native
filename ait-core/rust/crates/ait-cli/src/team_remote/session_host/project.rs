@@ -119,14 +119,20 @@ pub(super) fn ensure_project(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn project_root(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir()
+            .join("ait-native-project-tests")
+            .join(name)
+    }
     #[test]
     fn existing_directory_wins_over_names_and_pagination() {
-        let root = Path::new("/workspace/my-app");
+        let root = project_root("my-app");
         let mut methods = vec![];
-        let result=ensure_project(root, |method, params| {
+        let result=ensure_project(&root, |method, params| {
             methods.push(method.to_owned());
             Ok(match method {
-                "project/list" if params["cursor"].is_null() => json!({"data":[{"id":"wrong","name":"my-app","roots":[{"path":"/other/my-app"}]}],"nextCursor":"next"}),
+                "project/list" if params["cursor"].is_null() => json!({"data":[{"id":"wrong","name":"my-app","roots":[{"path":project_root("other/my-app")}]}],"nextCursor":"next"}),
                 "project/list" => json!({"data":[{"id":"right","name":"old-name","roots":[{"path":root}]}],"nextCursor":null}),
                 "project/update" => {assert_eq!(params,json!({"projectId":"right","name":"my-app"}));json!({})},
                 "project/read" => json!({"project":{"id":"right","name":"my-app","roots":[{"path":root}]}}),
@@ -146,9 +152,10 @@ mod tests {
     }
     #[test]
     fn create_retry_uses_stable_key_and_checks_readback() {
+        let root = project_root("my-app");
         let mut keys = vec![];
         for _ in 0..2 {
-            assert!(ensure_project(Path::new("/workspace/my-app"), |method, p| {
+            assert!(ensure_project(&root, |method, p| {
                 Ok(match method {
                     "project/list" => json!({"data":[],"nextCursor":null}),
                     "project/create" => {
@@ -165,12 +172,14 @@ mod tests {
     }
     #[test]
     fn ambiguous_roots_and_cursor_loops_never_mutate() {
+        let root = project_root("repo");
+        let other = project_root("other");
         for page in [
-            json!({"data":[{"id":"multi","roots":[{"path":"/repo"},{"path":"/other"}]}],"nextCursor":null}),
-            json!({"data":[{"id":"a","roots":[{"path":"/repo"}]},{"id":"b","roots":[{"path":"/repo"}]}],"nextCursor":null}),
+            json!({"data":[{"id":"multi","roots":[{"path":root},{"path":other}]}],"nextCursor":null}),
+            json!({"data":[{"id":"a","roots":[{"path":root}]},{"id":"b","roots":[{"path":root}]}],"nextCursor":null}),
             json!({"data":[],"nextCursor":"loop"}),
         ] {
-            assert!(ensure_project(Path::new("/repo"), |m, _| {
+            assert!(ensure_project(&root, |m, _| {
                 assert_eq!(m, "project/list");
                 Ok(page.clone())
             })
@@ -179,20 +188,23 @@ mod tests {
     }
     #[test]
     fn exact_project_reuse_is_read_only_and_unnamed_root_is_rejected() {
-        assert_eq!(ensure_project(Path::new("/repo"), |m,_| {
-            assert_eq!(m,"project/list");Ok(json!({"data":[{"id":"same","name":"repo","roots":[{"path":"/repo"}]}],"nextCursor":null}))
+        let root = project_root("repo");
+        assert_eq!(ensure_project(&root, |m,_| {
+            assert_eq!(m,"project/list");Ok(json!({"data":[{"id":"same","name":"repo","roots":[{"path":root}]}],"nextCursor":null}))
         }).unwrap(), "same");
-        assert!(project_folder_name(Path::new("/")).is_err());
+        assert!(project_folder_name(root.ancestors().last().unwrap()).is_err());
         assert!(project_folder_name(Path::new("relative")).is_err());
     }
     #[test]
     fn dedicated_root_takes_precedence_over_shared_project() {
+        let root = project_root("repo");
+        let other = project_root("other");
         assert_eq!(
-            ensure_project(Path::new("/repo"), |m, _| {
+            ensure_project(&root, |m, _| {
                 assert_eq!(m, "project/list");
                 Ok(json!({"data":[
-                {"id":"shared","name":"other","roots":[{"path":"/other"},{"path":"/repo"}]},
-                {"id":"dedicated","name":"repo","roots":[{"path":"/repo"}]}
+                {"id":"shared","name":"other","roots":[{"path":other},{"path":root}]},
+                {"id":"dedicated","name":"repo","roots":[{"path":root}]}
             ],"nextCursor":null}))
             })
             .unwrap(),

@@ -7,6 +7,7 @@ use ait_core::local_snapshot::{LocalSnapshotBlobReadStore, LocalSnapshotTreeRead
 
 pub(super) const AI_RELATED_AUTHOR_MODES: &[&str] = &[
     "ai_generated",
+    "ai_only_experimental",
     "ai_with_human_review",
     "human_with_ai_assist",
 ];
@@ -19,7 +20,7 @@ pub(super) const CODE_REVIEW_SUMMARY_TEMPLATE_HINT_COMMAND: &str =
 pub(super) const AUTOMATIC_TASK_APPROVAL_COMMENT: &str =
     "Automatic Task approval authorized by repository `task_review=automatic` policy.";
 pub(super) const COMPLETED_LOCAL_FINAL_SNAPSHOT_PROMOTION_GUIDANCE: &str =
-    "To promote completed `solo_local` work, run `ait workflow ready <task-id> --apply --remote <name>` once, then give the Task ID and selected Patchset to a reviewer running `ait workflow finish <task-id> --apply --remote <name>`. This publishes the consecutive local Task, internal work record, Snapshot, and finish history while checking only one aggregate Patchset; do not replay earlier local rows through advanced publication commands.";
+    "To promote completed local operation work, run `ait workflow ready <task-id> --apply --remote <name>` once, then give the Task ID and selected Patchset to a reviewer running `ait workflow finish <task-id> --apply --remote <name>`. This publishes the consecutive local Task, internal work record, Snapshot, and finish history while checking only one aggregate Patchset; do not replay earlier local rows through advanced publication commands.";
 pub(super) const APP_DIR: &str = ".ait";
 pub(super) const WORKTREE_CONFIG_NAME: &str = ".ait-worktree.json";
 pub(super) const WORKFLOW_READY_POLL_SECONDS_KEY: &str = "workflow_ready_poll_seconds";
@@ -83,6 +84,8 @@ pub(in crate::primitives) struct TaskStartBootstrapRequest<'a> {
     pub task: &'a JsonValue,
     pub change: Option<&'a JsonValue>,
     pub base_line_name: &'a str,
+    // Transient, already verified/imported authority input; never persisted on a Task.
+    pub verified_remote_base_snapshot_id: Option<&'a str>,
     pub local: bool,
     pub worktree_name: &'a str,
     pub worktree_path: &'a str,
@@ -227,12 +230,64 @@ pub(super) fn path_exists_or_directory_link(path: &Path) -> bool {
 
 pub(super) fn remove_path_entry(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(|err| err.to_string())?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if metadata.file_type().is_symlink_dir() {
+            return fs::remove_dir(path).map_err(|err| err.to_string());
+        }
+    }
     if metadata.file_type().is_symlink() || metadata.is_file() {
         fs::remove_file(path).map_err(|err| err.to_string())
     } else if metadata.is_dir() {
         fs::remove_dir_all(path).map_err(|err| err.to_string())
     } else {
         fs::remove_file(path).map_err(|err| err.to_string())
+    }
+}
+
+pub(super) fn write_snapshot_file(path: &Path, data: &[u8], mode: u32) -> Result<(), String> {
+    let is_symlink = mode & 0o170000 == 0o120000;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "Cannot restore file over directory: {}",
+                    path.display()
+                ));
+            }
+            // Replacing a link must never write or chmod its target.
+            if metadata.file_type().is_symlink() || is_symlink {
+                fs::remove_file(path).map_err(|error| error.to_string())?;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    if is_symlink {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(data), path)
+                .map_err(|error| error.to_string())?;
+        }
+        #[cfg(not(unix))]
+        {
+            let target = std::str::from_utf8(data)
+                .map_err(|error| format!("Invalid Snapshot symlink target: {error}"))?;
+            let resolved = path.parent().unwrap_or_else(|| Path::new("")).join(target);
+            if resolved.is_dir() {
+                std::os::windows::fs::symlink_dir(target, path)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                std::os::windows::fs::symlink_file(target, path)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        set_portable_symlink_mode(path, mode).map_err(|error| error.to_string())
+    } else {
+        fs::write(path, data).map_err(|error| error.to_string())?;
+        set_portable_mode(path, mode).map_err(|error| error.to_string())
     }
 }
 
@@ -416,19 +471,12 @@ pub(super) fn main_seed_content_fingerprint(seed_path: &Path) -> Result<(String,
             continue;
         }
         let abs_path = seed_path.join(&rel);
-        let metadata = abs_path
-            .metadata()
+        let metadata = fs::symlink_metadata(&abs_path)
             .map_err(|err| format!("Failed to read metadata for {}: {err}", abs_path.display()))?;
-        if !metadata.is_file() {
+        let Some(state) = workspace_file_state_for_entry(&abs_path, &metadata)? else {
             continue;
-        }
-        let data = fs::read(&abs_path)
-            .map_err(|err| format!("Failed to read {}: {err}", abs_path.display()))?;
-        rows.push((
-            rel,
-            sha256_hex_bytes(&data),
-            format!("{:#o}", portable_mode(&metadata, 0o644)),
-        ));
+        };
+        rows.push((rel, state.sha256, state.mode));
     }
     rows.sort_by(|left, right| left.0.cmp(&right.0));
     let mut digest = Sha256::new();
@@ -888,7 +936,9 @@ pub(super) fn validate_main_seed_cargo_projection(
         return Err("Snapshot Cargo configuration is not a projectable source policy.".to_string());
     };
     let actual = fs::read_to_string(&cargo_config_path).map_err(|err| err.to_string())?;
-    if actual != expected {
+    if upgrade_generated_worktree_cargo_config_text(&workspace_root, &actual).as_deref()
+        != Some(expected.as_str())
+    {
         return Err(format!(
             "Managed Cargo file content does not match the seed workspace path: expected_sha256={}, actual_sha256={}.",
             sha256_hex_bytes(expected.as_bytes()),
@@ -942,10 +992,13 @@ pub(super) fn validate_main_seed_baseline(
             changed_count += 1;
             continue;
         };
-        let expected_mode = format!(
-            "{:#o}",
-            readonly_file_mode(parse_mode_bits(Some(row.mode.as_str()))?) & 0o777
-        );
+        let mode = parse_mode_bits(Some(row.mode.as_str()))?;
+        let expected_mode = if mode & 0o170000 == 0o120000 {
+            readonly_file_mode(mode)
+        } else {
+            readonly_file_mode(mode) & 0o777
+        };
+        let expected_mode = format!("{expected_mode:#o}");
         if current.sha256 != row.sha256 || current.mode != expected_mode {
             changed_count += 1;
         }
@@ -1125,9 +1178,8 @@ pub(super) fn materialize_main_seed_snapshot(
         let data = blob_bytes_by_id
             .get(blob_id)
             .ok_or_else(|| format!("Blob payload missing for `{blob_id}`."))?;
-        fs::write(&abs_path, data).map_err(|err| err.to_string())?;
         let mode = parse_mode_bits(Some(target_row.mode.as_str()))?;
-        set_portable_mode(&abs_path, readonly_file_mode(mode)).map_err(|err| err.to_string())?;
+        write_snapshot_file(&abs_path, data, readonly_file_mode(mode))?;
     }
     let write_apply_elapsed = elapsed_ms(write_apply_started);
     let fingerprint_started = Instant::now();
@@ -1420,9 +1472,11 @@ pub(super) fn copy_seed_file_platform(
 
 pub(super) fn copy_seed_symlink(source_path: &Path, target_path: &Path) -> Result<(), String> {
     let target = fs::read_link(source_path).map_err(|err| err.to_string())?;
+    let metadata = fs::symlink_metadata(source_path).map_err(|err| err.to_string())?;
+    let mode = portable_mode(&metadata, 0o644);
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(&target, target_path).map_err(|err| err.to_string())
+        std::os::unix::fs::symlink(&target, target_path).map_err(|err| err.to_string())?;
     }
     #[cfg(not(unix))]
     {
@@ -1431,15 +1485,23 @@ pub(super) fn copy_seed_symlink(source_path: &Path, target_path: &Path) -> Resul
             .map_err(|err| err.to_string())?
             .is_dir()
         {
-            std::os::windows::fs::symlink_dir(&target, target_path).map_err(|err| err.to_string())
+            std::os::windows::fs::symlink_dir(&target, target_path)
+                .map_err(|err| err.to_string())?;
         } else {
-            std::os::windows::fs::symlink_file(&target, target_path).map_err(|err| err.to_string())
+            std::os::windows::fs::symlink_file(&target, target_path)
+                .map_err(|err| err.to_string())?;
         }
     }
+    set_portable_symlink_mode(target_path, mode).map_err(|error| error.to_string())
 }
 
 pub(super) fn readonly_file_mode(mode: u32) -> u32 {
-    mode & !0o222
+    // Read-only directories protect link entries; chmod would follow the link.
+    if mode & 0o170000 == 0o120000 {
+        mode
+    } else {
+        mode & !0o222
+    }
 }
 
 pub(super) fn set_tree_directories_writeable(path: &Path) -> Result<(), String> {
@@ -1550,36 +1612,141 @@ pub(super) fn update_root_config(
     repo: &RepoRuntime,
     updater: impl FnOnce(&mut JsonMap<String, JsonValue>),
 ) -> Result<(), String> {
-    let config_path = repo
-        .authoritative_repo_root()
-        .join(".ait")
-        .join("config.json");
-    let mut config = read_json_object_value(&config_path);
-    updater(&mut config);
-    write_json_pretty(&config_path, &JsonValue::Object(config))
+    crate::config_surface::update_root_config_strict(repo, |config| {
+        updater(config);
+        Ok(())
+    })
 }
 
-pub(super) fn worktree_name_registered(repo: &RepoRuntime, worktree_name: &str) -> bool {
-    worktree_registry_path(repo, worktree_name).exists()
+#[cfg(test)]
+mod config_publication_tests {
+    use super::*;
+    use crate::init_surface::{init_repo, InitRequest};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn internal_config_publication_waits_for_another_threads_admission_read() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join(".ait")).unwrap();
+        let path = temp.path().join(".ait/config.json");
+        fs::write(&path, r#"{"repo_name":"publication-owner"}"#).unwrap();
+        let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+        let reader = ait_core::repo_state_json::RootConfigLease::read(&path).unwrap();
+        assert!(update_root_config(&repo, |_| {})
+            .unwrap_err()
+            .contains("operation_busy"));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(move || {
+                started_tx.send(()).unwrap();
+                done_tx
+                    .send(update_root_config(&repo, |config| {
+                        config.insert("workflow_ready_poll_seconds".into(), json!(59));
+                    }))
+                    .unwrap();
+            });
+            started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(matches!(
+                done_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            drop(reader);
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            writer.join().unwrap();
+        });
+        let fresh = RepoRuntime::discover_from_path(temp.path()).unwrap();
+        assert_eq!(fresh.repo_name(), "publication-owner");
+        assert_eq!(fresh.config["workflow_ready_poll_seconds"], 59);
+    }
+
+    #[test]
+    fn internal_config_publication_coordinates_readers_and_nested_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        init_repo(&InitRequest {
+            root: temp.path().to_path_buf(),
+            name: Some("publication-owner".into()),
+            default_line: "main".into(),
+            policy_profile: "prototype".into(),
+            default_author_mode: "ai_with_human_review".into(),
+            default_model: None,
+            repair_existing: false,
+        })
+        .unwrap();
+        let root = temp.path().to_path_buf();
+        let path = root.join(".ait/config.json");
+        #[cfg(unix)]
+        let original_inode = {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = fs::metadata(&path).unwrap();
+            (metadata.dev(), metadata.ino())
+        };
+        let repo = RepoRuntime::discover_from_path(&root).unwrap();
+        let (held_tx, held_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (read_tx, read_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let repo = &repo;
+            let root = &root;
+            let path = &path;
+            let writer = scope.spawn(move || {
+                update_root_config(repo, |config| {
+                    let contender = fs::File::open(path).unwrap();
+                    assert!(fs2::FileExt::try_lock_shared(&contender).is_err());
+                    let nested = RepoRuntime::discover_from_path(root).unwrap();
+                    assert_eq!(nested.repo_name(), "publication-owner");
+                    // The inner read must not downgrade or release this writer.
+                    assert!(fs2::FileExt::try_lock_shared(&contender).is_err());
+                    assert!(update_root_config(&nested, |_| {})
+                        .unwrap_err()
+                        .contains("operation_busy"));
+                    held_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    config.insert("workflow_ready_poll_seconds".into(), json!(47));
+                })
+                .unwrap();
+            });
+            held_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let reader = scope.spawn(move || {
+                let fresh = RepoRuntime::discover_from_path(root).unwrap();
+                read_tx.send(fresh).unwrap();
+            });
+            assert!(matches!(
+                read_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            release_tx.send(()).unwrap();
+            writer.join().unwrap();
+            let fresh = read_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            reader.join().unwrap();
+            assert_eq!(fresh.repo_name(), "publication-owner");
+            assert_eq!(fresh.config["workflow_ready_poll_seconds"], 47);
+        });
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = fs::metadata(&path).unwrap();
+            assert_eq!((metadata.dev(), metadata.ino()), original_inode);
+        }
+        for malformed in ["", "{broken", "[]"] {
+            fs::write(&path, malformed).unwrap();
+            update_root_config(&repo, |_| panic!("invalid config must not reach updater"))
+                .unwrap_err();
+            assert_eq!(fs::read_to_string(&path).unwrap(), malformed);
+            assert!(RepoRuntime::discover_from_path(&root).is_err());
+        }
+    }
 }
 
 pub(super) fn resolve_next_task_worktree_name(
-    repo: &RepoRuntime,
+    _repo: &RepoRuntime,
     task_id: &str,
 ) -> Result<String, String> {
-    let base = task_bound_worktree_name(task_id)?;
-    let mut suffix = 1_i64;
-    loop {
-        let candidate = if suffix == 1 {
-            base.clone()
-        } else {
-            format!("{base}-{suffix}")
-        };
-        if !worktree_name_registered(repo, &candidate) {
-            return Ok(candidate);
-        }
-        suffix += 1;
-    }
+    task_bound_worktree_name(task_id)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1588,7 +1755,6 @@ pub(super) struct CurrentWorktreeMetadata {
     pub(super) bound_task_id: Option<String>,
     pub(super) bound_change_id: Option<String>,
     pub(super) bound_change_ref: Option<String>,
-    pub(super) auto_created_for_task: bool,
     pub(super) fork_snapshot_id: Option<String>,
     pub(super) target_base_line: Option<String>,
     pub(super) rebase_state: String,

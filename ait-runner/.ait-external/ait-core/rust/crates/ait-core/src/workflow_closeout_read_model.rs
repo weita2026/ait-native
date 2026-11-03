@@ -1,8 +1,6 @@
 use crate::json_support::{json, JsonValue};
 
-use crate::workflow_closeout_decision::{
-    change_effectively_landed, workflow_land_next_action, workflow_ready_next_action,
-};
+use crate::workflow_closeout_decision::{workflow_land_next_action, workflow_ready_next_action};
 use crate::workflow_closeout_model_support::{
     bool_field, clone_field, clone_obj_field, field_obj, insert_json, int_field,
     optional_string_field,
@@ -14,30 +12,13 @@ use crate::workflow_closeout_projection::{
 };
 
 fn projected_change_with_effective_land(facts: &JsonValue) -> JsonValue {
-    let mut change = field_obj(facts, "change");
-    let landing_summary =
-        crate::workflow_closeout_model_support::optional_obj_field(facts, "landing_summary");
-    if !change_effectively_landed(&change, landing_summary.as_ref()) {
-        return JsonValue::Object(change);
+    match facts
+        .get("change")
+        .filter(|value| value.as_object().is_some_and(|row| !row.is_empty()))
+    {
+        Some(change) => change.clone(),
+        None => JsonValue::Null,
     }
-    change.insert(
-        "status".to_string(),
-        JsonValue::String("landed".to_string()),
-    );
-    if optional_string_field(&change, "landed_snapshot_id").is_none() {
-        if let Some(landed_snapshot_id) = landing_summary
-            .as_ref()
-            .and_then(|summary| summary.get("result"))
-            .and_then(JsonValue::as_object)
-            .and_then(|result| optional_string_field(result, "landed_snapshot_id"))
-        {
-            change.insert(
-                "landed_snapshot_id".to_string(),
-                JsonValue::String(landed_snapshot_id),
-            );
-        }
-    }
-    JsonValue::Object(change)
 }
 
 fn projected_review_with_lane_counts(facts: &JsonValue) -> JsonValue {

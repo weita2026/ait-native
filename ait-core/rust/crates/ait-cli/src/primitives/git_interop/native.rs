@@ -1142,12 +1142,12 @@ fn copy_verified_objects(
                 output.sync_all().map_err(|e| e.to_string())?;
             }
         }
-        fs::File::open(&dest)
-            .and_then(|d| d.sync_all())
+        FilesystemFileIoStore
+            .sync_dir(&dest)
             .map_err(|e| e.to_string())?;
     }
-    fs::File::open(target)
-        .and_then(|d| d.sync_all())
+    FilesystemFileIoStore
+        .sync_dir(target)
         .map_err(|e| e.to_string())?;
     Ok(())
 }

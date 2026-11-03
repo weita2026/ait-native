@@ -173,7 +173,9 @@ impl FileIoByteStore for PlanCommitFaultFileIo {
                 };
                 fs::write(&staged, staged_bytes).map_err(FileIoError::from)?;
                 if self.phase == PlanCommitFaultPhase::RootRename {
-                    fs::File::open(&staged)
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .open(&staged)
                         .and_then(|file| file.sync_all())
                         .map_err(FileIoError::from)?;
                 }

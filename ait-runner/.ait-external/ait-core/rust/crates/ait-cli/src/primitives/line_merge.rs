@@ -4,6 +4,7 @@ use ait_core::local_snapshot::{
     LocalSnapshotBlobReadStore, LocalSnapshotOperationStore, LocalSnapshotWriteStore,
 };
 use ait_core::snapshot_merge::{merge_utf8_text_bytes, TextMergeOutcome};
+use ait_core::snapshot_store::SnapshotStore;
 
 const LINE_MERGE_CONTRACT: &str = "line-merge/v1";
 const MERGE_MARKER_PREFIX: &str = "<<<<<<< AIT target:";
@@ -201,6 +202,7 @@ pub(in crate::primitives) fn start_line_merge_from_snapshot_unlocked(
             "Line {target_line_name} and source {source_label} have unrelated Snapshot histories; an ordinary merge requires at least one common base."
         ));
     }
+    guard_current_worktree_merge_capture(repo)?;
     let plan = compute_line_merge_tree_plan(
         &store,
         &merge_base_snapshot_ids,
@@ -289,6 +291,7 @@ pub(in crate::primitives) fn start_line_merge_from_snapshot_unlocked(
         }
     };
     let merge_snapshot_id = required_string_field(&snapshot, "snapshot_id")?;
+    finalize_current_worktree_snapshot_capture(repo, &snapshot)?;
     repo.set_worktree_materialized_snapshot(Some(&merge_snapshot_id))?;
     clear_line_merge_state(repo, &worktree_name)?;
     Ok(line_merge_result(
@@ -312,7 +315,10 @@ fn continue_line_merge_unlocked(
     guard_no_planning_only_artifact_drift(repo, "ait line merge --continue")?;
     let worktree_name = require_merge_worktree(repo)?;
     let metadata = load_worktree_metadata(repo, &worktree_name)?;
-    if metadata_string(&metadata, "merge_state").as_deref() != Some("conflicted") {
+    if !matches!(
+        metadata_string(&metadata, "merge_state").as_deref(),
+        Some("conflicted" | "applying")
+    ) {
         return Err(format!(
             "Worktree {worktree_name} has no conflicted line merge to continue."
         ));
@@ -351,6 +357,7 @@ fn continue_line_merge_unlocked(
     let resolved_message = normalized_text(message)
         .or_else(|| metadata_string(&metadata, "merge_message"))
         .unwrap_or_else(|| format!("Merge line {source_line_name} into {target_line_name}"));
+    guard_current_worktree_merge_capture(repo)?;
     let store = current_worktree_snapshot_store(repo)?;
     let parents = vec![target_snapshot_id.clone(), source_snapshot_id.clone()];
     let snapshot = store.create_snapshot_with_parents(
@@ -361,6 +368,7 @@ fn continue_line_merge_unlocked(
         repo.is_worktree(),
     )?;
     let merge_snapshot_id = required_string_field(&snapshot, "snapshot_id")?;
+    finalize_current_worktree_snapshot_capture(repo, &snapshot)?;
     repo.set_worktree_materialized_snapshot(Some(&merge_snapshot_id))?;
     clear_line_merge_state(repo, &worktree_name)?;
     Ok(line_merge_result(
@@ -374,6 +382,34 @@ fn continue_line_merge_unlocked(
         &conflict_paths,
         &conflict_kinds,
     ))
+}
+
+pub(super) fn validate_resumed_line_merge_capture(
+    repo: &RepoRuntime,
+    id: &str,
+) -> Result<Option<String>, String> {
+    let name = resolve_runtime_worktree_name(repo, None)?;
+    let metadata = load_worktree_metadata(repo, &name)?;
+    if !matches!(
+        metadata_string(&metadata, "merge_state").as_deref(),
+        Some("applying" | "conflicted")
+    ) {
+        return Ok(None);
+    }
+    let snapshot = repo
+        .local_snapshot_operation_store::<1>(&repo.workspace_root())?
+        .snapshot_by_id(id)?
+        .ok_or("Resumed merge Snapshot is missing")?;
+    let parents = vec![
+        required_metadata_string(&metadata, "merge_target_snapshot_id")?,
+        required_metadata_string(&metadata, "merge_source_snapshot_id")?,
+    ];
+    if snapshot.line_name != required_metadata_string(&metadata, "merge_target_line")?
+        || snapshot.parent_snapshot_ids != parents
+    {
+        return Err("Resumed capture does not match the pending merge parents".to_string());
+    }
+    Ok(Some(name))
 }
 
 fn abort_line_merge_unlocked(repo: &RepoRuntime) -> Result<JsonValue, String> {
@@ -870,7 +906,10 @@ fn save_line_merge_state(
     save_worktree_metadata(repo, worktree_name, &metadata)
 }
 
-fn clear_line_merge_state(repo: &RepoRuntime, worktree_name: &str) -> Result<(), String> {
+pub(super) fn clear_line_merge_state(
+    repo: &RepoRuntime,
+    worktree_name: &str,
+) -> Result<(), String> {
     let mut metadata = load_worktree_metadata(repo, worktree_name)?;
     for key in [
         "merge_started_at",

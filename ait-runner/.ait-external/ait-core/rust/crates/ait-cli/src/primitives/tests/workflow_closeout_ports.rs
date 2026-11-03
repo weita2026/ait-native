@@ -3,13 +3,14 @@ use super::*;
 #[test]
 fn workflow_closeout_action_helpers_accept_closeout_remote_trait() {
     let patchset = json!({
-        "patchset_id": "RCP-CLOSEOUT-1",
-        "change_id": "RCC-CLOSEOUT",
+        "patchset_id": "RT-0001/P-01",
+        "task_id":"RT-0001","change_id":null,"change_ref":null,"base_snapshot_id":"B","revision_snapshot_id":"R","author_mode":"ai_with_human_review",
+        "ci":{"run_seq":1,"completed_at_s":1,"tests_status":"pass","suite_result_count":1,"blocking_failure_count":0},
     });
     let mut closeout_remote = FakeWorkspaceCloseoutRemote::default();
     closeout_remote
         .patchsets
-        .insert("RCP-CLOSEOUT-1".to_string(), patchset.clone());
+        .insert("RT-0001/P-01".to_string(), patchset.clone());
 
     let ci = workflow_run_patchset_ci_action_with_closeout_remote(
         &mut closeout_remote,
@@ -20,7 +21,7 @@ fn workflow_closeout_action_helpers_accept_closeout_remote_trait() {
         Some("foreground"),
     )
     .expect("run shared workflow CI helper through closeout remote trait");
-    assert_eq!(ci["result"]["patchset_id"], json!("RCP-CLOSEOUT-1"));
+    assert_eq!(ci["result"]["patchset_id"], json!("RT-0001/P-01"));
     assert_eq!(ci["result"]["trigger"], json!("workflow_custom_apply"));
     assert_eq!(ci["result"]["execution_profile"], json!("foreground"));
     assert_eq!(ci["result"]["repo_name"], json!("fixture-ait"));
@@ -30,31 +31,24 @@ fn workflow_closeout_action_helpers_accept_closeout_remote_trait() {
         &mut closeout_remote,
         &patchset,
         None,
-        Some("fmt"),
+        None,
         None,
         None,
         "ai_with_human_review",
         Some("gpt-5".to_string()),
         "fixture-ait",
         "missing patchset",
-        Some("pass"),
+        true,
     )
     .expect("record shared workflow attestation helper through closeout remote trait");
-    assert_eq!(
-        attestation["result"]["evaluation_summary"]["tests"],
-        json!("pass")
-    );
-    assert_eq!(
-        attestation["result"]["evaluation_summary"]["lint"],
-        json!("fmt")
-    );
+    assert_eq!(attestation["result"]["verification_state"], json!("pass"));
     assert_eq!(
         attestation["result"]["author_mode"],
         json!("ai_with_human_review")
     );
     assert_eq!(attestation["result"]["repo_name"], json!("fixture-ait"));
     assert_eq!(closeout_remote.attestations.len(), 1);
-    assert!(closeout_remote.attestations.contains_key("RCP-CLOSEOUT-1"));
+    assert!(closeout_remote.attestations.contains_key("RT-0001/P-01"));
 }
 
 #[test]
@@ -114,13 +108,14 @@ fn workflow_review_action_helper_accepts_closeout_remote_trait() {
 #[test]
 fn workflow_ready_remote_actions_accept_closeout_remote_trait() {
     let patchset = json!({
-        "patchset_id": "RCP-READY-1",
-        "change_id": "RCC-READY",
+        "patchset_id": "RT-0001/P-01",
+        "task_id":"RT-0001","change_id":null,"change_ref":null,"base_snapshot_id":"B","revision_snapshot_id":"R","author_mode":"ai_with_human_review",
+        "ci":{"run_seq":1,"completed_at_s":1,"tests_status":"pass","suite_result_count":1,"blocking_failure_count":0},
     });
     let mut closeout_remote = FakeWorkspaceCloseoutRemote::default();
     closeout_remote
         .patchsets
-        .insert("RCP-READY-1".to_string(), patchset.clone());
+        .insert("RT-0001/P-01".to_string(), patchset.clone());
 
     let ci = workflow_ready_run_patchset_ci_with_closeout_remote(
         &mut closeout_remote,
@@ -129,7 +124,7 @@ fn workflow_ready_remote_actions_accept_closeout_remote_trait() {
     )
     .expect("run ready CI through closeout remote trait");
 
-    assert_eq!(ci["result"]["patchset_id"], json!("RCP-READY-1"));
+    assert_eq!(ci["result"]["patchset_id"], json!("RT-0001/P-01"));
     assert_eq!(ci["result"]["trigger"], json!("workflow_ready_apply"));
     assert_eq!(
         ci["result"]["execution_profile"],
@@ -142,7 +137,7 @@ fn workflow_ready_remote_actions_accept_closeout_remote_trait() {
         &mut closeout_remote,
         &patchset,
         None,
-        Some("fmt"),
+        None,
         None,
         None,
         "ai_with_human_review",
@@ -151,14 +146,7 @@ fn workflow_ready_remote_actions_accept_closeout_remote_trait() {
     )
     .expect("record ready attestation through closeout remote trait");
 
-    assert_eq!(
-        attestation["result"]["evaluation_summary"]["tests"],
-        json!("pass")
-    );
-    assert_eq!(
-        attestation["result"]["evaluation_summary"]["lint"],
-        json!("fmt")
-    );
+    assert_eq!(attestation["result"]["verification_state"], json!("pass"));
     assert_eq!(
         attestation["result"]["author_mode"],
         json!("ai_with_human_review")
@@ -166,25 +154,26 @@ fn workflow_ready_remote_actions_accept_closeout_remote_trait() {
     assert_eq!(attestation["result"]["repo_name"], json!("fixture-ait"));
     assert!(attestation["result"]["detail"].get("patchset_ci").is_none());
     assert_eq!(closeout_remote.attestations.len(), 1);
-    assert!(closeout_remote.attestations.contains_key("RCP-READY-1"));
+    assert!(closeout_remote.attestations.contains_key("RT-0001/P-01"));
 }
 
 #[test]
 fn workflow_land_closeout_actions_accept_closeout_remote_trait() {
     let patchset = json!({
-        "patchset_id": "RCP-LAND-1",
-        "change_id": "RCC-LAND",
+        "patchset_id": "RT-0001/P-01",
+        "task_id":"RT-0001","change_id":null,"change_ref":null,"base_snapshot_id":"B","revision_snapshot_id":"R","author_mode":"ai_with_human_review",
+        "ci":{"run_seq":1,"completed_at_s":1,"tests_status":"pass","suite_result_count":1,"blocking_failure_count":0},
     });
     let mut closeout_remote = FakeWorkspaceCloseoutRemote::default();
     closeout_remote
         .patchsets
-        .insert("RCP-LAND-1".to_string(), patchset.clone());
+        .insert("RT-0001/P-01".to_string(), patchset.clone());
 
     let attestation = workflow_land_record_attestation_with_closeout_remote(
         &mut closeout_remote,
         &patchset,
         Some("pass"),
-        Some("fmt"),
+        None,
         None,
         None,
         "ai_with_human_review",
@@ -192,14 +181,7 @@ fn workflow_land_closeout_actions_accept_closeout_remote_trait() {
         "fixture-ait",
     )
     .expect("record land attestation through closeout remote trait");
-    assert_eq!(
-        attestation["result"]["evaluation_summary"]["tests"],
-        json!("pass")
-    );
-    assert_eq!(
-        attestation["result"]["evaluation_summary"]["lint"],
-        json!("fmt")
-    );
+    assert_eq!(attestation["result"]["verification_state"], json!("pass"));
 
     let review = workflow_land_record_task_review_with_closeout_remote(
         &mut closeout_remote,

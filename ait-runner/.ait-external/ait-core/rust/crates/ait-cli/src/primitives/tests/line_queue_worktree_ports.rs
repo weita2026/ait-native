@@ -1200,19 +1200,18 @@ fn worktree_remote_patchset_revision_candidate_accepts_remote_traits() {
     let snapshot_id = required_string_field(&snapshot, "snapshot_id").expect("snapshot id");
     let repo = RepoRuntime::discover_from_path(repo_root).expect("repo runtime");
     let mut task_remote = FakeChangeRemote {
-        changes: vec![json!({
-            "repo_name": "fixture-ait",
-            "change_id": "RCC-WORKTREE",
-            "current_patchset_id": "RCP-WORKTREE-1",
-        })],
+        tasks: BTreeMap::from([(
+            "RT-0106".into(),
+            json!({"task_id":"RT-0106","status":"active","successful_land":null,"current_patchset_id":"RT-0106/P-01"}),
+        )]),
         ..Default::default()
     };
     let mut closeout_remote = FakeWorkspaceCloseoutRemote {
         patchsets: BTreeMap::from([(
-            "RCP-WORKTREE-1".to_string(),
+            "RT-0106/P-01".to_string(),
             json!({
-                "patchset_id": "RCP-WORKTREE-1",
-                "change_id": "RCC-WORKTREE",
+                "patchset_id": "RT-0106/P-01",
+                "task_id":"RT-0106", "change_id":null,"change_ref":null,"base_snapshot_id":"B",
                 "revision_snapshot_id": snapshot_id,
             }),
         )]),
@@ -1224,31 +1223,31 @@ fn worktree_remote_patchset_revision_candidate_accepts_remote_traits() {
         &mut task_remote,
         &mut closeout_remote,
         "fixture-ait",
-        "RCC-WORKTREE",
+        "RT-0106",
     )
     .expect("derive remote patchset revision candidate")
     .expect("candidate should be locally available");
 
     assert_eq!(candidate["source"], json!("remote_patchset_revision"));
     assert_eq!(candidate["snapshot_id"], json!(snapshot_id));
-    assert_eq!(candidate["change_id"], json!("RCC-WORKTREE"));
-    assert_eq!(candidate["patchset_id"], json!("RCP-WORKTREE-1"));
-    assert_eq!(closeout_remote.patchset_reads, vec!["RCP-WORKTREE-1"]);
+    assert_eq!(candidate["task_id"], json!("RT-0106"));
+    assert!(candidate["change_id"].is_null());
+    assert_eq!(candidate["patchset_id"], json!("RT-0106/P-01"));
+    assert_eq!(closeout_remote.patchset_reads, vec!["RT-0106/P-01"]);
 
     let mut missing_snapshot_task_remote = FakeChangeRemote {
-        changes: vec![json!({
-            "repo_name": "fixture-ait",
-            "change_id": "RCC-MISSING-SNAPSHOT",
-            "selected_patchset_id": "RCP-MISSING-SNAPSHOT-1",
-        })],
+        tasks: BTreeMap::from([(
+            "RT-0107".into(),
+            json!({"task_id":"RT-0107","status":"active","successful_land":null,"current_patchset_id":"RT-0107/P-01"}),
+        )]),
         ..Default::default()
     };
     let mut missing_snapshot_closeout_remote = FakeWorkspaceCloseoutRemote {
         patchsets: BTreeMap::from([(
-            "RCP-MISSING-SNAPSHOT-1".to_string(),
+            "RT-0107/P-01".to_string(),
             json!({
-                "patchset_id": "RCP-MISSING-SNAPSHOT-1",
-                "change_id": "RCC-MISSING-SNAPSHOT",
+                "patchset_id": "RT-0107/P-01",
+                "task_id":"RT-0107", "change_id":null,"change_ref":null,"base_snapshot_id":"B",
                 "revision_snapshot_id": "SNP-00000000DEAD",
             }),
         )]),
@@ -1259,7 +1258,7 @@ fn worktree_remote_patchset_revision_candidate_accepts_remote_traits() {
         &mut missing_snapshot_task_remote,
         &mut missing_snapshot_closeout_remote,
         "fixture-ait",
-        "RCC-MISSING-SNAPSHOT",
+        "RT-0107",
     )
     .expect("missing local snapshot should not fail candidate lookup");
     assert!(missing_snapshot.is_none());

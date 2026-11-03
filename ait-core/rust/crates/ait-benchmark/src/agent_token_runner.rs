@@ -9535,7 +9535,12 @@ mod tests {
         assert!(profile_arg.contains("network={ enabled=false }"));
         assert!(profile_arg.contains("git-metadata"));
         assert!(profile_arg.contains("git-worktree-container"));
-        assert!(profile_arg.contains("git-task-worktree/.git"));
+        assert!(profile_arg.contains(
+            &toml_basic_string(
+                &permission_profile_path(&task.join(".git"), "test Git exception").unwrap()
+            )
+            .unwrap()
+        ));
         assert!(args.iter().any(|arg| arg == "project_doc_max_bytes=0"));
         assert!(!args.iter().any(|arg| arg == "--add-dir"));
         assert!(!args

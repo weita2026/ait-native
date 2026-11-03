@@ -50,38 +50,6 @@ impl CheckboxState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum WorkflowMode {
-    SoloLocal,
-    SoloRemote,
-    TeamRemote,
-}
-
-impl WorkflowMode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::SoloLocal => "solo_local",
-            Self::SoloRemote => "solo_remote",
-            Self::TeamRemote => "team_remote",
-        }
-    }
-
-    pub fn parse(value: Option<&str>) -> Result<Option<Self>, String> {
-        let Some(normalized) = normalize_optional_text(value) else {
-            return Ok(None);
-        };
-        match normalized.as_str() {
-            "solo_local" => Ok(Some(Self::SoloLocal)),
-            "solo_remote" => Ok(Some(Self::SoloRemote)),
-            "team_remote" => Ok(Some(Self::TeamRemote)),
-            _ => Err(format!(
-                "Unsupported workflow mode: {}. Expected one of: solo_local, solo_remote, team_remote.",
-                normalized
-            )),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PublicationState {
     LocalDraft,
     Published,
@@ -184,10 +152,6 @@ pub struct WorkflowStatusDetails {
     pub normalized_status: Option<String>,
     pub display_label: Option<String>,
     pub closed: bool,
-}
-
-pub fn workflow_mode_value(value: Option<&str>) -> Result<Option<String>, String> {
-    Ok(WorkflowMode::parse(value)?.map(|mode| mode.as_str().to_string()))
 }
 
 pub fn publication_state_value(value: Option<&str>) -> Result<Option<String>, String> {

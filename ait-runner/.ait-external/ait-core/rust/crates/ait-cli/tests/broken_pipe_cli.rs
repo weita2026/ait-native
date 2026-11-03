@@ -1,3 +1,5 @@
+#[path = "support/native_home.rs"]
+mod native_home;
 #[cfg(unix)]
 #[test]
 fn closed_stdout_pipe_terminates_without_a_rust_panic() {
@@ -8,6 +10,7 @@ fn closed_stdout_pipe_terminates_without_a_rust_panic() {
     let repository = tempfile::tempdir().expect("temporary AIT repository");
     let binary = env!("CARGO_BIN_EXE_ait-cli");
     let init = Command::new(binary)
+        .env("CODEX_HOME", native_home::path())
         .args(["init", "--json"])
         .current_dir(repository.path())
         .output()
@@ -26,6 +29,7 @@ fn closed_stdout_pipe_terminates_without_a_rust_panic() {
     let pipe_writer = unsafe { OwnedFd::from_raw_fd(pipe_fds[1]) };
 
     let output = Command::new(binary)
+        .env("CODEX_HOME", native_home::path())
         .args(["task", "list", "--all"])
         .current_dir(repository.path())
         .stdout(Stdio::from(pipe_writer))

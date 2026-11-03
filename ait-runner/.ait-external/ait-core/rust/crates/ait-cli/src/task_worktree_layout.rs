@@ -1074,6 +1074,13 @@ fn reject_symbolic_link_path_components(path: &Path) -> Result<(), String> {
     let mut cursor = PathBuf::new();
     for (index, component) in components.iter().enumerate() {
         cursor.push(component.as_os_str());
+        // A verbatim drive prefix can report absolute before its root separator
+        // is appended. Inspect the complete root, not the bare `\\?\C:` prefix.
+        if matches!(component, Component::Prefix(_))
+            && matches!(components.get(index + 1), Some(Component::RootDir))
+        {
+            continue;
+        }
         if !cursor.is_absolute() {
             continue;
         }
@@ -1112,7 +1119,7 @@ fn metadata_is_symbolic_link_component(metadata: &fs::Metadata) -> bool {
     {
         use std::os::windows::fs::MetadataExt;
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
     #[cfg(not(windows))]
     false
@@ -1187,7 +1194,7 @@ fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn linux_mount_fstype_for_path(path: &Path) -> Option<String> {
+pub(crate) fn linux_mount_fstype_for_path(path: &Path) -> Option<String> {
     let anchor = nearest_existing_ancestor(path)?;
     let anchor_text = anchor.to_string_lossy();
     let mountinfo = fs::read_to_string("/proc/self/mountinfo").ok()?;

@@ -2,6 +2,9 @@ use super::generation_activation::{
     admit_activated_binary_db_generation, binary_db_activation_lock_root, configured_repo_name,
     fingerprint_direct_authority_contents, validate_generation_file_path, CLIENT_MANIFEST_SCHEMA,
 };
+use super::generation_git::{
+    git_inputs, raw_revision_slots_pinned, validate_git_root, GIT_DIRECTORY,
+};
 use super::generation_manifest::write_json;
 use super::{deterministic_parallel_map, GenerationFileManifest, GenerationResult, Path, PathBuf};
 use crate::binary_db::{
@@ -190,6 +193,20 @@ fn capture_db(
 pub fn capture_binary_db_generation(
     options: CaptureBinaryDbGenerationOptions,
 ) -> GenerationResult<CaptureBinaryDbGenerationReport> {
+    capture_generation(options, false)
+}
+
+/// Explicit offline converters must preserve every existing physical FK.
+pub fn capture_binary_db_generation_preserving_ordinals(
+    options: CaptureBinaryDbGenerationOptions,
+) -> GenerationResult<CaptureBinaryDbGenerationReport> {
+    capture_generation(options, true)
+}
+
+fn capture_generation(
+    options: CaptureBinaryDbGenerationOptions,
+    force_preserve_ordinals: bool,
+) -> GenerationResult<CaptureBinaryDbGenerationReport> {
     let options = options.validate()?;
     let repo_root = options.repo_root.canonicalize().map_err(|error| {
         format!(
@@ -223,6 +240,10 @@ pub fn capture_binary_db_generation(
         ));
     };
 
+    let git_root = repo_root.join(GIT_DIRECTORY);
+    git_inputs(&git_root)?; // Reject aliases before opening any runtime lock.
+    let _git_guard = crate::git_binary_db::GitInteropBundle::open(&repo_root, false)
+        .map_err(|error| format!("cannot capture while a Git writer is active: {error}"))?;
     let db = capture_db(
         authority_root.clone(),
         repo_root.clone(),
@@ -237,11 +258,68 @@ pub fn capture_binary_db_generation(
         repo_root.clone(),
         pack_root.clone(),
     );
-    let inputs = collect_copy_inputs(&authority_root)?;
+    let preserve_ordinals = force_preserve_ordinals
+        || super::generation_git::git_exists(&git_root)
+        || raw_revision_slots_pinned(&authority_root)?;
+    let _source_range = perfetto_range!("ait.database.admission.source_validation_fingerprint");
+    validate_git_root(&git_root, &authority_root, &pack_root, false)?;
+    let mut inputs = collect_copy_inputs_with_legacy_links(&authority_root, false)?;
+    if preserve_ordinals {
+        for input in &mut inputs {
+            input.strategy = CopyStrategy::Exact;
+        }
+        let mut seen = inputs
+            .iter()
+            .map(|input| input.relative_path.clone())
+            .collect();
+        for (source, relative_path) in git_inputs(&git_root)? {
+            push_copy_input(
+                &mut inputs,
+                &mut seen,
+                source,
+                relative_path,
+                CopyStrategy::Exact,
+            )?;
+        }
+        for directory in ["packs", "tree-packs"] {
+            let source = pack_root.join(".ait/objects").join(directory);
+            if !source.exists() {
+                continue;
+            }
+            for entry in fs::read_dir(&source).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
+                    return Err("pack capture requires direct files".into());
+                }
+                let name = entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| "non-UTF8 pack path")?;
+                push_copy_input(
+                    &mut inputs,
+                    &mut seen,
+                    entry.path(),
+                    format!(".ait/objects/{directory}/{name}"),
+                    CopyStrategy::Exact,
+                )?;
+            }
+        }
+        inputs.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    }
     let source_authority_fingerprint = fingerprint_direct_authority_contents(&authority_root)?;
     let source_snapshots = read_canonical_source_snapshot_records(&authority_root)?;
-    let reachable_content =
-        plan_reachable_content(&authority_root, &content, &read, &source_snapshots)?;
+    #[cfg(feature = "perfetto-tracing")]
+    drop(_source_range);
+    let reachable_content = if preserve_ordinals {
+        None
+    } else {
+        Some(plan_reachable_content(
+            &authority_root,
+            &content,
+            &read,
+            &source_snapshots,
+        )?)
+    };
 
     let output_parent = options
         .output_root
@@ -259,10 +337,9 @@ pub fn capture_binary_db_generation(
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| "output root name is not UTF-8".to_string())?;
-    let staging_root = output_parent.join(format!(
-        ".{output_name}.capture-staging-{}",
-        std::process::id()
-    ));
+    let staging_suffix = std::process::id().to_string();
+    let staging_root =
+        output_parent.join(format!(".{output_name}.capture-staging-{staging_suffix}"));
     if staging_root.exists() {
         return Err(format!(
             "capture staging root already exists: {}",
@@ -278,9 +355,12 @@ pub fn capture_binary_db_generation(
             )
         })?;
 
-    let copied = deterministic_parallel_map(&inputs, options.jobs, |_index, input| {
-        copy_and_hash(input, &staging_root)
-    });
+    let copied = {
+        let _range = perfetto_range!("ait.database.admission.stage_complete_closure");
+        deterministic_parallel_map(&inputs, options.jobs, |_index, input| {
+            copy_and_hash(input, &staging_root)
+        })
+    };
     let mut files = match copied {
         Ok(files) => files,
         Err(error) => {
@@ -288,20 +368,48 @@ pub fn capture_binary_db_generation(
             return Err(error);
         }
     };
-    let content_projection = match repack_reachable_content(
-        &content,
-        &read,
-        &staging_root,
-        &repo_name,
-        &reachable_content,
-        &mut files,
-    ) {
-        Ok(projection) => projection,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&staging_root);
-            return Err(error);
+    let content_projection = if let Some(reachable_content) = &reachable_content {
+        match repack_reachable_content(
+            &content,
+            &read,
+            &staging_root,
+            &repo_name,
+            reachable_content,
+            &mut files,
+        ) {
+            Ok(projection) => projection,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&staging_root);
+                return Err(error);
+            }
+        }
+    } else {
+        let counts = record_counts(&files)?;
+        let count = |name: &str| counts.get(name).copied().unwrap_or(0);
+        CapturedContentProjection {
+            source_blob_records: count("blob.bin"),
+            retained_blob_records: count("blob.bin"),
+            source_object_pack_records: count("object_pack.bin"),
+            retained_object_pack_records: count("object_pack.bin"),
+            source_object_pack_member_records: count("object_pack_member.bin"),
+            retained_object_pack_member_records: count("object_pack_member.bin"),
+            source_tree_pack_records: count("tree_pack.bin"),
+            retained_tree_pack_records: count("tree_pack.bin"),
+            source_tree_records: count("tree.bin"),
+            retained_tree_records: count("tree.bin"),
+            source_retained: true,
         }
     };
+    let _target_range = perfetto_range!("ait.database.admission.target_validation_source_recheck");
+    if let Err(error) = validate_git_root(
+        &staging_root.join(GIT_DIRECTORY),
+        &staging_root.join("local"),
+        &staging_root,
+        true,
+    ) {
+        let _ = fs::remove_dir_all(&staging_root);
+        return Err(error);
+    }
     files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     if let Err(error) = validate_captured_tree_locators(&staging_root, &repo_name, options.jobs) {
         let _ = fs::remove_dir_all(&staging_root);
@@ -324,7 +432,7 @@ pub fn capture_binary_db_generation(
         content_projection,
         validation: CapturedValidation {
             status: "passed".to_string(),
-            checks: capture_validation_checks(),
+            checks: capture_validation_checks(preserve_ordinals),
             table_record_counts,
         },
     };
@@ -335,6 +443,8 @@ pub fn capture_binary_db_generation(
     sync_directory(&staging_root.join("local"))?;
     sync_directory(&staging_root.join(".ait/objects"))?;
     sync_directory(&staging_root)?;
+    #[cfg(feature = "perfetto-tracing")]
+    drop(_target_range);
     drop(read);
 
     if options.output_root.exists() {
@@ -362,7 +472,7 @@ pub fn capture_binary_db_generation(
     })
 }
 
-fn capture_validation_checks() -> Vec<String> {
+fn capture_validation_checks(preserve_ordinals: bool) -> Vec<String> {
     let mut checks = vec![
         "all-domain Binary DB read lock held through capture".to_string(),
         "source authority content fingerprint recorded while the all-domain read lock was held"
@@ -374,10 +484,78 @@ fn capture_validation_checks() -> Vec<String> {
         "tree.bin locators were canonicalized from declared tree-pack ranges and verified against pack payloads".to_string(),
         "source Snapshot records decoded directly as the canonical typed DAG schema".to_string(),
         "explicit Task and Change authorities were copied only through the declared repository schema".to_string(),
-        "Snapshot-root-reachable content was rebuilt into dense live-only object/tree packs and metadata; Snapshot root locators were remapped and disconnected source rows were omitted".to_string(),
         "copy used bounded streaming buffers".to_string(),
     ]);
+    checks.push(
+        if preserve_ordinals {
+            "complete authority prefixes and packs retained with every physical ordinal unchanged"
+        } else {
+            "Snapshot-root-reachable content rebuilt densely with complete locator remapping"
+        }
+        .to_string(),
+    );
     checks
+}
+
+/// Seal a private, ordinal-preserving conversion using the existing manifest.
+/// This never creates a new persistence format or changes source CAS identity.
+pub fn seal_binary_db_generation(generation_root: &Path) -> GenerationResult<String> {
+    use super::generation_activation::{collect_generation_paths, verify_generation};
+    let root = generation_root.canonicalize().map_err(|e| e.to_string())?;
+    let manifest_path = root.join("client-manifest.json");
+    let mut manifest: JsonValue =
+        serde_json::from_slice(&fs::read(&manifest_path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    if manifest["schema"] != CLIENT_MANIFEST_SCHEMA
+        || manifest["content_projection"]["source_retained"] != true
+    {
+        return Err("conversion sealing requires an existing ordinal-preserving capture".into());
+    }
+    let label = manifest["label"]
+        .as_str()
+        .ok_or("missing generation label")?
+        .to_string();
+    let mut files = Vec::new();
+    for relative_path in collect_generation_paths(&root)? {
+        let path = root.join(&relative_path);
+        let byte_size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
+        files.push(GenerationFileManifest {
+            record_count: fixed_record_count(&relative_path, byte_size)?,
+            relative_path,
+            byte_size,
+            sha256: sha256_file(&path)?,
+        });
+    }
+    let counts = record_counts(&files)?;
+    let fingerprint = fingerprint_files(&files);
+    manifest["files"] = serde_json::to_value(&files).map_err(|e| e.to_string())?;
+    manifest["content_fingerprint"] = json!(fingerprint);
+    manifest["validation"]["table_record_counts"] = json!(counts);
+    for (field, file) in [
+        ("retained_blob_records", "blob.bin"),
+        ("retained_object_pack_records", "object_pack.bin"),
+        (
+            "retained_object_pack_member_records",
+            "object_pack_member.bin",
+        ),
+        ("retained_tree_pack_records", "tree_pack.bin"),
+        ("retained_tree_records", "tree.bin"),
+    ] {
+        manifest["content_projection"][field] = json!(counts.get(file).copied().unwrap_or(0));
+    }
+    let staged = root.join(format!(".client-manifest-{}", std::process::id()));
+    write_json(&staged, &manifest)?;
+    fs::rename(&staged, &manifest_path).map_err(|e| e.to_string())?;
+    sync_directory(&root)?;
+    verify_generation(&root, &label)?;
+    Ok(fingerprint)
+}
+
+pub fn validate_binary_db_generation(
+    generation_root: &Path,
+    repo_name: &str,
+) -> GenerationResult<()> {
+    super::generation_activation::verify_generation(generation_root, repo_name).map(|_| ())
 }
 
 fn write_captured_bytes(path: &Path, bytes: &[u8]) -> GenerationResult<()> {
@@ -1777,7 +1955,14 @@ fn required_json_text(value: &JsonValue, field: &str) -> GenerationResult<String
         .ok_or_else(|| format!("pack archive stats are missing text {field}"))
 }
 
+#[cfg(test)]
 fn collect_copy_inputs(authority_root: &Path) -> GenerationResult<Vec<CopyInput>> {
+    collect_copy_inputs_with_legacy_links(authority_root, false)
+}
+fn collect_copy_inputs_with_legacy_links(
+    authority_root: &Path,
+    legacy_links: bool,
+) -> GenerationResult<Vec<CopyInput>> {
     let mut inputs = Vec::new();
     let mut seen = BTreeSet::new();
     let mut authority_entries = fs::read_dir(authority_root)
@@ -1805,6 +1990,7 @@ fn collect_copy_inputs(authority_root: &Path) -> GenerationResult<Vec<CopyInput>
             .map_err(|_| format!("Binary DB authority path is not UTF-8: {}", path.display()))?;
         let allowed = if name.ends_with(".bin") {
             REPOSITORY_BINARY_DB_BIN_PATHS.contains(&name.as_str())
+                || (legacy_links && name == "snapshot_link_payload.bin")
         } else if name.ends_with(".idx") {
             REPOSITORY_BINARY_DB_INDEX_PATHS.contains(&name.as_str())
         } else {
@@ -1816,6 +2002,7 @@ fn collect_copy_inputs(authority_root: &Path) -> GenerationResult<Vec<CopyInput>
             ));
         }
         let header_only = name.ends_with(".bin")
+            && !["land.bin", "snapshot_link.bin"].contains(&name.as_str())
             && fs::metadata(&path)
                 .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?
                 .len()
@@ -2210,7 +2397,7 @@ fn fixed_record_count(relative_path: &str, byte_size: u64) -> GenerationResult<O
         CHANGE_RECORD_BIN => u64::from(LOCAL_CHANGE_RECORD_SIZE),
         CHANGE_LAND_INDEX_BIN => u64::from(CHANGE_LAND_INDEX_RECORD_SIZE),
         LAND_RECORD_BIN => u64::from(LOCAL_LAND_RECORD_SIZE),
-        "snapshot_link.bin" => 40,
+        "snapshot_link.bin" => return Ok(None),
         "task_snapshot_index.bin" | "change_snapshot_index.bin" => 8,
         "blob.bin" => 64,
         "snapshot.bin" => 88,
@@ -2286,7 +2473,7 @@ fn required_layout_ids() -> BTreeMap<String, u32> {
     ])
 }
 
-fn sync_directory(path: &Path) -> GenerationResult<()> {
+pub(super) fn sync_directory(path: &Path) -> GenerationResult<()> {
     sync_filesystem_directory(path)
         .map_err(|error| format!("failed to sync directory {}: {error}", path.display()))
 }
@@ -2360,6 +2547,361 @@ mod tests {
     }
 
     #[test]
+    fn capture_activation_preserves_complete_git_and_raw_revision_ordinals() {
+        use crate::git_binary_db::*;
+        let temp = TempDir::new().unwrap();
+        let (repo, authority) = initialize_capture_fixture(&temp);
+        let content = LocalContentBinaryDb::<1>::new(
+            authority.clone(),
+            repo.clone(),
+            AuthorityId::new("capture-native-git"),
+            LocalStateScope::Repository,
+        );
+        let git_root = repo.join(GIT_DIRECTORY);
+        let db = LocalBinaryDbFs::new(
+            git_root.clone(),
+            repo.clone(),
+            AuthorityId::new("capture-native-git"),
+            LocalStateScope::Repository,
+        )
+        .with_declared_bin_paths(GIT_OBJECT_STORE_BIN_PATHS)
+        .with_declared_index_paths(GIT_OBJECT_STORE_INDEX_PATHS);
+        let objects = LocalGitObjectStore::open(db.clone(), content.clone()).unwrap();
+        let source = objects
+            .ensure_repository(
+                GitRepositoryKind::ImportSource,
+                1,
+                [6; 12],
+                "capture-source",
+            )
+            .unwrap();
+        let raw = b"original raw bytes\r\n\xff\0";
+        let oid = git_object_id(GitObjectKind::Blob, raw);
+        objects
+            .put(source, GitObjectKind::Blob, 1, &oid, raw)
+            .unwrap();
+        let mut documents = RawGitDocumentStore::open(db.clone(), content.clone()).unwrap();
+        let first = documents
+            .ensure_document_set(
+                source,
+                [6; 12],
+                "capture-source",
+                &[
+                    RawGitDocumentInput {
+                        path: "README.md",
+                        mode: 0o755,
+                        body: raw,
+                    },
+                    RawGitDocumentInput {
+                        path: "docs/Link.MD",
+                        mode: 0o120000,
+                        body: b"../README.md",
+                    },
+                ],
+            )
+            .unwrap();
+        let second = documents
+            .ensure_document_set(
+                source,
+                [6; 12],
+                "capture-source",
+                &[RawGitDocumentInput {
+                    path: "README.md",
+                    mode: 0o644,
+                    body: b"next\r\n\xff\0",
+                }],
+            )
+            .unwrap();
+        let before: BTreeMap<_, _> = collect_copy_inputs(&authority)
+            .unwrap()
+            .into_iter()
+            .map(|file| (file.relative_path, fs::read(file.source).unwrap()))
+            .chain(
+                git_inputs(&git_root)
+                    .unwrap()
+                    .into_iter()
+                    .map(|(path, name)| (name, fs::read(path).unwrap())),
+            )
+            .collect();
+        let generation = temp.path().join("native-generation");
+        capture_binary_db_generation(CaptureBinaryDbGenerationOptions {
+            repo_root: repo.clone(),
+            output_root: generation.clone(),
+            jobs: 2,
+        })
+        .unwrap();
+        for (path, bytes) in &before {
+            assert_eq!(
+                &fs::read(generation.join(path)).unwrap(),
+                bytes,
+                "captured {path}"
+            );
+        }
+        assert!(!generation.join("local/.locks").exists());
+        assert!(!generation.join(GIT_DIRECTORY).join(".locks").exists());
+        let report = activate_binary_db_generation(BinaryDbGenerationActivationOptions {
+            repo_root: repo.clone(),
+            generation_root: generation.clone(),
+            expected_current_authority_fingerprint: None,
+        })
+        .unwrap();
+        assert!(report.retained_previous_authority.is_some());
+        for (path, bytes) in &before {
+            let target = if let Some(leaf) = path.strip_prefix("local/") {
+                authority.join(leaf)
+            } else {
+                repo.join(path)
+            };
+            assert_eq!(&fs::read(target).unwrap(), bytes, "activated {path}");
+        }
+        let documents = RawGitDocumentStore::open(db.clone(), content.clone()).unwrap();
+        assert_eq!(documents.document_set_files(first).unwrap()[0].2, raw);
+        assert_eq!(
+            documents.document_set_files(second).unwrap()[0].2,
+            b"next\r\n\xff\0"
+        );
+        assert_eq!(
+            LocalGitObjectStore::open(db, content)
+                .unwrap()
+                .get(source, 1, &oid)
+                .unwrap()
+                .unwrap()
+                .1,
+            raw
+        );
+        let payload = git_root.join("git_repository_payload.bin");
+        let mut changed = fs::read(&payload).unwrap();
+        changed.push(0);
+        fs::write(&payload, changed).unwrap();
+        let before_stale = fingerprint_direct_authority_contents(&authority).unwrap();
+        let error = activate_binary_db_generation(BinaryDbGenerationActivationOptions {
+            repo_root: repo,
+            generation_root: generation,
+            expected_current_authority_fingerprint: None,
+        })
+        .unwrap_err();
+        assert!(error.contains("stale Git generation"));
+        assert_eq!(
+            before_stale,
+            fingerprint_direct_authority_contents(&authority).unwrap()
+        );
+    }
+
+    #[test]
+    fn ordinal_activation_crash_child() {
+        let Some(root) = std::env::var_os("AIT_GIT_CAPTURE_TEST_CHILD_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        activate_binary_db_generation(BinaryDbGenerationActivationOptions {
+            repo_root: root.join("repo"),
+            generation_root: root.join("generation"),
+            expected_current_authority_fingerprint: None,
+        })
+        .unwrap();
+        panic!("owned child must stop before Git root publication");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ordinal_capture_activation_sigkill_before_git_publication_resumes_exactly() {
+        use crate::git_binary_db::*;
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::Command;
+        use std::time::{Duration, Instant};
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let temp = TempDir::new().unwrap();
+        let (repo, authority) = initialize_capture_fixture(&temp);
+        let content = LocalContentBinaryDb::<1>::new(
+            authority.clone(),
+            repo.clone(),
+            AuthorityId::new("ordinal-crash"),
+            LocalStateScope::Repository,
+        );
+        let git_root = repo.join(GIT_DIRECTORY);
+        let db = LocalBinaryDbFs::new(
+            git_root.clone(),
+            repo.clone(),
+            AuthorityId::new("ordinal-crash"),
+            LocalStateScope::Repository,
+        )
+        .with_declared_bin_paths(GIT_OBJECT_STORE_BIN_PATHS)
+        .with_declared_index_paths(GIT_OBJECT_STORE_INDEX_PATHS);
+        let objects = LocalGitObjectStore::open(db.clone(), content.clone()).unwrap();
+        let source = objects
+            .ensure_repository(GitRepositoryKind::ImportSource, 1, [6; 12], "crash-source")
+            .unwrap();
+        let raw = b"crash\r\n\xff\0";
+        let oid = git_object_id(GitObjectKind::Blob, raw);
+        objects
+            .put(source, GitObjectKind::Blob, 1, &oid, raw)
+            .unwrap();
+        let mut documents = RawGitDocumentStore::open(db, content.clone()).unwrap();
+        let docset = documents
+            .ensure_document_set(
+                source,
+                [6; 12],
+                "crash-source",
+                &[RawGitDocumentInput {
+                    path: "README.md",
+                    mode: 0o755,
+                    body: raw,
+                }],
+            )
+            .unwrap();
+        let revisions = fs::read(authority.join("plan_revision.bin")).unwrap();
+        let generation = temp.path().join("generation");
+        capture_binary_db_generation(CaptureBinaryDbGenerationOptions {
+            repo_root: repo.clone(),
+            output_root: generation.clone(),
+            jobs: 1,
+        })
+        .unwrap();
+        let old_git = temp.path().join("old-git-evidence");
+        fs::rename(&git_root, &old_git).unwrap();
+        let marker = temp.path().join("activation-paused");
+        let mut child = ChildGuard(Command::new(std::env::current_exe().unwrap()).args(["--exact", "binary_db_generation::generation_capture::tests::ordinal_activation_crash_child", "--nocapture"]).env("AIT_GIT_CAPTURE_TEST_CHILD_ROOT", temp.path()).env("AIT_GIT_CAPTURE_TEST_PAUSE_MARKER", &marker).spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !marker.exists() {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "activation child exited before boundary"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "activation child did not reach boundary"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child.0.kill().unwrap();
+        assert_eq!(child.0.wait().unwrap().signal(), Some(9));
+        assert!(!git_root.exists());
+        assert_eq!(
+            revisions,
+            fs::read(authority.join("plan_revision.bin")).unwrap()
+        );
+        let report = activate_binary_db_generation(BinaryDbGenerationActivationOptions {
+            repo_root: repo.clone(),
+            generation_root: generation.clone(),
+            expected_current_authority_fingerprint: None,
+        })
+        .unwrap();
+        assert!(!report.single_syscall_atomic);
+        for (old, relative) in git_inputs(&old_git).unwrap() {
+            assert_eq!(
+                fs::read(old).unwrap(),
+                fs::read(repo.join(relative)).unwrap()
+            );
+        }
+        let db = LocalBinaryDbFs::new(
+            git_root.clone(),
+            repo.clone(),
+            AuthorityId::new("ordinal-reopened"),
+            LocalStateScope::Repository,
+        )
+        .with_declared_bin_paths(GIT_OBJECT_STORE_BIN_PATHS)
+        .with_declared_index_paths(GIT_OBJECT_STORE_INDEX_PATHS);
+        assert_eq!(
+            RawGitDocumentStore::open(db.clone(), content.clone())
+                .unwrap()
+                .document_set_files(docset)
+                .unwrap()[0]
+                .2,
+            raw
+        );
+        assert_eq!(
+            LocalGitObjectStore::open(db, content)
+                .unwrap()
+                .get(source, 1, &oid)
+                .unwrap()
+                .unwrap()
+                .1,
+            raw
+        );
+        assert_eq!(
+            revisions,
+            fs::read(authority.join("plan_revision.bin")).unwrap()
+        );
+        activate_binary_db_generation(BinaryDbGenerationActivationOptions {
+            repo_root: repo,
+            generation_root: generation,
+            expected_current_authority_fingerprint: None,
+        })
+        .unwrap();
+        assert!(old_git.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_activation_rejects_git_symlink_before_external_lock_creation() {
+        use std::os::unix::fs::symlink;
+        let temp = TempDir::new().unwrap();
+        let (repo, authority) = initialize_capture_fixture(&temp);
+        let generation = temp.path().join("generation");
+        capture_binary_db_generation(CaptureBinaryDbGenerationOptions {
+            repo_root: repo.clone(),
+            output_root: generation.clone(),
+            jobs: 1,
+        })
+        .unwrap();
+        assert!(!repo.join(GIT_DIRECTORY).exists());
+        let outside = temp.path().join("external-git");
+        fs::create_dir(&outside).unwrap();
+        let git_root = repo.join(GIT_DIRECTORY);
+        fs::create_dir_all(git_root.parent().unwrap()).unwrap();
+        symlink(&outside, &git_root).unwrap();
+        let before = fingerprint_direct_authority_contents(&authority).unwrap();
+        let error = capture_binary_db_generation(CaptureBinaryDbGenerationOptions {
+            repo_root: repo.clone(),
+            output_root: temp.path().join("rejected"),
+            jobs: 1,
+        })
+        .unwrap_err();
+        assert!(error.contains("Git authority must be a direct directory"));
+        let error = activate_binary_db_generation(BinaryDbGenerationActivationOptions {
+            repo_root: repo,
+            generation_root: generation,
+            expected_current_authority_fingerprint: None,
+        })
+        .unwrap_err();
+        assert!(error.contains("Git authority must be a direct directory"));
+        assert!(!outside.join(".locks").exists());
+        assert_eq!(
+            before,
+            fingerprint_direct_authority_contents(&authority).unwrap()
+        );
+    }
+
+    #[test]
+    fn capture_rejects_partial_cross_root_git_ordinal_remap_before_output() {
+        let temp = TempDir::new().unwrap();
+        let (repo, authority) = initialize_capture_fixture(&temp);
+        let git_root = repo.join(".ait/git-interop/v1/binary-v0");
+        fs::create_dir_all(&git_root).unwrap();
+        fs::write(git_root.join("git_object.bin"), [1, 0, 0, 0, 1]).unwrap();
+        let before = fingerprint_direct_authority_contents(&authority).unwrap();
+        let output = temp.path().join("generation");
+        let error = capture_binary_db_generation(CaptureBinaryDbGenerationOptions {
+            repo_root: repo,
+            output_root: output.clone(),
+            jobs: 1,
+        })
+        .unwrap_err();
+        assert!(error.contains("Git") || error.contains("git"));
+        assert!(!output.exists());
+        assert_eq!(
+            before,
+            fingerprint_direct_authority_contents(&authority).unwrap()
+        );
+    }
+
+    #[test]
     fn capture_preserves_schema_valid_empty_artifact_plan_revision_without_root() {
         let temp = TempDir::new().unwrap();
         let (repo, authority) = initialize_capture_fixture(&temp);
@@ -2380,6 +2922,7 @@ mod tests {
             .append_plan(
                 &mut write,
                 PlanRecord {
+                    actor_index_plus1: 0,
                     plan_meta: 0,
                     reserved0: 0,
                     payload_len: 0,
@@ -2400,6 +2943,7 @@ mod tests {
             .append_plan_revision(
                 &mut write,
                 PlanRevisionRecord {
+                    actor_index_plus1: 0,
                     revision_meta: 0,
                     reserved0: 0,
                     payload_len: 0,

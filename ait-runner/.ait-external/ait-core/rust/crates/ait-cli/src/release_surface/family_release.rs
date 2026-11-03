@@ -457,6 +457,23 @@ pub(super) fn native_runner_bundle_required(version: &str) -> Result<bool, Strin
     Ok(major > 1 || (major == 1 && minor >= 1))
 }
 
+pub(super) fn language_cli_bindings_required(version: &str) -> Result<bool, String> {
+    let base = version
+        .rsplit_once("-rc.")
+        .map(|(base, _)| base)
+        .unwrap_or(version);
+    let (major, minor, _) = stable_version_parts(base).ok_or_else(|| {
+        format!("Family version {version:?} cannot select the language CLI binding contract.")
+    })?;
+    let major = major
+        .parse::<u64>()
+        .map_err(|_| format!("Family version {version:?} has an out-of-range major component."))?;
+    let minor = minor
+        .parse::<u64>()
+        .map_err(|_| format!("Family version {version:?} has an out-of-range minor component."))?;
+    Ok(major > 1 || (major == 1 && minor >= 2))
+}
+
 pub(super) fn is_exact_published_legacy_native_bundle_source(
     version: &str,
     channel: &str,
@@ -4334,6 +4351,15 @@ mod tests {
         let parsed = parse_family_release_manifest(&manifest("1.0.0", "stable", "1.0.0"))
             .expect("valid stable family manifest");
         assert_eq!(parsed.components[1].version, "1.0.0");
+    }
+
+    #[test]
+    fn language_cli_gate_preserves_legacy_families_and_includes_prereleases() {
+        assert!(!language_cli_bindings_required("1.1.4").unwrap());
+        assert!(language_cli_bindings_required("1.2.0-rc.1").unwrap());
+        assert!(language_cli_bindings_required("1.2.0").unwrap());
+        assert!(language_cli_bindings_required("2.0.0").unwrap());
+        assert!(language_cli_bindings_required("invalid").is_err());
     }
 
     #[test]

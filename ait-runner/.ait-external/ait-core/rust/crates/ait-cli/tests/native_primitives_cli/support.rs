@@ -1,3 +1,8 @@
+#[path = "../support/native_home.rs"]
+mod native_home;
+#[cfg(unix)]
+#[path = "../support/cli_binary.rs"]
+mod cli_binary;
 use ait_cli::init_surface::{init_repo as initialize_repo, InitRequest};
 use ait_cli::primitives::{
     task_land_apply, task_land_payload, workflow_land_apply, workflow_ready_payload,
@@ -21,13 +26,14 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tiny_http::{Response, Server};
 
 const FIXTURE_BASE_SNAPSHOT_ID: &str = "SNP-C95DCC8C7848";
+const FIXTURE_BASE_SOURCE: &str = "pub fn example() -> &'static str { \"ok\" }\n";
 const FIXTURE_REVISION_SNAPSHOT_ID: &str = "SNP-A11CE5EED001";
 const FIXTURE_FINISHED_SNAPSHOT_ID: &str = "SNP-A11CE5EED002";
 const FIXTURE_REPOSITORY_INDEX: u32 = 7;
@@ -106,13 +112,8 @@ struct RecordedRequest {
 #[derive(Default)]
 struct RecoveryRemoteState {
     remote_head_snapshot_id: Option<String>,
-    published_base_snapshot_id: Option<String>,
-    published_revision_snapshot_id: Option<String>,
-}
-
-#[derive(Default)]
-struct BoundedSnapshotRemoteState {
-    remote_head_snapshot_id: Option<String>,
+    shared: Arc<Mutex<FakeRemoteState>>,
+    published_patchset: Option<JsonValue>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -123,14 +124,60 @@ enum CloseoutMutationBoundary {
     TimeoutBeforeMutation,
 }
 
+#[derive(Default)]
+struct CloseoutResponseGate {
+    // (entered, released), independent of the mutable acceptance state.
+    state: Mutex<(bool, bool)>,
+    changed: Condvar,
+}
+
+impl CloseoutResponseGate {
+    fn pause(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.0 = true;
+        self.changed.notify_all();
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, Duration::from_secs(2), |state| !state.1)
+            .unwrap();
+        assert!(state.1, "fixture response gate was not released");
+    }
+
+    fn wait_until_entered(&self) {
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(
+                self.state.lock().unwrap(),
+                Duration::from_secs(2),
+                |state| !state.0,
+            )
+            .unwrap();
+        assert!(state.0, "fixture response gate was not reached");
+    }
+
+    fn release(&self) {
+        self.state.lock().unwrap().1 = true;
+        self.changed.notify_all();
+    }
+}
+
 struct CloseoutRecoveryRemoteState {
+    revision_change: bool,
+    accepted: Option<JsonValue>,
+    recorded_reviews: Vec<JsonValue>,
+    plan_closeout: Option<CloseoutPlanFixture>,
+    guarded_base_snapshot_id: Option<String>,
     land_submitted: bool,
     task_completed: bool,
     enforce_reviewer_workflow: bool,
     code_review_recorded: bool,
     task_review_recorded: bool,
+    existing_task_review_kind: Option<String>,
+    omit_task_review_kind: bool,
     policy_evaluated: bool,
     patchset_revision_snapshot_id: Option<String>,
+    runner_ci_result: Option<(PathBuf, bool)>,
+    ai_only_candidate: bool,
     land_boundary: CloseoutMutationBoundary,
     task_boundary: CloseoutMutationBoundary,
     land_response_delay: Duration,
@@ -142,18 +189,28 @@ struct CloseoutRecoveryRemoteState {
     land_mutation_in_flight: bool,
     atomic_task_land_idempotency_key: Option<String>,
     fixture_seed: u64,
+    response_gate: Option<Arc<CloseoutResponseGate>>,
 }
 
 impl Default for CloseoutRecoveryRemoteState {
     fn default() -> Self {
         Self {
+            revision_change: false,
+            accepted: None,
+            recorded_reviews: Vec::new(),
+            plan_closeout: None,
+            guarded_base_snapshot_id: None,
             land_submitted: false,
             task_completed: false,
             enforce_reviewer_workflow: false,
             code_review_recorded: true,
             task_review_recorded: true,
+            existing_task_review_kind: None,
+            omit_task_review_kind: false,
             policy_evaluated: true,
             patchset_revision_snapshot_id: None,
+            runner_ci_result: None,
+            ai_only_candidate: false,
             land_boundary: CloseoutMutationBoundary::MutateBeforeResponse,
             task_boundary: CloseoutMutationBoundary::MutateBeforeResponse,
             land_response_delay: Duration::from_millis(150),
@@ -165,6 +222,7 @@ impl Default for CloseoutRecoveryRemoteState {
             land_mutation_in_flight: false,
             atomic_task_land_idempotency_key: None,
             fixture_seed: 0,
+            response_gate: None,
         }
     }
 }
@@ -179,12 +237,17 @@ impl CloseoutRecoveryRemoteState {
         task_response_delay: Duration,
     ) {
         self.land_submitted = false;
+        self.accepted = None;
+        self.recorded_reviews.clear();
+        self.plan_closeout = None;
+        self.guarded_base_snapshot_id = None;
         self.task_completed = false;
         self.enforce_reviewer_workflow = false;
         self.code_review_recorded = true;
         self.task_review_recorded = true;
         self.policy_evaluated = true;
         self.patchset_revision_snapshot_id = None;
+        self.ai_only_candidate = false;
         self.land_boundary = land_boundary;
         self.task_boundary = task_boundary;
         self.land_response_delay = land_response_delay;
@@ -196,18 +259,51 @@ impl CloseoutRecoveryRemoteState {
         self.land_mutation_in_flight = false;
         self.atomic_task_land_idempotency_key = None;
         self.fixture_seed = fixture_seed;
+        self.response_gate = None;
+    }
+}
+
+struct CloseoutPlanFixture {
+    plan: JsonValue,
+    revisions: Vec<JsonValue>,
+    fail_sync: bool,
+}
+
+impl CloseoutPlanFixture {
+    fn bound_task(&self, completed: bool) -> JsonValue {
+        json!({
+            "task_id":"RT-1", "status":if completed { "completed" } else { "active" },
+            "plan_id":self.plan["plan_id"],
+            "origin_plan_revision_id":self.revisions[0]["plan_revision_id"],
+            "plan_item_ref":"finish/ship"
+        })
     }
 }
 
 struct CloseoutRecoveryServerHandle {
     stop: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
+    requests: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
 }
 
 impl CloseoutRecoveryServerHandle {
     fn join(mut self) -> thread::Result<()> {
         self.stop.store(true, Ordering::Release);
-        self.handle.take().expect("closeout server handle").join()
+        self.handle.take().expect("closeout server handle").join()?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let requests = std::mem::take(&mut *self.requests.lock().unwrap());
+        for request in requests {
+            while !request.is_finished() {
+                assert!(
+                    Instant::now() < deadline,
+                    "fixture handler did not stop: {}",
+                    request.thread().name().unwrap_or("unnamed")
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+            request.join()?;
+        }
+        Ok(())
     }
 }
 
@@ -219,8 +315,18 @@ impl Drop for CloseoutRecoveryServerHandle {
 
 #[derive(Default)]
 struct FakeRemoteState {
+    accepted_atomic: Option<JsonValue>,
+    fail_current_change_read: bool,
+    recorded_review_requests: Vec<JsonValue>,
+    committed_snapshots: BTreeMap<String, JsonValue>,
+    durable_task: Option<DurableTaskFixture>,
+    unsupported_review_actor_identity: bool,
+    review_readback_kind_override: Option<String>,
+    recorded_actor_reviews: Vec<JsonValue>,
     change_rows_override: Option<Vec<JsonValue>>,
     remote_head_snapshot_id: Option<String>,
+    remote_line_override: Option<JsonValue>,
+    fail_line_read: bool,
     selected_patchset_id: Option<String>,
     selected_patchset_base_snapshot_id: Option<String>,
     selected_patchset_revision_snapshot_id: Option<String>,
@@ -251,20 +357,6 @@ fn write_file(path: &Path, content: &str) {
     handle.write_all(content.as_bytes()).unwrap();
 }
 
-fn encode_ref_name(name: &str) -> String {
-    let mut out = String::new();
-    for byte in name.as_bytes() {
-        let ch = *byte as char;
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '~') {
-            out.push(ch);
-        } else {
-            out.push('%');
-            out.push_str(&format!("{byte:02X}"));
-        }
-    }
-    out
-}
-
 fn local_line_head(root: &Path, line_name: &str) -> Option<String> {
     RepoRuntime::discover_from_path(root)
         .unwrap()
@@ -292,10 +384,7 @@ fn seed_binary_line(root: &Path, line_name: &str, snapshot_id: &str) {
 fn init_repo_with_fixture_workflow(base_url: &str) -> TempDir {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
-    write_file(
-        &root.join("src/lib.rs"),
-        "pub fn example() -> &'static str { \"ok\" }\n",
-    );
+    write_file(&root.join("src/lib.rs"), FIXTURE_BASE_SOURCE);
     initialize_repo(&InitRequest {
         root: root.to_path_buf(),
         name: Some("fixture-ait".to_string()),
@@ -314,10 +403,10 @@ fn init_repo_with_fixture_workflow(base_url: &str) -> TempDir {
         r#"{
   "repo_name": "fixture-ait",
   "repository_index": 7,
+  "agent_teams": true,
   "id_namespace_prefix": "",
   "default_line": "main",
   "default_remote": "origin",
-  "workflow_mode": "team_remote",
   "remotes": {
     "origin": {
       "remote_id": 1,
@@ -592,7 +681,8 @@ fn init_worktree_repo_with_rt1_publication(
     _publish_rt1: bool,
 ) -> (TempDir, std::path::PathBuf) {
     let temp = init_repo_with_fixture_workflow(base_url);
-    let root = temp.path();
+    let physical_root = temp.path().canonicalize().unwrap();
+    let root = physical_root.as_path();
     let worktree = root.join("rt-1");
     fs::create_dir_all(worktree.join("src")).unwrap();
     #[cfg(unix)]
@@ -638,11 +728,21 @@ fn init_worktree_repo_with_rt1_publication(
             FIXTURE_BASE_SNAPSHOT_ID,
         ),
     );
+    let path = root.join(".ait/worktrees/rt-1.json");
+    let mut metadata = parse_json_file(&path);
+    metadata["capture_remote_name"] = json!("origin");
+    metadata["capture_remote_url"] = json!(base_url.trim_end_matches('/'));
+    metadata["capture_repository_index"] = json!(FIXTURE_REPOSITORY_INDEX);
+    write_file(&path, &encode_json_pretty(&metadata));
     (temp, worktree)
 }
 
 fn init_worktree_repo(base_url: &str) -> (TempDir, std::path::PathBuf) {
     init_worktree_repo_with_rt1_publication(base_url, true)
+}
+
+fn restore_fixture_canonical_base(root: &Path) {
+    write_file(&root.join("src/lib.rs"), FIXTURE_BASE_SOURCE);
 }
 
 fn init_local_draft_worktree_repo(base_url: &str) -> (TempDir, std::path::PathBuf) {
@@ -665,13 +765,52 @@ fn init_cli_local_draft_worktree_repo(base_url: &str) -> (TempDir, PathBuf, Json
         ],
     );
     assert_eq!(started["task_id"].as_str(), Some("LT-0001"));
-    assert_eq!(started["change"]["change_id"].as_str(), Some("C-01"));
+    assert!(started.get("change").is_none_or(JsonValue::is_null));
     let worktree = started["worktree"]["open_path"]
         .as_str()
         .or_else(|| started["worktree"]["path"].as_str())
         .map(PathBuf::from)
         .expect("local task start worktree path");
     (temp, worktree, started)
+}
+
+// Model an already published optional revision. Initial Task fixtures keep no Change.
+fn use_published_revision_fixture(worktree: &Path, state: &Arc<Mutex<FakeRemoteState>>) {
+    let overlay = parse_json_file(worktree.join(".ait-worktree.json"));
+    let root = PathBuf::from(overlay["repo_root"].as_str().unwrap());
+    let name = overlay["worktree_name"].as_str().unwrap();
+    let path = root.join(".ait/worktrees").join(format!("{name}.json"));
+    let mut metadata = parse_json_file(&path);
+    metadata["bound_change_id"] = json!("C-01");
+    write_file(&path, &encode_json_pretty(&metadata));
+    let mut state = state.lock().unwrap();
+    state.selected_patchset_id = Some("RT-1/C-01/P-01".into());
+    state.change_rows_override = Some(vec![
+        json!({"task_id":"RT-1","change_id":"C-01","change_ref":"RT-1/C-01",
+        "status":"active","base_line":"main","fork_snapshot_id":FIXTURE_BASE_SNAPSHOT_ID}),
+    ]);
+}
+
+fn create_local_revision_fixture(worktree: &Path, task_id: &str, title: &str) -> JsonValue {
+    write_file(&worktree.join("revision-candidate.txt"), title);
+    let candidate = json_output(
+        worktree,
+        &["snapshot", "create", task_id, "--message", title, "--json"],
+    );
+    json_output(
+        worktree,
+        &[
+            "change",
+            "create",
+            task_id,
+            "--local",
+            "--title",
+            title,
+            "--fork-snapshot",
+            candidate["snapshot_id"].as_str().unwrap(),
+            "--json",
+        ],
+    )
 }
 
 fn init_registered_worktree(
@@ -683,6 +822,8 @@ fn init_registered_worktree(
     auto_created_for_task: bool,
     cleanup_policy: Option<&str>,
 ) -> std::path::PathBuf {
+    let canonical_root = root.canonicalize().unwrap();
+    let root = canonical_root.as_path();
     let worktree = root.join(name);
     fs::create_dir_all(worktree.join("src")).unwrap();
     #[cfg(unix)]
@@ -764,7 +905,10 @@ fn cargo_bin() -> Command {
 
 fn command_output_with_env(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     let mut command = cargo_bin();
-    command.current_dir(root).args(args);
+    command
+        .current_dir(root)
+        .args(args)
+        .env("CODEX_HOME", native_home::path());
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -877,8 +1021,11 @@ fn fixture_snapshot_args(root: &Path, args: &[&str]) -> Vec<String> {
     } else {
         return output;
     };
-    if args.get(reference_index).is_none_or(|arg| arg.starts_with('-'))
-        && !args.contains(&"--task-id") && !args.contains(&"--change-id")
+    if args
+        .get(reference_index)
+        .is_none_or(|arg| arg.starts_with('-'))
+        && !args.contains(&"--task-id")
+        && !args.contains(&"--change-id")
     {
         let overlay_path = root.join(".ait-worktree.json");
         if overlay_path.exists() {
@@ -886,10 +1033,12 @@ fn fixture_snapshot_args(root: &Path, args: &[&str]) -> Vec<String> {
             let name = overlay["worktree_name"].as_str().unwrap();
             let metadata =
                 parse_json_file(root.join(".ait/worktrees").join(format!("{name}.json")));
-            output.insert(reference_index, format!("{}/{}",
-                metadata["bound_task_id"].as_str().unwrap(),
-                metadata["bound_change_id"].as_str().unwrap(),
-            ));
+            let task_id = metadata["bound_task_id"].as_str().unwrap();
+            let reference = match metadata["bound_change_id"].as_str() {
+                Some(change_id) => format!("{task_id}/{change_id}"),
+                None => task_id.to_string(),
+            };
+            output.insert(reference_index, reference);
         }
     }
     output

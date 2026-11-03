@@ -50,6 +50,8 @@ fn init_authoring_worktree(root: &Path) -> std::path::PathBuf {
             "--json",
         ],
     );
+    assert_eq!(started["task_id"], "LT-0001");
+    assert!(started.get("change").is_none_or(JsonValue::is_null));
     std::path::PathBuf::from(
         started["worktree"]["path"]
             .as_str()
@@ -87,7 +89,7 @@ fn gc_binary_runtime_exposes_only_supported_maintenance_operations() {
         &[
             "snapshot",
             "create",
-            "LT-0001/C-01",
+            "LT-0001",
             "--message",
             "base",
             "--json",
@@ -105,7 +107,7 @@ fn gc_binary_runtime_exposes_only_supported_maintenance_operations() {
         &[
             "snapshot",
             "create",
-            "LT-0001/C-01",
+            "LT-0001",
             "--message",
             "update",
             "--json",
@@ -181,7 +183,7 @@ fn gc_validate_emits_attention_result_before_returning_failure() {
         &[
             "snapshot",
             "create",
-            "LT-0001/C-01",
+            "LT-0001",
             "--message",
             "base",
             "--json",
@@ -224,7 +226,7 @@ fn task_governed_repo_root_rejects_authoring_surfaces() {
         &[
             "snapshot",
             "create",
-            "LT-0001/C-01",
+            "LT-0001",
             "--message",
             "seed",
             "--json",
@@ -242,7 +244,7 @@ fn task_governed_repo_root_rejects_authoring_surfaces() {
         vec![
             "snapshot",
             "create",
-            "LT-0001/C-01",
+            "LT-0001",
             "--message",
             "root",
             "--json",
@@ -285,5 +287,5 @@ fn task_governed_repo_root_rejects_authoring_surfaces() {
         ],
     );
     assert_eq!(change["task_id"], "LT-0001");
-    assert_eq!(change["change_id"], "C-02");
+    assert_eq!(change["change_id"], "C-01");
 }

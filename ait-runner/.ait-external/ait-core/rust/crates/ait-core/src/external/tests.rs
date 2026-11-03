@@ -153,6 +153,38 @@ fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", Sha256::digest(data))
 }
 
+// The status module supplies an existing valid cache with deliberately colliding
+// metadata. This models the cache condition, not an observed OS timestamp collision.
+pub(super) fn assert_projection_revalidates_emulated_metadata_collision(
+    seed_cache: impl FnOnce(&Path, &ExternalLockNode, &str),
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let (_, lock) = materialize_external_status_fixture(temp.path(), "SNP-ABC123");
+    let node = &lock.nodes[0];
+    assert_eq!(
+        inspect_operational_external_projection_roots(temp.path(), "fixture").unwrap(),
+        vec![node.materialize_to.clone()]
+    );
+    let file = temp
+        .path()
+        .join(&node.materialize_to)
+        .join("AIT_EXTERNAL_SNAPSHOT");
+    let original = std::fs::read(&file).unwrap();
+    let original_sha = sha256_hex(&original);
+    std::fs::write(&file, vec![b'X'; original.len()]).unwrap();
+    seed_cache(temp.path(), node, &original_sha);
+    let authoritative = inspect_external_filesystem_status_report(temp.path(), "fixture").unwrap();
+    assert_eq!(
+        authoritative.report.externals[0].state,
+        ExternalStatusState::Dirty
+    );
+    assert!(
+        inspect_operational_external_projection_roots(temp.path(), "fixture")
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[derive(Clone)]
 struct RecordingExternalBindingToolProbe {
     calls: Rc<RefCell<Vec<String>>>,
@@ -3098,9 +3130,9 @@ license = "Apache-2.0"
 
 #[test]
 fn toml_manifest_codec_rejects_absolute_binding_path() {
-    let err = TomlExternalManifestCodec
-        .parse_manifest(
-            br#"
+    let absolute = serde_json::to_string(&std::env::temp_dir().join("ait-db")).unwrap();
+    let manifest = format!(
+        r#"
 [[external]]
 name = "ait-db"
 repo_name = "ait-db"
@@ -3113,9 +3145,11 @@ license = "Apache-2.0"
 
 [external.bindings.rust]
 kind = "cargo-path"
-path = "/tmp/ait-db"
-"#,
-        )
+path = {absolute}
+"#
+    );
+    let err = TomlExternalManifestCodec
+        .parse_manifest(manifest.as_bytes())
         .unwrap_err();
 
     assert!(err.message().contains("must be repository-relative"));

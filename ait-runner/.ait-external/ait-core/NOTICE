@@ -28,7 +28,7 @@ This section is generated from the locked Cargo metadata. It contains no build-h
 
 Package	Version	SPDX license expression	Authors	Upstream
 adler2	2.0.1	0BSD OR MIT OR Apache-2.0	Jonas Schievink <jonasschievink@gmail.com>, oyvindln <oyvindln@users.noreply.github.com>	https://github.com/oyvindln/adler2
-aes	0.8.4	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/block-ciphers
+aes	0.9.4	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/block-ciphers
 aho-corasick	1.1.4	Unlicense OR MIT	Andrew Gallant <jamslam@gmail.com>	https://github.com/BurntSushi/aho-corasick
 android_system_properties	0.1.5	MIT/Apache-2.0	Nicolas Silva <nical@fastmail.com>	https://github.com/nical/android_system_properties
 anstream	1.0.0	MIT OR Apache-2.0		https://github.com/rust-cli/anstyle.git
@@ -41,39 +41,42 @@ assert_cmd	2.2.2	MIT OR Apache-2.0	Pascal Hertleif <killercup@gmail.com>, Ed Pag
 atomic-waker	1.1.2	Apache-2.0 OR MIT	Stjepan Glavina <stjepang@gmail.com>, Contributors to futures-rs	https://github.com/smol-rs/atomic-waker
 autocfg	1.5.1	Apache-2.0 OR MIT	Josh Stone <cuviper@gmail.com>	https://github.com/cuviper/autocfg
 base64	0.22.1	MIT OR Apache-2.0	Marshall Pierce <marshall@mpierce.org>	https://github.com/marshallpierce/rust-base64
-base64ct	1.8.3	Apache-2.0 OR MIT	RustCrypto Developers	https://github.com/RustCrypto/formats
 bitflags	2.13.1	MIT OR Apache-2.0	The Rust Project Developers	https://github.com/bitflags/bitflags
 block-buffer	0.10.4	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/utils
+block-buffer	0.12.1	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/utils
 bstr	1.13.0	MIT OR Apache-2.0	Andrew Gallant <jamslam@gmail.com>	https://github.com/BurntSushi/bstr
 bumpalo	3.20.3	MIT OR Apache-2.0	Nick Fitzgerald <fitzgen@gmail.com>	https://github.com/fitzgen/bumpalo
-byteorder	1.5.0	Unlicense OR MIT	Andrew Gallant <jamslam@gmail.com>	https://github.com/BurntSushi/byteorder
 bytes	1.12.1	MIT	Carl Lerche <me@carllerche.com>, Sean McArthur <sean@seanmonstar.com>	https://github.com/tokio-rs/bytes
-bzip2	0.4.4	MIT/Apache-2.0	Alex Crichton <alex@alexcrichton.com>	https://github.com/alexcrichton/bzip2-rs
-bzip2-sys	0.1.13+1.0.8	MIT/Apache-2.0	Alex Crichton <alex@alexcrichton.com>	https://github.com/alexcrichton/bzip2-rs
+bzip2	0.6.1	MIT OR Apache-2.0		https://github.com/trifectatechfoundation/bzip2-rs
 cc	1.3.0	MIT OR Apache-2.0	Alex Crichton <alex@alexcrichton.com>	https://github.com/rust-lang/cc-rs
 cfg-if	1.0.4	MIT OR Apache-2.0	Alex Crichton <alex@alexcrichton.com>	https://github.com/rust-lang/cfg-if
 cfg_aliases	0.2.2	MIT	Zicklag <zicklag@katharostech.com>	https://github.com/katharostech/cfg_aliases
 chacha20	0.10.1	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/stream-ciphers
 chrono	0.4.45	MIT OR Apache-2.0		https://github.com/chronotope/chrono
 chunked_transfer	1.5.0	MIT OR Apache-2.0	Corey Farwell <coreyf@rwell.org>	https://github.com/frewsxcv/rust-chunked-transfer
-cipher	0.4.4	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/traits
+cipher	0.5.2	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/traits
 clap	4.6.2	MIT OR Apache-2.0		https://github.com/clap-rs/clap
 clap_builder	4.6.2	MIT OR Apache-2.0		https://github.com/clap-rs/clap
 clap_derive	4.6.1	MIT OR Apache-2.0		https://github.com/clap-rs/clap
 clap_lex	1.1.0	MIT OR Apache-2.0		https://github.com/clap-rs/clap
+cmov	0.5.4	Apache-2.0 OR MIT	RustCrypto Developers	https://github.com/RustCrypto/utils
 colorchoice	1.0.5	MIT OR Apache-2.0		https://github.com/rust-cli/anstyle.git
-constant_time_eq	0.1.5	CC0-1.0	Cesar Eduardo Barros <cesarb@cesarb.eti.br>	https://github.com/cesarb/constant_time_eq
+const-oid	0.10.2	Apache-2.0 OR MIT	RustCrypto Developers	https://github.com/RustCrypto/formats
+constant_time_eq	0.6.1	CC0-1.0 OR MIT-0 OR Apache-2.0	Cesar Eduardo Barros <cesarb@cesarb.eti.br>	https://codeberg.org/cesarb/constant_time_eq
 convert_case	0.11.0	MIT	rutrum <dave@rutrum.net>	https://github.com/rutrum/convert-case
 core-foundation-sys	0.8.7	MIT OR Apache-2.0	The Servo Project Developers	https://github.com/servo/core-foundation-rs
+cpubits	0.1.1	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/utils
 cpufeatures	0.2.17	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/utils
 cpufeatures	0.3.0	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/utils
 crc32fast	1.5.0	MIT OR Apache-2.0	Sam Rijs <srijs@airpost.net>, Alex Crichton <alex@alexcrichton.com>	https://github.com/srijs/rust-crc32fast
-crossbeam-utils	0.8.22	MIT OR Apache-2.0		https://github.com/crossbeam-rs/crossbeam
 crypto-common	0.1.7	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/traits
+crypto-common	0.2.2	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/traits
 ctor	1.0.13	Apache-2.0 OR MIT	Matt Mastracci <matthew@mastracci.com>	https://github.com/mmastrac/linktime
+ctutils	0.4.7	Apache-2.0 OR MIT	RustCrypto Developers	https://github.com/RustCrypto/utils
 deranged	0.5.8	MIT OR Apache-2.0	Jacob Pratt <jacob@jhpratt.dev>	https://github.com/jhpratt/deranged
 difflib	0.4.0	MIT	Dima Kudosh <dimakudosh@gmail.com>	https://github.com/DimaKudosh/difflib
 digest	0.10.7	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/traits
+digest	0.11.3	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/traits
 displaydoc	0.2.6	MIT OR Apache-2.0	Jane Lusby <jlusby@yaah.dev>	https://github.com/yaahc/displaydoc
 equivalent	1.0.2	Apache-2.0 OR MIT		https://github.com/indexmap-rs/equivalent
 errno	0.3.14	MIT OR Apache-2.0	Chris Wong <lambda.fairy@gmail.com>, Dan Gohman <dev@sunfishcode.online>	https://github.com/lambda-fairy/rust-errno
@@ -99,11 +102,13 @@ getrandom	0.4.3	MIT OR Apache-2.0	The Rand Project Developers	https://github.com
 hashbrown	0.17.1	MIT OR Apache-2.0		https://github.com/rust-lang/hashbrown
 heck	0.5.0	MIT OR Apache-2.0		https://github.com/withoutboats/heck
 hmac	0.12.1	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/MACs
+hmac	0.13.0	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/MACs
 http	1.4.2	MIT OR Apache-2.0	Alex Crichton <alex@alexcrichton.com>, Carl Lerche <me@carllerche.com>, Sean McArthur <sean@seanmonstar.com>	https://github.com/hyperium/http
 http-body	1.1.0	MIT	Carl Lerche <me@carllerche.com>, Lucio Franco <luciofranco14@gmail.com>, Sean McArthur <sean@seanmonstar.com>	https://github.com/hyperium/http-body
 http-body-util	0.1.4	MIT	Carl Lerche <me@carllerche.com>, Lucio Franco <luciofranco14@gmail.com>, Sean McArthur <sean@seanmonstar.com>	https://github.com/hyperium/http-body
 httparse	1.10.1	MIT OR Apache-2.0	Sean McArthur <sean@seanmonstar.com>	https://github.com/seanmonstar/httparse
 httpdate	1.0.3	MIT OR Apache-2.0	Pyfisch <pyfisch@posteo.org>	https://github.com/pyfisch/httpdate
+hybrid-array	0.4.15	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/hybrid-array
 hyper	1.10.1	MIT	Sean McArthur <sean@seanmonstar.com>	https://github.com/hyperium/hyper
 hyper-rustls	0.27.9	Apache-2.0 OR ISC OR MIT		https://github.com/rustls/hyper-rustls
 hyper-util	0.1.20	MIT	Sean McArthur <sean@seanmonstar.com>	https://github.com/hyperium/hyper-util
@@ -119,12 +124,13 @@ icu_provider	2.2.0	Unicode-3.0	The ICU4X Project Developers	https://github.com/u
 idna	1.1.0	MIT OR Apache-2.0	The rust-url developers	https://github.com/servo/rust-url/
 idna_adapter	1.2.2	Apache-2.0 OR MIT	The rust-url developers	https://github.com/hsivonen/idna_adapter
 indexmap	2.14.0	Apache-2.0 OR MIT		https://github.com/indexmap-rs/indexmap
-inout	0.1.4	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/utils
+inout	0.2.5	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/utils
 ipnet	2.12.0	MIT OR Apache-2.0	Kris Price <kris@krisprice.nz>	https://github.com/krisprice/ipnet
 is_terminal_polyfill	1.70.2	MIT OR Apache-2.0		https://github.com/polyfill-rs/is_terminal_polyfill
 itoa	1.0.18	MIT OR Apache-2.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/itoa
 jobserver	0.1.35	MIT OR Apache-2.0	Alex Crichton <alex@alexcrichton.com>	https://github.com/rust-lang/jobserver-rs
 js-sys	0.3.103	MIT OR Apache-2.0	The wasm-bindgen Developers	https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys
+libbz2-rs-sys	0.2.6	bzip2-1.0.6		https://github.com/trifectatechfoundation/libbzip2-rs
 libc	0.2.186	MIT OR Apache-2.0	The Rust Project Developers	https://github.com/rust-lang/libc
 libloading	0.9.0	ISC	Simonas Kazlauskas <libloading@kazlauskas.me>	https://github.com/nagisa/rust_libloading/
 linux-raw-sys	0.12.1	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT	Dan Gohman <dev@sunfishcode.online>	https://github.com/sunfishcode/linux-raw-sys
@@ -139,14 +145,15 @@ napi-build	2.4.1	MIT	LongYinan <lynweklm@gmail.com>	https://github.com/napi-rs/n
 napi-derive	3.6.3	MIT	LongYinan <lynweklm@gmail.com>, Forehalo <forehalo@gmail.com>	https://github.com/napi-rs/napi-rs
 napi-derive-backend	6.1.2	MIT		https://github.com/napi-rs/napi-rs
 napi-sys	3.3.0	MIT	LongYinan <lynweklm@gmail.com>	https://github.com/napi-rs/napi-rs
+nix	0.31.3	MIT		https://github.com/nix-rust/nix
 nohash-hasher	0.2.0	Apache-2.0 OR MIT	Parity Technologies <admin@parity.io>	https://github.com/paritytech/nohash-hasher
 normalize-line-endings	0.3.0	Apache-2.0	Richard Dodd <richdodj@gmail.com>	https://github.com/derekdreery/normalize-line-endings
 num-conv	0.2.2	MIT OR Apache-2.0	Jacob Pratt <jacob@jhpratt.dev>	https://github.com/jhpratt/num-conv
 num-traits	0.2.19	MIT OR Apache-2.0	The Rust Project Developers	https://github.com/rust-num/num-traits
+object	0.37.3	Apache-2.0 OR MIT		https://github.com/gimli-rs/object
 once_cell	1.21.4	MIT OR Apache-2.0	Aleksey Kladov <aleksey.kladov@gmail.com>	https://github.com/matklad/once_cell
 once_cell_polyfill	1.70.2	MIT OR Apache-2.0		https://github.com/polyfill-rs/once_cell_polyfill
-password-hash	0.4.2	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/traits/tree/master/password-hash
-pbkdf2	0.11.0	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/password-hashes/tree/master/pbkdf2
+pbkdf2	0.13.0	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/password-hashes
 percent-encoding	2.3.2	MIT OR Apache-2.0	The rust-url developers	https://github.com/servo/rust-url/
 pin-project-lite	0.2.17	Apache-2.0 OR MIT		https://github.com/taiki-e/pin-project-lite
 pkg-config	0.3.33	MIT OR Apache-2.0	Alex Crichton <alex@alexcrichton.com>	https://github.com/rust-lang/pkg-config-rs
@@ -171,7 +178,6 @@ quote	1.0.47	MIT OR Apache-2.0	David Tolnay <dtolnay@gmail.com>	https://github.c
 r-efi	6.0.0	MIT OR Apache-2.0 OR LGPL-2.1-or-later		https://github.com/r-efi/r-efi
 rand	0.10.2	MIT OR Apache-2.0	The Rand Project Developers, The Rust Project Developers	https://github.com/rust-random/rand
 rand_core	0.10.1	MIT OR Apache-2.0	The Rand Project Developers	https://github.com/rust-random/rand_core
-rand_core	0.6.4	MIT OR Apache-2.0	The Rand Project Developers, The Rust Project Developers	https://github.com/rust-random/rand
 rand_pcg	0.10.2	MIT OR Apache-2.0	The Rand Project Developers	https://github.com/rust-random/rngs
 regex	1.13.1	MIT OR Apache-2.0	The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>	https://github.com/rust-lang/regex
 regex-automata	0.4.16	MIT OR Apache-2.0	The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>	https://github.com/rust-lang/regex
@@ -180,7 +186,7 @@ reqwest	0.12.28	MIT OR Apache-2.0	Sean McArthur <sean@seanmonstar.com>	https://g
 ring	0.17.14	Apache-2.0 AND ISC		https://github.com/briansmith/ring
 rustc-hash	2.1.3	Apache-2.0 OR MIT	The Rust Project Developers	https://github.com/rust-lang/rustc-hash
 rustix	1.1.4	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT	Dan Gohman <dev@sunfishcode.online>, Jakub Konka <kubkon@jakubkonka.com>	https://github.com/bytecodealliance/rustix
-rustls	0.23.45	Apache-2.0 OR ISC OR MIT		https://github.com/rustls/rustls
+rustls	0.23.46	Apache-2.0 OR ISC OR MIT		https://github.com/rustls/rustls
 rustls-pki-types	1.15.0	MIT OR Apache-2.0		https://github.com/rustls/pki-types
 rustls-webpki	0.103.15	ISC		https://github.com/rustls/webpki
 rustversion	1.0.23	MIT OR Apache-2.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/rustversion
@@ -193,6 +199,7 @@ serde_json	1.0.150	MIT OR Apache-2.0	Erick Tryzelaar <erick.tryzelaar@gmail.com>
 serde_spanned	0.6.9	MIT OR Apache-2.0		https://github.com/toml-rs/toml
 serde_urlencoded	0.7.1	MIT/Apache-2.0	Anthony Ramine <n.oxyde@gmail.com>	https://github.com/nox/serde_urlencoded
 sha1	0.10.7	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/hashes
+sha1	0.11.0	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/hashes
 sha2	0.10.9	MIT OR Apache-2.0	RustCrypto Developers	https://github.com/RustCrypto/hashes
 shlex	2.0.1	MIT OR Apache-2.0	comex <comexk@gmail.com>, Fenhl <fenhl@fenhl.net>, Adrian Taylor <adetaylor@chromium.org>, Alex Touchet <alextouchet@outlook.com>, Daniel Parks <dp+git@oxidized.org>, Garrett Berg <googberg@gmail.com>	https://github.com/comex/rust-shlex
 simd-adler32	0.3.10	MIT	Marvin Countryman <me@maar.vin>	https://github.com/mcountryman/simd-adler32
@@ -233,6 +240,7 @@ tower-service	0.3.3	MIT	Tower Maintainers <team@tower-rs.com>	https://github.com
 tracing	0.1.44	MIT	Eliza Weisman <eliza@buoyant.io>, Tokio Contributors <team@tokio.rs>	https://github.com/tokio-rs/tracing
 tracing-core	0.1.36	MIT	Tokio Contributors <team@tokio.rs>	https://github.com/tokio-rs/tracing
 try-lock	0.2.5	MIT	Sean McArthur <sean@seanmonstar.com>	https://github.com/seanmonstar/try-lock
+typed-path	0.12.4	MIT OR Apache-2.0	Chip Senkbeil <chip@senkbeil.org>	https://github.com/chipsenkbeil/typed-path
 typenum	1.20.1	MIT OR Apache-2.0		https://github.com/paholg/typenum
 unicode-ident	1.0.24	(MIT OR Apache-2.0) AND Unicode-3.0	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/unicode-ident
 unicode-segmentation	1.13.3	MIT OR Apache-2.0	kwantam <kwantam@gmail.com>, Manish Goregaokar <manishsmail@gmail.com>	https://github.com/unicode-rs/unicode-segmentation
@@ -283,13 +291,14 @@ zeroize	1.9.0	Apache-2.0 OR MIT	The RustCrypto Project Developers	https://github
 zerotrie	0.2.4	Unicode-3.0	The ICU4X Project Developers	https://github.com/unicode-org/icu4x
 zerovec	0.11.6	Unicode-3.0	The ICU4X Project Developers	https://github.com/unicode-org/icu4x
 zerovec-derive	0.11.3	Unicode-3.0	Manish Goregaokar <manishsmail@gmail.com>	https://github.com/unicode-org/icu4x
-zip	0.6.6	MIT	Mathijs van de Nes <git@mathijs.vd-nes.nl>, Marli Frost <marli@frost.red>, Ryan Levick <ryan.levick@gmail.com>	https://github.com/zip-rs/zip.git
+zip	9.0.5	MIT	Mathijs van de Nes <git@mathijs.vd-nes.nl>, Marli Frost <marli@frost.red>, Ryan Levick <ryan.levick@gmail.com>, Chris Hennick <hennickc@amazon.com>	https://github.com/zip-rs/zip2
+zlib-rs	0.6.8	Zlib		https://github.com/trifectatechfoundation/zlib-rs
 zmij	1.0.23	MIT	David Tolnay <dtolnay@gmail.com>	https://github.com/dtolnay/zmij
-zstd	0.11.2+zstd.1.5.2	MIT	Alexandre Bury <alexandre.bury@gmail.com>	https://github.com/gyscos/zstd-rs
 zstd	0.13.3	MIT	Alexandre Bury <alexandre.bury@gmail.com>	https://github.com/gyscos/zstd-rs
-zstd-safe	5.0.2+zstd.1.5.2	MIT/Apache-2.0	Alexandre Bury <alexandre.bury@gmail.com>	https://github.com/gyscos/zstd-rs
+zstd	0.14.3	BSD-3-Clause	Alexandre Bury <alexandre.bury@gmail.com>	https://github.com/gyscos/zstd-rs
 zstd-safe	7.2.4	MIT OR Apache-2.0	Alexandre Bury <alexandre.bury@gmail.com>	https://github.com/gyscos/zstd-rs
-zstd-sys	2.0.16+zstd.1.5.7	MIT/Apache-2.0	Alexandre Bury <alexandre.bury@gmail.com>	https://github.com/gyscos/zstd-rs
+zstd-safe	8.2.0	BSD-3-Clause	Alexandre Bury <alexandre.bury@gmail.com>	https://github.com/gyscos/zstd-rs
+zstd-sys	2.1.2+zstd.1.5.7	BSD-3-Clause	Alexandre Bury <alexandre.bury@gmail.com>	https://github.com/gyscos/zstd-rs
 
 Packages without a standalone root legal file
 
@@ -304,6 +313,37 @@ winapi-i686-pc-windows-gnu	0.4.0	MIT/Apache-2.0
 winapi-x86_64-pc-windows-gnu	0.4.0	MIT/Apache-2.0
 
 Complete deduplicated upstream legal texts
+
+--- SHA-256 003736bc98408b53511b9cc8ff5d1af3bf0a8f17d53841cc39d8ab1b96a195b0 ---
+Used by:
+- cpubits 0.1.1 (LICENSE-MIT)
+
+Copyright (c) 2023-2026 The RustCrypto Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
 
 --- SHA-256 005fc765ddc5115da796cca915baa9557abae13ff35e0a47c47affc56f6c414d ---
 Used by:
@@ -586,7 +626,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 --- SHA-256 01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f ---
 Used by:
 - aho-corasick 1.1.4 (COPYING)
-- byteorder 1.5.0 (COPYING)
 - memchr 2.8.3 (COPYING)
 
 This project is dual-licensed under the Unlicense and MIT licenses.
@@ -675,38 +714,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
---- SHA-256 0943fbdd0b6e8ec33e4dec45f163fb556de0ed6a6f80f1b196da2734380e106b ---
-Used by:
-- pbkdf2 0.11.0 (LICENSE-MIT)
-
-Copyright (c) 2017 Artyom Pavlov
-Copyright (c) 2018-2021 The RustCrypto Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-
 --- SHA-256 09785877275ffada6c371b652a30e95c26b435126fc0fc62f1bc2d72171f80a4 ---
 Used by:
 - lru-slab 0.1.2 (LICENSE-ZLIB)
@@ -783,11 +790,11 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
---- SHA-256 0b287b0c9672e85c3ac7351d5abfe0e8cc55de77b1a41ad4aaa5ee9dd356da4c ---
+--- SHA-256 0b74dfa0bcee5c420c6b7f67b4b2658f9ab8388c97b8e733975f2cecbdd668a6 ---
 Used by:
-- password-hash 0.4.2 (LICENSE-MIT)
+- object 0.37.3 (LICENSE-MIT)
 
-Copyright (c) 2020 RustCrypto Developers
+Copyright (c) 2015 The Gimli Developers
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -824,9 +831,7 @@ Used by:
 - time 0.3.53 (LICENSE-Apache)
 - time-core 0.1.9 (LICENSE-Apache)
 - time-macros 0.2.31 (LICENSE-Apache)
-- zstd-safe 5.0.2+zstd.1.5.2 (LICENSE.Apache-2.0)
 - zstd-safe 7.2.4 (LICENSE.Apache-2.0)
-- zstd-sys 2.0.16+zstd.1.5.7 (LICENSE.Apache-2.0)
 
 
                                  Apache License
@@ -1037,7 +1042,6 @@ THE SOFTWARE.
 --- SHA-256 0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f ---
 Used by:
 - aho-corasick 1.1.4 (LICENSE-MIT)
-- byteorder 1.5.0 (LICENSE-MIT)
 - memchr 2.8.3 (LICENSE-MIT)
 
 The MIT License (MIT)
@@ -1096,11 +1100,8 @@ DEALINGS IN THE SOFTWARE.
 
 --- SHA-256 129e8edef29e9abcd2ebabe252f4ef1b1289cdca356bf0040284a2fbccfb96c8 ---
 Used by:
-- zstd 0.11.2+zstd.1.5.2 (LICENSE)
 - zstd 0.13.3 (LICENSE)
-- zstd-safe 5.0.2+zstd.1.5.2 (LICENSE.Mit)
 - zstd-safe 7.2.4 (LICENSE.Mit)
-- zstd-sys 2.0.16+zstd.1.5.7 (LICENSE.Mit)
 
 The MIT License (MIT)
 Copyright (c) 2016 Alexandre Bury
@@ -1424,7 +1425,6 @@ SOFTWARE.
 --- SHA-256 209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b ---
 Used by:
 - rand 0.10.2 (LICENSE-MIT)
-- rand_core 0.6.4 (LICENSE-MIT)
 
 Copyright 2018 Developers of the Rand project
 Copyright (c) 2014 The Rust Project Developers
@@ -1611,6 +1611,7 @@ Used by:
 - syn 3.0.0 (LICENSE-MIT)
 - thiserror 2.0.19 (LICENSE-MIT)
 - thiserror-impl 2.0.19 (LICENSE-MIT)
+- typed-path 0.12.4 (LICENSE-MIT)
 - unicode-ident 1.0.24 (LICENSE-MIT)
 - wasi 0.11.1+wasi-snapshot-preview1 (LICENSE-MIT)
 - zmij 1.0.23 (LICENSE-MIT)
@@ -1724,6 +1725,38 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+--- SHA-256 25f77efa393854f7c15eaf6a2589a2071db2d7337642742763adb12bdecf0445 ---
+Used by:
+- aes 0.9.4 (LICENSE-MIT)
+
+Copyright (c) 2018-2024 The RustCrypto Project Developers
+Copyright (c) 2018 Artyom Pavlov
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
 
 
 --- SHA-256 268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5 ---
@@ -2225,70 +2258,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-
-
---- SHA-256 2d1c57bff28344b9e698f51063bc8509799cc4c99a4e0cf2aa3f7e7c3e1f9a9d ---
-Used by:
-- base64ct 1.8.3 (LICENSE-MIT)
-
-Copyright (c) 2014 Steve "Sc00bz" Thomas (steve at tobtu dot com)
-Copyright (c) 2021-2025 The RustCrypto Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-
---- SHA-256 304b898acad7f02e03d6d8832d682a3b43ee729ab5d3a069af5a36979083b6b4 ---
-Used by:
-- inout 0.1.4 (LICENSE-MIT)
-
-Copyright (c) 2022 The RustCrypto Project Developers
-Copyright (c) 2022 Artyom Pavlov
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
 
 
 --- SHA-256 30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652 ---
@@ -2807,7 +2776,6 @@ at your option.
 
 --- SHA-256 378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397 ---
 Used by:
-- bzip2 0.4.4 (LICENSE-MIT)
 - cc 1.3.0 (LICENSE-MIT)
 - cfg-if 1.0.4 (LICENSE-MIT)
 - filetime 0.2.29 (LICENSE-MIT)
@@ -3384,44 +3352,6 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-
---- SHA-256 48341f685c87304089aa099b23c386f8bacc519ef555aa7a13e239908907b3fd ---
-Used by:
-- zstd-sys 2.0.16+zstd.1.5.7 (LICENSE.BSD-3-Clause)
-
-The auto-generated bindings are under the 3-clause BSD license:
-
-BSD License
-
-For Zstandard software
-
-Copyright (c) 2016-present, Facebook, Inc. All rights reserved.
-
-Redistribution and use in source and binary forms, with or without modification,
-are permitted provided that the following conditions are met:
-
- * Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-
- * Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
- * Neither the name Facebook nor the names of its contributors may be used to
-   endorse or promote products derived from this software without specific
-   prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
-ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
-ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 --- SHA-256 4b2d0aca6789fa39e03d6738e869ea0988cceba210ca34ebb59c15c463e93a04 ---
@@ -4330,6 +4260,60 @@ Used by:
    limitations under the License.
 
 
+--- SHA-256 54e1fd7bd53273e601c9599eb162a004dacddee031ae297ee7109a7beb93b1c2 ---
+Used by:
+- libbz2-rs-sys 0.2.6 (LICENSE)
+
+
+--------------------------------------------------------------------------
+
+The original program, "bzip2", the associated library "libbzip2", and all
+documentation, are
+
+Copyright (C) 1996-2021 Julian R Seward.
+Copyright (C) 2019-2020 Federico Mena Quintero
+Copyright (C) 2021 Micah Snyder
+
+This Rust translation, "libbzip2-rs" is a derived work based on "bzip2" and
+"libbzip2", and is Copyright (C) 2024-2025 Trifecta Tech Foundation and contributors
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. The origin of this software must not be misrepresented; you must
+   not claim that you wrote the original software.  If you use this
+   software in a product, an acknowledgment in the product
+   documentation would be appreciated but is not required.
+
+3. Altered source versions must be plainly marked as such, and must
+   not be misrepresented as being the original software.
+
+4. The name of the author may not be used to endorse or promote
+   products derived from this software without specific prior written
+   permission.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS
+OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Julian Seward, jseward@acm.org
+bzip2/libbzip2 version 1.1.0 of 6 September 2010
+
+--------------------------------------------------------------------------
+
+
 --- SHA-256 553fffcd9b1cb158bc3e9edc35da85ca5c3b3d7d2e61c883ebcfa8a65814b583 ---
 Used by:
 - shlex 2.0.1 (LICENSE-APACHE)
@@ -4349,37 +4333,31 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 
---- SHA-256 5734ed989dfca1f625b40281ee9f4530f91b2411ec01cb748223e7eb87e201ab ---
+--- SHA-256 58545fed1565e42d687aecec6897d35c6d37ccb71479a137c0deb2203e125c79 ---
 Used by:
-- crossbeam-utils 0.8.22 (LICENSE-MIT)
+- zip 9.0.5 (LICENSE)
 
 The MIT License (MIT)
 
-Copyright (c) 2019 The Crossbeam Project Developers
+Copyright (c) 2014 Mathijs van de Nes
 
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 
 --- SHA-256 5b0ae40d1a35f7ae6591a28e44771240e6a88cb03a66c9189a45b9681639b466 ---
@@ -4458,37 +4436,6 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
-
-
---- SHA-256 5c7bd92d1f096f12203dc1b601e3cb17484fa1b023e30b6b8edcc80e416237ec ---
-Used by:
-- cipher 0.4.4 (LICENSE-MIT)
-
-Copyright (c) 2016-2020 RustCrypto Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
 
 
 --- SHA-256 5e05b024f653a5ce199e77cbbbd42fb5553562ec714b819421ed0c3e552a75d7 ---
@@ -4660,6 +4607,7 @@ DEALINGS IN THE SOFTWARE.
 
 --- SHA-256 62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a ---
 Used by:
+- constant_time_eq 0.6.1 (LICENSE-APACHE)
 - itoa 1.0.18 (LICENSE-APACHE)
 - libc 0.2.186 (LICENSE-APACHE)
 - proc-macro2 1.0.107 (LICENSE-APACHE)
@@ -4676,6 +4624,7 @@ Used by:
 - syn 3.0.0 (LICENSE-APACHE)
 - thiserror 2.0.19 (LICENSE-APACHE)
 - thiserror-impl 2.0.19 (LICENSE-APACHE)
+- typed-path 0.12.4 (LICENSE-APACHE)
 - unicode-ident 1.0.24 (LICENSE-APACHE)
 - utf8parse 0.2.2 (LICENSE-APACHE)
 
@@ -4964,6 +4913,33 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
+--- SHA-256 66e3ee1fa7f909ad3c612d556f2a0cdabcd809ad6e66f3b0605015ac64841b70 ---
+Used by:
+- nix 0.31.3 (LICENSE)
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Carl Lerche + nix-rust Authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+
 --- SHA-256 68653aaa727a2bfa31b7a751e31701ce33c49d695c12dd291a07d1c54da4c14b ---
 Used by:
 - bstr 1.13.0 (COPYING)
@@ -5186,32 +5162,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 
---- SHA-256 6ac8711fb340c62ce0a4ecd463342d3fa0e8e70de697c863a2e1c0c53006003c ---
-Used by:
-- zip 0.6.6 (LICENSE)
-
-The MIT License (MIT)
-
-Copyright (c) 2014 Mathijs van de Nes
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
 --- SHA-256 6b7374c39a57e57fc2c38eb529c4c88340152b10f51dd5ae2d819dfa67f61715 ---
 Used by:
 - bstr 1.13.0 (LICENSE-MIT)
@@ -5242,7 +5192,6 @@ THE SOFTWARE.
 --- SHA-256 6df43f6f4b5d4587f3d8d71e45532c688fd168afa5fe89d571cb32fa09c4ef51 ---
 Used by:
 - rand_core 0.10.1 (LICENSE-APACHE)
-- rand_core 0.6.4 (LICENSE-APACHE)
 - rand_pcg 0.10.2 (LICENSE-APACHE)
 
                               Apache License
@@ -5483,9 +5432,41 @@ SOFTWARE.
 --- SHA-256 709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c ---
 Used by:
 - hyper-rustls 0.27.9 (LICENSE-MIT)
-- rustls 0.23.45 (LICENSE-MIT)
+- rustls 0.23.46 (LICENSE-MIT)
 
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+--- SHA-256 70c9d40f1f9545c3f133b8a67206e89da850f6468eed072281bb3701514114a9 ---
+Used by:
+- cmov 0.5.4 (LICENSE-MIT)
+- hybrid-array 0.4.15 (LICENSE-MIT)
+
+Copyright (c) 2022-2026 The RustCrypto Project Developers
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -5517,6 +5498,37 @@ Used by:
 - equivalent 1.0.2 (LICENSE-MIT)
 
 Copyright (c) 2016--2023
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+--- SHA-256 73b9dc2e79c7308998dd30296e073aefaefb944a68fb89aa412c23c0edcabcaa ---
+Used by:
+- const-oid 0.10.2 (LICENSE-MIT)
+
+Copyright (c) 2020-2026 The RustCrypto Project Developers
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -5835,7 +5847,7 @@ DEALINGS IN THE SOFTWARE.
 --- SHA-256 7cfafc877eccc46c0e346ccbaa5c51bb6b894d2b818e617d970211e232785ad4 ---
 Used by:
 - hyper-rustls 0.27.9 (LICENSE-ISC)
-- rustls 0.23.45 (LICENSE-ISC)
+- rustls 0.23.46 (LICENSE-ISC)
 
 ISC License (ISC)
 Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
@@ -5857,7 +5869,6 @@ THIS SOFTWARE.
 --- SHA-256 7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c ---
 Used by:
 - aho-corasick 1.1.4 (UNLICENSE)
-- byteorder 1.5.0 (UNLICENSE)
 - memchr 2.8.3 (UNLICENSE)
 
 This is free and unencumbered software released into the public domain.
@@ -5938,6 +5949,40 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+--- SHA-256 831e0f43ad0bf014c1c4fec5767aae470434c1d66d6e671be2d823e729063e25 ---
+Used by:
+- sha1 0.11.0 (LICENSE-MIT)
+
+Copyright (c) 2016-2026 The RustCrypto Project Developers
+Copyright (c) 2016 Artyom Pavlov
+Copyright (c) 2009-2013 Mozilla Foundation
+Copyright (c) 2006-2009 Graydon Hoare
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
 
 
 --- SHA-256 84b34dd7608f7fb9b17bd588a6bf392bf7de504e2716f024a77d89f1b145a151 ---
@@ -6846,10 +6891,41 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
+--- SHA-256 8ea5cea8ddecc46a64a004406414d25529fca7eb71cfd8c0cfe49c343bff79c5 ---
+Used by:
+- pbkdf2 0.13.0 (LICENSE-MIT)
+
+Copyright (c) 2017 Artyom Pavlov
+Copyright (c) 2018-2023 The RustCrypto Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
 --- SHA-256 90eb64f0279b0d9432accfa6023ff803bc4965212383697eee27a0f426d5f8d5 ---
 Used by:
 - rand 0.10.2 (COPYRIGHT)
-- rand_core 0.6.4 (COPYRIGHT)
 - rand_pcg 0.10.2 (COPYRIGHT)
 
 Copyrights in the Rand project are retained by their contributors. No
@@ -6871,6 +6947,37 @@ Used by:
 - rustls-pki-types 1.15.0 (LICENSE-MIT)
 
 Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+--- SHA-256 91585c36e4fb9ab4ca0d3dfac5d66d3c0c62cc51f640a0e1196542daf2267eae ---
+Used by:
+- ctutils 0.4.7 (LICENSE-MIT)
+
+Copyright (c) 2025-2026 The RustCrypto Project Developers
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -7183,6 +7290,37 @@ limitations under the License.
 
 
 
+--- SHA-256 950d712c518a02fcb7cff96950aee304a1cc5283361712c980ea21e8d6d669a5 ---
+Used by:
+- cipher 0.5.2 (LICENSE-MIT)
+
+Copyright (c) 2016-2025 RustCrypto Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
 --- SHA-256 95bd3988beee069fa2848f648dab43cc6e0b2add2ad6bcb17360caf749802bcc ---
 Used by:
 - rustc-hash 2.1.3 (LICENSE-APACHE)
@@ -7364,6 +7502,57 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 
 END OF TERMS AND CONDITIONS
 
+--- SHA-256 98181e7249d0c01737645ec982499ce99a0f07eb8f7d625b8840d799d10dbc01 ---
+Used by:
+- block-buffer 0.12.1 (LICENSE-MIT)
+
+Copyright (c) 2018-2025 The RustCrypto Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
+--- SHA-256 9a3aeb3f63659c4c6302d315e1d98784d1e8559858a47ff9562e091bb922d28d ---
+Used by:
+- constant_time_eq 0.6.1 (LICENSE-MIT0)
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
 --- SHA-256 9e0a97848ea543aef745c98e84fde696a9a3e0735538f6daefdd3cb1942effc1 ---
 Used by:
 - hyper-util 0.1.20 (LICENSE)
@@ -7393,6 +7582,7 @@ THE SOFTWARE.
 Used by:
 - digest 0.10.7 (LICENSE-MIT)
 - hmac 0.12.1 (LICENSE-MIT)
+- hmac 0.13.0 (LICENSE-MIT)
 
 Copyright (c) 2017 Artyom Pavlov
 
@@ -7421,9 +7611,41 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 
+--- SHA-256 a07fcacc3c60de4dc0fab10ac9d6aaba7379974e28451c99da7f7df09c25b28c ---
+Used by:
+- inout 0.2.5 (LICENSE-MIT)
+
+Copyright (c) 2022-2025 The RustCrypto Project Developers
+Copyright (c) 2022 Artyom Pavlov
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
 --- SHA-256 a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499 ---
 Used by:
-- constant_time_eq 0.1.5 (LICENSE.txt)
+- constant_time_eq 0.6.1 (LICENSE-CC0)
 
 Creative Commons Legal Code
 
@@ -7556,13 +7778,11 @@ Used by:
 - bitflags 2.13.1 (LICENSE-APACHE)
 - bstr 1.13.0 (LICENSE-APACHE)
 - bumpalo 3.20.3 (LICENSE-APACHE)
-- bzip2 0.4.4 (LICENSE-APACHE)
-- bzip2-sys 0.1.13+1.0.8 (LICENSE-APACHE)
+- bzip2 0.6.1 (LICENSE-APACHE)
 - cc 1.3.0 (LICENSE-APACHE)
 - cfg-if 1.0.4 (LICENSE-APACHE)
 - chunked_transfer 1.5.0 (LICENSE-APACHE)
 - core-foundation-sys 0.8.7 (LICENSE-APACHE)
-- crossbeam-utils 0.8.22 (LICENSE-APACHE)
 - displaydoc 0.2.6 (LICENSE-APACHE)
 - equivalent 1.0.2 (LICENSE-APACHE)
 - errno 0.3.14 (LICENSE-APACHE)
@@ -7584,6 +7804,7 @@ Used by:
 - linux-raw-sys 0.12.1 (LICENSE-APACHE)
 - log 0.4.33 (LICENSE-APACHE)
 - num-traits 0.2.19 (LICENSE-APACHE)
+- object 0.37.3 (LICENSE-APACHE)
 - once_cell 1.21.4 (LICENSE-APACHE)
 - percent-encoding 2.3.2 (LICENSE-APACHE)
 - pkg-config 0.3.33 (LICENSE-APACHE)
@@ -7591,7 +7812,7 @@ Used by:
 - regex-automata 0.4.16 (LICENSE-APACHE)
 - regex-syntax 0.8.11 (LICENSE-APACHE)
 - rustix 1.1.4 (LICENSE-APACHE)
-- rustls 0.23.45 (LICENSE-APACHE)
+- rustls 0.23.46 (LICENSE-APACHE)
 - similar 2.7.0 (LICENSE)
 - smallvec 1.15.2 (LICENSE-APACHE)
 - socket2 0.6.5 (LICENSE-APACHE)
@@ -7843,9 +8064,7 @@ THE SOFTWARE.
 
 --- SHA-256 a77b7cfeaf911ed410ffbe76f0cb2b24ad8a4d94e7ead5727e914425c416cc63 ---
 Used by:
-- zstd-safe 5.0.2+zstd.1.5.2 (LICENSE)
 - zstd-safe 7.2.4 (LICENSE)
-- zstd-sys 2.0.16+zstd.1.5.7 (LICENSE)
 
 MIT or Apache-2.0
 
@@ -8086,20 +8305,26 @@ Apache License
 
 --- SHA-256 a9040321c3712d8fd0b09cf52b17445de04a23a10165049ae187cd39e5c86be5 ---
 Used by:
-- aes 0.8.4 (LICENSE-APACHE)
-- base64ct 1.8.3 (LICENSE-APACHE)
+- aes 0.9.4 (LICENSE-APACHE)
 - block-buffer 0.10.4 (LICENSE-APACHE)
+- block-buffer 0.12.1 (LICENSE-APACHE)
 - chacha20 0.10.1 (LICENSE-APACHE)
-- cipher 0.4.4 (LICENSE-APACHE)
+- cipher 0.5.2 (LICENSE-APACHE)
+- const-oid 0.10.2 (LICENSE-APACHE)
+- cpubits 0.1.1 (LICENSE-APACHE)
 - cpufeatures 0.2.17 (LICENSE-APACHE)
 - cpufeatures 0.3.0 (LICENSE-APACHE)
 - crypto-common 0.1.7 (LICENSE-APACHE)
+- crypto-common 0.2.2 (LICENSE-APACHE)
 - digest 0.10.7 (LICENSE-APACHE)
+- digest 0.11.3 (LICENSE-APACHE)
 - hmac 0.12.1 (LICENSE-APACHE)
-- inout 0.1.4 (LICENSE-APACHE)
-- password-hash 0.4.2 (LICENSE-APACHE)
-- pbkdf2 0.11.0 (LICENSE-APACHE)
+- hmac 0.13.0 (LICENSE-APACHE)
+- hybrid-array 0.4.15 (LICENSE-APACHE)
+- inout 0.2.5 (LICENSE-APACHE)
+- pbkdf2 0.13.0 (LICENSE-APACHE)
 - sha1 0.10.7 (LICENSE-APACHE)
+- sha1 0.11.0 (LICENSE-APACHE)
 - sha2 0.10.9 (LICENSE-APACHE)
 
                               Apache License
@@ -8571,6 +8796,38 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+--- SHA-256 af59cea35d7f5e2777a713b8d155d65efa2c339eb43f3c14e868c6ac8506edad ---
+Used by:
+- digest 0.11.3 (LICENSE-MIT)
+
+Copyright (c) 2017-2025 RustCrypto Developers
+Copyright (c) 2017 Artyom Pavlov
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+
 --- SHA-256 afcbe3b2e6b37172b5a9ca869ee4c0b8cdc09316e5d4384864154482c33e5af6 ---
 Used by:
 - pyo3 0.29.2 (LICENSE-MIT)
@@ -9010,6 +9267,44 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+--- SHA-256 bf7017a73a95ea63bf3716b13ec2bcd79c92942356e3408c6fb66332bad6d977 ---
+Used by:
+- zstd-sys 2.1.2+zstd.1.5.7 (LICENSE.BSD-3-Clause)
+
+The auto-generated bindings are under the 3-clause BSD license:
+
+BSD License
+
+For Zstandard software
+
+Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook, nor Meta, nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 
 --- SHA-256 c09aae9d3c77b531f56351a9947bc7446511d6b025b3255312d3e3442a9a7583 ---
 Used by:
@@ -9818,7 +10113,7 @@ THE SOFTWARE.
 
 --- SHA-256 c8c6324cf2f0f076e3ed5dea4a21f00bd4dd6fce44f72b110bc52e7fe06f6e1e ---
 Used by:
-- bzip2-sys 0.1.13+1.0.8 (LICENSE-MIT)
+- bzip2 0.6.1 (LICENSE-MIT)
 
 Copyright (c) 2014-2025 Alex Crichton and Contributors
 
@@ -10107,6 +10402,42 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 
+--- SHA-256 ce4868c8e4ebe47a7d4b3c93dbf6b802033e5ae2fa7638098173f80836daac60 ---
+Used by:
+- zstd 0.14.3 (LICENSE)
+- zstd-safe 8.2.0 (LICENSE)
+- zstd-sys 2.1.2+zstd.1.5.7 (LICENSE)
+
+BSD 3-Clause License
+
+Copyright (c) 2026, Alexandre Bury
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
 --- SHA-256 ce7bc3499fee93d5022ef430d5e4201e79a6d9154f3974e42f41349f0569e09b ---
 Used by:
 - winapi 0.3.9 (LICENSE-MIT)
@@ -10134,6 +10465,8 @@ SOFTWARE.
 
 --- SHA-256 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30 ---
 Used by:
+- cmov 0.5.4 (LICENSE-APACHE)
+- ctutils 0.4.7 (LICENSE-APACHE)
 - lru-slab 0.1.2 (LICENSE-APACHE)
 - nohash-hasher 0.2.0 (LICENSE-APACHE)
 - tinyvec 1.12.0 (LICENSE-APACHE.md)
@@ -10377,6 +10710,37 @@ PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
 LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+
+
+--- SHA-256 d2e7ec5355c96eeade56b09187ceb48a6a30299da3ce7531a66d3d11405ab963 ---
+Used by:
+- crypto-common 0.2.2 (LICENSE-MIT)
+
+Copyright (c) 2021-2026 RustCrypto Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
 
 
 --- SHA-256 d5c22aa3118d240e877ad41c5d9fa232f9c77d757d4aac0c2f943afc0a95e0ef ---
@@ -10662,6 +11026,31 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+
+--- SHA-256 e72111c52b7d96ebe25348dee19f0744f444d3c95ae6b1ecb6ccaecc5bce05ba ---
+Used by:
+- zlib-rs 0.6.8 (LICENSE)
+
+(C) 2024 Trifecta Tech Foundation 
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source distribution.
 
 
 --- SHA-256 ec353d4fecf7963b4c054384557e5dbc3c7a717997eb4a3815b315721a6aa75a ---
@@ -11085,37 +11474,6 @@ Except as contained in this notice, the name of a copyright holder shall
 not be used in advertising or otherwise to promote the sale, use or other
 dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
-
-
---- SHA-256 f7e8ab639afef15573680c97f796166835cbeb3865175882fea41c60d106b733 ---
-Used by:
-- aes 0.8.4 (LICENSE-MIT)
-
-Copyright (c) 2018 Artyom Pavlov
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
 
 
 --- SHA-256 fabba0cb7d00a4b3211fdc13699223ab2d22f88678ccd608494cf2b332b903e9 ---

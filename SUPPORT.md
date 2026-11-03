@@ -10,9 +10,10 @@ Choose the narrowest public route that matches the request:
   [Show and tell](https://github.com/weita2026/ait-native/discussions/categories/show-and-tell).
 - Report a reproducible bug or documentation correction through the
   [structured issue forms](https://github.com/weita2026/ait-native/issues/new/choose).
-- Search the [technical documentation](https://ait-native.dev/technical/) and
-  [installation guide](https://ait-native.dev/local-quickstart/) for the
-  current versioned behavior.
+- Use the [installation guide](https://ait-native.dev/local-quickstart/) and
+  installed-version instructions for published behavior. The
+  [1.2.1 manuals](https://ait-native.dev/technical/1.2.1/) are planned
+  documentation pending deployment and release readback.
 
 Report undisclosed vulnerabilities only through
 [private vulnerability reporting](https://github.com/weita2026/ait-native/security/advisories/new)

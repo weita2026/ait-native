@@ -1438,7 +1438,7 @@ mod tests {
         std::fs::create_dir_all(temp.path().join(".ait/agent-runtime")).expect("runtime dir");
         std::fs::write(
             temp.path().join(".ait/config.json"),
-            r#"{"repo_name":"fixture","workflow_mode":"solo_remote","default_remote":"origin","remotes":{"origin":{"url":"http://127.0.0.1:8088"}}}"#,
+            r#"{"repo_name":"fixture","default_remote":"origin","remotes":{"origin":{"url":"http://127.0.0.1:8088"}}}"#,
         )
         .expect("repo config");
         let mut worker = json!({
@@ -1668,7 +1668,7 @@ mod tests {
         let calls = calls.lock().expect("calls");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["interaction_payload"]["data"]["name"], "ask");
-        assert_eq!(calls[0]["runtime_target"]["mode"], "remote");
+        assert_eq!(calls[0]["runtime_target"]["mode"], "local");
         assert_eq!(calls[0]["runtime_target"]["repo_name"], "fixture");
         assert_eq!(calls[0]["local_reply"]["model"], "fixture-model");
         assert!(calls[0]["state_path"].as_str().is_some());

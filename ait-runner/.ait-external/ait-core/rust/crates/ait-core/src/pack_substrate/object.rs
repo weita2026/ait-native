@@ -1,36 +1,7 @@
 use super::*;
 
 pub fn build_git_binary_delta(base_data: &[u8], target_data: &[u8]) -> Vec<u8> {
-    let unit = delta_match_granularity(base_data.len(), target_data.len());
-    let base_chunks = chunk_bytes(base_data, unit);
-    let target_chunks = chunk_bytes(target_data, unit);
-    let ops = capture_diff_slices(Algorithm::Myers, &base_chunks, &target_chunks);
-    let mut out = Vec::new();
-    out.extend(encode_size_varint(base_data.len()));
-    out.extend(encode_size_varint(target_data.len()));
-
-    for op in ops {
-        match op {
-            DiffOp::Equal { old_index, len, .. } => {
-                let base_start = old_index * unit;
-                let base_end = std::cmp::min((old_index + len) * unit, base_data.len());
-                append_copy_instructions(&mut out, base_start, base_end - base_start);
-            }
-            DiffOp::Insert {
-                new_index, new_len, ..
-            }
-            | DiffOp::Replace {
-                new_index, new_len, ..
-            } => {
-                let start = new_index * unit;
-                let end = std::cmp::min((new_index + new_len) * unit, target_data.len());
-                append_insert_instructions(&mut out, &target_data[start..end]);
-            }
-            DiffOp::Delete { .. } => {}
-        }
-    }
-
-    out
+    super::delta_encoder::build(base_data, target_data)
 }
 
 pub fn build_git_binary_delta_member(
@@ -131,6 +102,123 @@ pub(crate) fn build_typed_pack_members(
     }
 
     members
+}
+
+/// Keep the existing selector and codec, but admit deltas only when the whole
+/// compressed archive, including its inline index, is smaller than full data.
+pub(crate) fn build_typed_pack_members_with_storage_gate(
+    candidates: Vec<PackCandidate>,
+    max_delta_chain_depth: usize,
+    initial_by_path: Option<&BTreeMap<String, PackCandidate>>,
+) -> Result<Vec<ObjectPackWriteMember>, String> {
+    build_typed_pack_members_with_storage_gate_and_partitions(
+        candidates,
+        max_delta_chain_depth,
+        initial_by_path,
+        None,
+    )
+}
+pub(crate) fn build_typed_pack_members_with_storage_gate_and_partitions(
+    candidates: Vec<PackCandidate>,
+    max_delta_chain_depth: usize,
+    initial_by_path: Option<&BTreeMap<String, PackCandidate>>,
+    priority_ids: Option<&BTreeSet<String>>,
+) -> Result<Vec<ObjectPackWriteMember>, String> {
+    let full = candidates
+        .iter()
+        .map(|item| ObjectPackWriteMember {
+            entry_name: item.entry_name.clone(),
+            blob_id: item.blob_id.clone(),
+            data: item.data.clone(),
+            logical_data: None,
+            entry_type: "full".into(),
+            base_blob_id: None,
+            chain_depth: 0,
+            delta_algorithm: None,
+        })
+        .collect::<Vec<_>>();
+    let proposed = build_typed_pack_members(candidates, max_delta_chain_depth, initial_by_path);
+    if !proposed.iter().any(|member| member.entry_type == "delta") {
+        return Ok(proposed);
+    }
+    let estimate = |members: &[ObjectPackWriteMember]| {
+        if priority_ids.is_none() {
+            estimated_typed_pack_archive_bytes(members)
+        } else {
+            estimated_typed_pack_archive_bytes_with_layout(
+                members,
+                &ObjectPackChunkLayout::for_members(members, priority_ids),
+            )
+        }
+    };
+    if estimate(&proposed)? < estimate(&full)? {
+        Ok(proposed)
+    } else {
+        Ok(full)
+    }
+}
+
+pub(crate) fn estimated_typed_pack_archive_bytes(
+    members: &[ObjectPackWriteMember],
+) -> Result<usize, String> {
+    estimated_typed_pack_archive_bytes_with_layout(
+        members,
+        &ObjectPackChunkLayout::for_members(members, None),
+    )
+}
+pub(crate) fn estimated_typed_pack_archive_bytes_with_layout(
+    members: &[ObjectPackWriteMember],
+    layout: &ObjectPackChunkLayout,
+) -> Result<usize, String> {
+    layout.validate(members.len())?;
+    let mut raw = Vec::new();
+    let mut chunks = Vec::new();
+    let mut indexed = Vec::new();
+    let mut compressed_bytes = 0usize;
+    for group in &layout.chunks {
+        raw.clear();
+        for ordinal in group {
+            let member = &members[*ordinal];
+            indexed.push(ZstdChunkedMemberIndex {
+                member_ordinal: *ordinal,
+                entry_name: member.entry_name.clone(),
+                content_id: member.blob_id.clone(),
+                entry_type: member.entry_type.clone(),
+                entry_count: None,
+                base_content_id: member.base_blob_id.clone(),
+                delta_algorithm: member.delta_algorithm.clone(),
+                chain_depth: member.chain_depth,
+                chunk_ordinal: chunks.len(),
+                in_chunk_offset: raw.len(),
+                stored_len: member.data.len(),
+                logical_len: member.logical_data.as_deref().unwrap_or(&member.data).len(),
+                checksum: "00".repeat(32),
+            });
+            raw.extend_from_slice(&member.data);
+        }
+        let compressed =
+            ::zstd::bulk::compress(&raw, ZSTD_CHUNKED_LEVEL).map_err(|e| e.to_string())?;
+        chunks.push(ZstdChunkedChunkIndex {
+            chunk_ordinal: chunks.len(),
+            compressed_offset: compressed_bytes as u64,
+            compressed_len: compressed.len(),
+            raw_len: raw.len(),
+            checksum: "00".repeat(32),
+        });
+        compressed_bytes += compressed.len();
+    }
+    indexed.sort_by_key(|m| m.member_ordinal);
+    let index = ZstdChunkedPackIndex {
+        pack_format: PACK_FORMAT_ZSTD_CHUNKED_V1.into(),
+        pack_id: "PCK-000000000000".into(),
+        created_at: CONTENT_ADDRESSED_PACK_INDEX_CREATED_AT.into(),
+        index_entry_name: ZSTD_CHUNKED_OBJECT_INDEX_ENTRY_NAME.into(),
+        chunks,
+        members: indexed,
+    };
+    Ok(compressed_bytes
+        + encode_zstd_chunked_index(&index, ZSTD_CHUNKED_INDEX_KIND_OBJECT)?.len()
+        + ZSTD_CHUNKED_TRAILER_LEN)
 }
 
 pub fn apply_git_binary_delta(base_data: &[u8], delta_data: &[u8]) -> Result<Vec<u8>, String> {
@@ -254,6 +342,23 @@ pub fn write_typed_pack_archive_with_format(
     members: &[ObjectPackWriteMember],
     persisted_pack_format: &str,
 ) -> Result<JsonValue, String> {
+    write_typed_pack_archive_with_layout(
+        pack_path,
+        pack_id,
+        created_at,
+        members,
+        persisted_pack_format,
+        None,
+    )
+}
+fn write_typed_pack_archive_with_layout(
+    pack_path: &str,
+    pack_id: &str,
+    created_at: &str,
+    members: &[ObjectPackWriteMember],
+    persisted_pack_format: &str,
+    layout: Option<&ObjectPackChunkLayout>,
+) -> Result<JsonValue, String> {
     if persisted_pack_format != PACK_FORMAT_ZSTD_CHUNKED_V1 {
         return Err(format!(
             "Typed object-pack writes require {PACK_FORMAT_ZSTD_CHUNKED_V1}, got {persisted_pack_format}"
@@ -308,7 +413,7 @@ pub fn write_typed_pack_archive_with_format(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    write_zstd_chunked_pack_inputs(pack_path, pack_id, created_at, &inputs)
+    write_zstd_chunked_pack_inputs_with_layout(pack_path, pack_id, created_at, &inputs, layout)
 }
 
 pub(in crate::pack_substrate) fn write_zstd_chunked_pack_archive(
@@ -344,7 +449,16 @@ fn write_zstd_chunked_pack_inputs(
     created_at: &str,
     inputs: &[ZstdChunkedMemberInput],
 ) -> Result<JsonValue, String> {
-    let pack_index = write_zstd_chunked_container(
+    write_zstd_chunked_pack_inputs_with_layout(pack_path, pack_id, created_at, inputs, None)
+}
+fn write_zstd_chunked_pack_inputs_with_layout(
+    pack_path: &str,
+    pack_id: &str,
+    created_at: &str,
+    inputs: &[ZstdChunkedMemberInput],
+    layout: Option<&ObjectPackChunkLayout>,
+) -> Result<JsonValue, String> {
+    let pack_index = write_zstd_chunked_container_with_layout(
         pack_path,
         ZSTD_CHUNKED_INDEX_KIND_OBJECT,
         PACK_FORMAT_ZSTD_CHUNKED_V1,
@@ -353,6 +467,7 @@ fn write_zstd_chunked_pack_inputs(
         created_at,
         inputs,
         ZSTD_CHUNKED_DEFAULT_CHUNK_BYTES,
+        layout,
     )?;
     let pack_index_json = ObjectPackIndexJson::stateless().zstd_chunked_index_json(&pack_index)?;
     let index_bytes = encode_zstd_chunked_index(&pack_index, ZSTD_CHUNKED_INDEX_KIND_OBJECT)?;
@@ -682,6 +797,13 @@ pub(in crate::pack_substrate) fn zstd_chunked_pack_has_entry(
 }
 
 impl PackEntryArchive {
+    pub(crate) fn cached_chunk_bytes(&self) -> usize {
+        self.raw_chunk_cache.values().map(Vec::len).sum()
+    }
+
+    pub(crate) fn clear_cached_chunks(&mut self) {
+        self.raw_chunk_cache.clear();
+    }
     pub fn open(pack_path: &str) -> Result<Self, String> {
         Self::open_with_format(pack_path, DEFAULT_OBJECT_PACK_WRITE_FORMAT)
     }
@@ -694,8 +816,7 @@ impl PackEntryArchive {
             PACK_FORMAT_ZSTD_CHUNKED_V1,
         )?;
         let contract = ObjectPackIndexJson::stateless();
-        let entries_by_name =
-            contract.entries_by_name(&contract.zstd_chunked_index_json(&pack_index)?)?;
+        let entries_by_name = contract.entries_by_name_from_validated_index(&pack_index)?;
         Ok(Self {
             pack_path: pack_path.to_string(),
             pack_index,
@@ -770,4 +891,93 @@ impl ObjectPackBackend for ZstdChunkedObjectPackBackend {
             max_chain_depth,
         )
     }
+}
+
+/// Publish only complete canonical bytes. An existing immutable identity is never overwritten.
+pub(crate) fn write_typed_pack_archive_immutable_with_layout(
+    pack_path: &str,
+    pack_id: &str,
+    members: &[ObjectPackWriteMember],
+    layout: &ObjectPackChunkLayout,
+) -> Result<JsonValue, String> {
+    let target = Path::new(pack_path);
+    let parent = target.parent().ok_or("pack path has no parent")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".object-pack-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Preserve File::create permissions, restricted by the caller's existing umask.
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let staged = builder.tempfile_in(parent).map_err(|e| e.to_string())?;
+    let stats = write_typed_pack_archive_with_layout(
+        staged
+            .path()
+            .to_str()
+            .ok_or("non-UTF8 temporary pack path")?,
+        pack_id,
+        CONTENT_ADDRESSED_PACK_INDEX_CREATED_AT,
+        members,
+        PACK_FORMAT_ZSTD_CHUNKED_V1,
+        Some(layout),
+    )?;
+    match staged.persist_noclobber(target) {
+        Ok(_) => Ok(stats),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if !same_pack_bytes(error.file.path(), target)? {
+                return Err(format!(
+                    "immutable pack identity {pack_id} already has different bytes"
+                ));
+            }
+            Ok(stats)
+        }
+        Err(error) => Err(format!(
+            "failed to publish immutable pack {pack_id}: {}",
+            error.error
+        )),
+    }
+}
+fn same_pack_bytes(left: &Path, right: &Path) -> Result<bool, String> {
+    let named_before = std::fs::symlink_metadata(right).map_err(|e| e.to_string())?;
+    if !named_before.file_type().is_file() {
+        return Err("immutable pack target is not a regular file".into());
+    }
+    let mut a = File::open(left).map_err(|e| e.to_string())?;
+    let mut b = File::open(right).map_err(|e| e.to_string())?;
+    let before = b.metadata().map_err(|e| e.to_string())?;
+    if a.metadata().map_err(|e| e.to_string())?.len() != before.len() {
+        return Ok(false);
+    }
+    let mut x = [0u8; 65536];
+    let mut y = [0u8; 65536];
+    loop {
+        let n = a.read(&mut x).map_err(|e| e.to_string())?;
+        let m = b.read(&mut y).map_err(|e| e.to_string())?;
+        if n != m || x[..n] != y[..m] {
+            return Ok(false);
+        }
+        if n == 0 {
+            break;
+        }
+    }
+    let after = b.metadata().map_err(|e| e.to_string())?;
+    let named_after = std::fs::symlink_metadata(right).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.dev() != named_before.dev()
+            || before.ino() != named_before.ino()
+            || after.dev() != named_after.dev()
+            || after.ino() != named_after.ino()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(named_after.file_type().is_file()
+        && before.len() == after.len()
+        && before.modified().ok() == after.modified().ok()
+        && after.len() == named_after.len()
+        && after.modified().ok() == named_after.modified().ok())
 }

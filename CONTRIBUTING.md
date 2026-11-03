@@ -40,16 +40,24 @@ component and validation expectations. The generated workflow block in
 `AGENTS.md` supplies the exact repository-local commands. A conforming agent
 will:
 
-1. read the effective AIT workflow and current Plan/configuration;
+1. read the effective AIT workflow and applicable bound Plan item;
 2. use `ait blame` before repairing an identified regression;
 3. route authored Markdown through `ait plan sync`;
 4. use `ait task start` and the bound worktree for governed changes;
 5. use standalone `ait snapshot create` for intermediate checkpoints when
    needed and run appropriate validation;
-6. finish through the configured `ait task finish` path, adding `--message`
-   when dirty local work needs its final Snapshot; and
+6. use the applicable Local `ait task finish` or Remote `ait workflow ready`
+   and guarded `ait workflow finish` path; the assigned independent Reviewer
+   owns team review and finish. Add `--message` when dirty local finish needs
+   its final Snapshot; and
 7. stop when required policy, review, CI, authority, or user direction is
    missing.
+
+Follow the installed harness instructions, including its worktree path rules.
+Rebase and resolve in-scope integration work autonomously, with the Reviewer
+verifying integration in Teams. A partial, pending or blocked closeout still
+has unfinished requirements even if the command exits zero or the Task has
+completed. Preserve successful apply and recover only unfinished phases.
 
 Do not invent a project-language mode or manually replace the generated
 workflow. AIT uses the same command model for Python, Node.js, .NET, PHP, C,

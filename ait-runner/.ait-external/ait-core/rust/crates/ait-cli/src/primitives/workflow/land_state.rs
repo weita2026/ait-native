@@ -34,15 +34,22 @@ pub(in crate::primitives) fn workflow_land_attestation_read_with_closeout_remote
     closeout_remote: &mut R,
     repo_name: &str,
     patchset_id: Option<&str>,
-) -> Option<JsonValue>
+) -> Result<Option<JsonValue>, String>
 where
     R: TaskWorkflowAttestationReader + ?Sized,
 {
     let _range = perfetto_range!("ait.task_land.remote.attestation_read");
-    let patchset_id = patchset_id?;
-    closeout_remote
-        .get_attestation(patchset_id, Some(repo_name), true)
-        .ok()
+    let Some(patchset_id) = patchset_id else {
+        return Ok(None);
+    };
+    match closeout_remote.get_attestation(patchset_id, Some(repo_name), true) {
+        Ok(row) => {
+            ait_core::attest_json::RemoteAttestationStatement::from_readback(&row)?;
+            Ok(Some(row))
+        }
+        Err(error) if error.remote_status() == Some(404) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 pub(in crate::primitives) fn workflow_land_patchset_ci_status_read_with_closeout_remote<R>(
@@ -86,7 +93,7 @@ fn workflow_land_persisted_patchset_ci_status(patchset: Option<&JsonValue>) -> O
         .and_then(JsonValue::as_u64)
         .unwrap_or_default();
     Some(json!({
-        "contract": "ait.server.patchset_ci.readiness.v1",
+        "contract": "ait.server.patchset_ci.readiness.v2",
         "projection": "embedded_patchset",
         "patchset_id": patchset.get("patchset_id").cloned().unwrap_or(JsonValue::Null),
         "ci_run_seq": ci_run_seq,
@@ -172,6 +179,7 @@ where
         .map_err(|err| err.to_string())
 }
 
+#[cfg(test)]
 pub(in crate::primitives) fn workflow_land_change_detail_read_with_task_remote<R>(
     task_remote: &mut R,
     repo_name: &str,
@@ -184,39 +192,6 @@ where
     task_remote
         .get_change_detail(change_id, Some(repo_name))
         .unwrap_or_else(|_| json!({}))
-}
-
-fn workflow_target_line_contains_revision_landing_summary(
-    change_id: &str,
-    target_line: &str,
-    patchset: Option<&JsonValue>,
-    remote_base_snapshot_id: Option<&str>,
-    patchset_revision_snapshot_id: Option<&str>,
-) -> Option<JsonValue> {
-    let remote_base_snapshot_id = remote_base_snapshot_id?;
-    let patchset_revision_snapshot_id = patchset_revision_snapshot_id?;
-    if remote_base_snapshot_id == patchset_revision_snapshot_id {
-        return None;
-    }
-    let mut result = json!({
-        "landed_snapshot_id": remote_base_snapshot_id,
-        "selected_revision_snapshot_id": patchset_revision_snapshot_id,
-        "target_line_head": remote_base_snapshot_id,
-        "line_action": "already_contains_selected_patchset_revision",
-        "target_line_already_contains_revision": true,
-    });
-    let mut summary = json!({
-        "status": "landed",
-        "status_source": "target_line_already_contains_revision",
-        "target_line": target_line,
-        "target_line_already_contains_revision": true,
-        "change_id": change_id,
-        "result": result.take(),
-    });
-    if let Some(patchset_id) = patchset.and_then(|value| string_field(value, "patchset_id")) {
-        summary["patchset_id"] = JsonValue::String(patchset_id);
-    }
-    Some(summary)
 }
 
 #[cfg(test)]
@@ -260,7 +235,7 @@ fn workflow_land_remote_state_with_remotes_and_detail_mode<T, C>(
     change_id: Option<&str>,
     patchset_id: Option<&str>,
     ready_patchset_is_authoritative: bool,
-    include_landing_detail: bool,
+    _include_landing_detail: bool,
 ) -> Result<JsonValue, String>
 where
     T: TaskWorkflowRemoteChangeReader
@@ -276,198 +251,187 @@ where
         + TaskWorkflowPolicyReader
         + ?Sized,
 {
-    if change_id.is_none() && patchset_id.is_none() {
-        return Err("Provide a Task ID so Task finish can resolve its work.".to_string());
-    }
-    let resolved_patchset_id = normalized_text(patchset_id);
-    let mut requested_change = normalized_text(change_id);
-    let mut explicit_patchset = None;
-    if let Some(ref patchset_ref) = resolved_patchset_id {
+    let explicit = patchset_id
+        .map(|id| {
+            workflow_land_patchset_read_with_closeout_remote(closeout_remote, repo_name, id, None)
+        })
+        .transpose()?;
+    let requested = normalized_text(change_id);
+    let (task, requested_change) =
+        if let Some(reference) = requested.as_deref().filter(|id| !is_task_id(id)) {
+            let (change, task) =
+                workflow_land_change_task_read_with_task_remote(task_remote, repo_name, reference)?;
+            let exact = change_reference_from_payload(&change, Some(reference))?;
+            (task, Some(exact))
+        } else {
+            let task_id = requested
+                .clone()
+                .or_else(|| {
+                    explicit
+                        .as_ref()
+                        .and_then(|row| string_field(row, "task_id"))
+                })
+                .ok_or("Task candidate requires exact Task ownership")?;
+            let task = task_remote
+                .get_task(&task_id, Some(repo_name))
+                .map_err(|e| e.to_string())?;
+            if string_field(&task, "task_id").as_deref() != Some(&task_id) {
+                return Err("Task lookup returned another owner".into());
+            }
+            (task, None)
+        };
+    let task_id = required_string_field(&task, "task_id")?;
+    let receipt = ait_core::land_json::LandJson::stateless()
+        .task_successful_receipt(&task, &task_id, None)?;
+    // Historical acceptance is immutable evidence, independent of Task latest.
+    if let Some(receipt) = receipt {
+        let accepted_id = required_string_field(&receipt, "patchset_id")?;
         let patchset = workflow_land_patchset_read_with_closeout_remote(
             closeout_remote,
             repo_name,
-            patchset_ref,
+            &accepted_id,
             None,
         )?;
-        requested_change = requested_change
-            .or_else(|| string_field(&patchset, "change_ref"))
-            .or_else(|| string_field(&patchset, "change_id"));
-        explicit_patchset = Some(patchset);
-    }
-    let requested_change = requested_change
-        .ok_or_else(|| "Could not resolve a Change for Task finish.".to_string())?;
-    let (change, task) =
-        workflow_land_change_task_read_with_task_remote(task_remote, repo_name, &requested_change)?;
-    let resolved_change_id = required_string_field(&change, "change_id")?;
-    let resolved_change_ref =
-        change_reference_from_payload(&change, Some(requested_change.as_str()))?;
-    let requested_canonical = canonical_change_id(&requested_change)?;
-    if requested_canonical != resolved_change_id
-        || (requested_change != requested_canonical && requested_change != resolved_change_ref)
-    {
-        return Err(format!(
-            "Remote change lookup for `{requested_change}` returned unrelated change `{resolved_change_ref}`."
-        ));
-    }
-    if explicit_patchset.as_ref().is_some_and(|patchset| {
-        !payload_belongs_to_change(patchset, &resolved_change_id, &resolved_change_ref)
-    }) {
-        return Err(format!(
-            "Patchset {} does not belong to change {}.",
-            explicit_patchset
+        let change_ref = workflow_validate_candidate_owner(&patchset, &task_id)?;
+        if change_ref != string_field(&receipt, "change_ref")
+            || requested_change
                 .as_ref()
-                .and_then(|value| string_field(value, "patchset_id"))
-                .unwrap_or_default(),
-            resolved_change_ref
-        ));
-    }
-    let selected_patchset_id = resolved_patchset_id
-        .clone()
-        .or_else(|| string_field(&change, "selected_patchset_id"))
-        .or_else(|| string_field(&change, "current_patchset_id"));
-    let patchset_source = if resolved_patchset_id.is_some() {
-        Some("explicit".to_string())
-    } else if change.get("selected_patchset_id").is_some() {
-        Some("selected".to_string())
-    } else {
-        Some("current".to_string())
-    };
-
-    let base_line_name = string_field(&change, "base_line").unwrap_or_else(|| "main".to_string());
-    let target_line = base_line_name.clone();
-    if string_field(&change, "status").as_deref() == Some("landed") {
-        let landed_patchset = explicit_patchset.or_else(|| {
-            selected_patchset_id.as_ref().map(|value| {
-                json!({
-                    "patchset_id": value,
-                    "change_id": resolved_change_id,
-                    "change_ref": resolved_change_ref,
-                })
-            })
-        });
-        return Ok(json!({
-            "landed": true,
-            "change": change,
-            "task": task,
-            "patchset": landed_patchset,
-            "patchset_source": if landed_patchset.is_some() { patchset_source } else { None::<String> },
-            "base_line_name": base_line_name,
-            "target_line": target_line,
-            "resolved_change_id": resolved_change_id,
-            "resolved_change_ref": resolved_change_ref,
-        }));
-    }
-
-    let patchset = if explicit_patchset.is_some() {
-        explicit_patchset
-    } else if let Some(selected_patchset_id) = selected_patchset_id.as_deref() {
-        Some(workflow_land_patchset_read_with_closeout_remote(
-            closeout_remote,
+                .is_some_and(|id| Some(id) != change_ref.as_ref())
+        {
+            return Err("Task receipt has a different exact Change association".into());
+        }
+        let identity = WorkflowExpectedIdentity {
+            repository_index: receipt["repository_index"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or("Task receipt Repository missing")?,
+            patchset_id: accepted_id,
+            base_snapshot_id: required_string_field(&receipt, "base_snapshot_id")?,
+            revision_snapshot_id: required_string_field(&receipt, "revision_snapshot_id")?,
+        };
+        identity.validate_patchset(identity.repository_index, &patchset)?;
+        if let Some(explicit) = explicit.as_ref() {
+            identity.validate_patchset(identity.repository_index, explicit)?;
+        }
+        let change = workflow_read_optional_candidate_change(
+            task_remote,
             repo_name,
-            selected_patchset_id,
-            Some(&resolved_change_ref),
-        )?)
-    } else {
-        None
-    };
-    if patchset.as_ref().is_some_and(|value| {
-        !payload_belongs_to_change(value, &resolved_change_id, &resolved_change_ref)
-    }) {
-        return Err(format!(
-            "Patchset {} does not belong to change {}.",
-            patchset
-                .as_ref()
-                .and_then(|value| string_field(value, "patchset_id"))
-                .unwrap_or_default(),
-            resolved_change_ref
-        ));
+            &task_id,
+            change_ref.as_deref(),
+        )?;
+        let target = required_string_field(&receipt, "target_line")?;
+        return Ok(
+            json!({"landed":true,"task":task,"change":change,"patchset":patchset,"patchset_source":"accepted_task_receipt",
+            "base_line_name":target,"target_line":target,"landing_summary":receipt,
+            "resolved_task_id":task_id,"resolved_change_id":string_field(&change,"change_id"),"resolved_change_ref":change_ref}),
+        );
     }
+    if string_field(&task, "status").as_deref() != Some("active") {
+        return Err("Task has no actual successful receipt and is not active; remote acceptance cannot be inferred from terminal Change state".into());
+    }
+    let current_id = match task.get("current_patchset_id") {
+        Some(JsonValue::Null) => None,
+        Some(JsonValue::String(id)) if !id.is_empty() && id.trim() == id => Some(id.clone()),
+        _ => return Err("Task readback requires nullable current_patchset_id".into()),
+    };
+    let patchset = current_id
+        .as_deref()
+        .map(|id| {
+            workflow_land_patchset_read_with_closeout_remote(closeout_remote, repo_name, id, None)
+        })
+        .transpose()?;
+    if explicit.is_some() && patchset.is_none() {
+        return Err("Explicit Patchset is not the Task's current candidate".into());
+    }
+    if let Some(current) = patchset.as_ref() {
+        if current["withdrawn"].as_bool() == Some(true)
+            || current["invalidated"].as_bool() == Some(true)
+            || matches!(
+                current["status"].as_str(),
+                Some("withdrawn" | "invalidated")
+            )
+        {
+            return Err("Task latest candidate is withdrawn or invalidated; an older passing candidate cannot replace it".into());
+        }
+        if let Some(explicit) = explicit.as_ref() {
+            let identity = WorkflowExpectedIdentity {
+                repository_index: 0,
+                patchset_id: required_string_field(current, "patchset_id")?,
+                base_snapshot_id: required_string_field(current, "base_snapshot_id")?,
+                revision_snapshot_id: required_string_field(current, "revision_snapshot_id")?,
+            };
+            identity.validate_patchset(0, explicit)?;
+        }
+    }
+    let resolved_change_ref = patchset
+        .as_ref()
+        .map(|row| workflow_validate_candidate_owner(row, &task_id))
+        .transpose()?
+        .flatten();
+    if requested_change
+        .as_ref()
+        .is_some_and(|id| Some(id) != resolved_change_ref.as_ref())
+        && patchset.is_some()
+    {
+        return Err("Task current candidate belongs to another exact revision".into());
+    }
+    let change = workflow_read_optional_candidate_change(
+        task_remote,
+        repo_name,
+        &task_id,
+        resolved_change_ref
+            .as_deref()
+            .or(requested_change.as_deref()),
+    )?;
+    let resolved_change_id = string_field(&change, "change_id");
+    let base_line_name = "main".to_string();
+    let target_line = base_line_name.clone();
     let base_line =
         workflow_land_base_line_read_with_task_remote(task_remote, repo_name, &base_line_name)?;
     let remote_base_snapshot_id = string_field(&base_line, "head_snapshot_id");
-    let review_summary = workflow_land_review_summary_read_with_closeout_remote(
+    let patchset_source = Some("task_latest".to_string());
+    let mut review_summary = workflow_land_review_summary_read_with_closeout_remote(
         closeout_remote,
         repo_name,
-        &resolved_change_ref,
+        &task_id,
     )?;
-    let attestation_patchset_id = patchset
+    let candidate_id = patchset
         .as_ref()
-        .and_then(|value| string_field(value, "patchset_id"));
+        .and_then(|row| string_field(row, "patchset_id"));
     let attestation = workflow_land_attestation_read_with_closeout_remote(
         closeout_remote,
         repo_name,
-        attestation_patchset_id.as_deref(),
-    );
-    let persisted_patchset_ci_status =
-        workflow_land_persisted_patchset_ci_status(patchset.as_ref());
+        candidate_id.as_deref(),
+    )?;
+    if let (Some(row), Some(candidate)) = (attestation.as_ref(), patchset.as_ref()) {
+        ait_core::attest_json::RemoteAttestationStatement::validate_for_patchset(row, candidate)?;
+    }
+    let persisted_ci = workflow_land_persisted_patchset_ci_status(patchset.as_ref());
     let patchset_ci_status = if ready_patchset_is_authoritative
-        || persisted_patchset_ci_status
+        || persisted_ci
             .as_ref()
             .is_some_and(workflow_land_persisted_patchset_ci_is_completed)
     {
-        persisted_patchset_ci_status
+        persisted_ci
     } else {
         workflow_land_patchset_ci_status_read_with_closeout_remote(
             closeout_remote,
             repo_name,
-            attestation_patchset_id.as_deref(),
+            candidate_id.as_deref(),
         )
     };
-    let policy_patchset_id = patchset
-        .as_ref()
-        .and_then(|value| string_field(value, "patchset_id"));
     let policy = workflow_land_policy_read_with_closeout_remote(
         closeout_remote,
         repo_name,
-        policy_patchset_id.as_deref(),
+        candidate_id.as_deref(),
     );
     let patchset_base_snapshot_id = patchset
         .as_ref()
-        .and_then(|value| string_field(value, "base_snapshot_id"));
+        .and_then(|row| string_field(row, "base_snapshot_id"));
     let patchset_revision_snapshot_id = patchset
         .as_ref()
-        .and_then(|value| string_field(value, "revision_snapshot_id"));
-    let change_detail = if ready_patchset_is_authoritative || !include_landing_detail {
-        json!({})
-    } else {
-        workflow_land_change_detail_read_with_task_remote(
-            task_remote,
-            repo_name,
-            &resolved_change_ref,
-        )
-    };
-    let landing_summary = workflow_target_line_converged_landing_summary(
-        workflow_relevant_landing_summary(change_detail.get("landing_summary"), patchset.as_ref()),
-        patchset.as_ref(),
-        &resolved_change_id,
-        &target_line,
-        remote_base_snapshot_id.as_deref(),
-        patchset_base_snapshot_id.as_deref(),
-        patchset_revision_snapshot_id.as_deref(),
-    );
-    if workflow_change_effectively_landed(&change, landing_summary.as_ref()) {
-        let landed_patchset = patchset.clone().or_else(|| {
-            selected_patchset_id.as_ref().map(|value| {
-                json!({
-                    "patchset_id": value,
-                    "change_id": resolved_change_id,
-                    "change_ref": resolved_change_ref,
-                })
-            })
-        });
-        return Ok(json!({
-            "landed": true,
-            "change": workflow_project_landed_change(&change, landing_summary.as_ref()),
-            "task": task,
-            "patchset": landed_patchset,
-            "patchset_source": if landed_patchset.is_some() { patchset_source } else { None::<String> },
-            "base_line_name": base_line_name,
-            "target_line": target_line,
-            "landing_summary": landing_summary,
-            "resolved_change_id": resolved_change_id,
-            "resolved_change_ref": resolved_change_ref,
-        }));
-    }
+        .and_then(|row| string_field(row, "revision_snapshot_id"));
+    let landing_summary = None::<JsonValue>;
 
     let mut tests_state = ait_core::attest_json::AttestJson::stateless()
         .tests_state_from_attestation(attestation.as_ref())
@@ -497,6 +461,15 @@ where
             .and_then(|value| string_field(value, "patchset_id"))
             .as_deref(),
     );
+    if let Some(summary) = review_summary.as_object_mut() {
+        for field in [
+            "human_approvals",
+            "human_task_approvals",
+            "eligible_human_approvals",
+        ] {
+            summary.insert(field.into(), review_lane_counts[field].clone());
+        }
+    }
     let review_blocking = review_lane_counts
         .get("blocking")
         .and_then(JsonValue::as_i64)
@@ -587,6 +560,33 @@ where
     }))
 }
 
+fn workflow_validate_candidate_owner(
+    patchset: &JsonValue,
+    task_id: &str,
+) -> Result<Option<String>, String> {
+    ait_core::workflow_expected_identity::validate_patchset_owner_fields(patchset, task_id)
+}
+
+fn workflow_read_optional_candidate_change<T: TaskWorkflowRemoteChangeReader + ?Sized>(
+    remote: &mut T,
+    repo_name: &str,
+    task_id: &str,
+    reference: Option<&str>,
+) -> Result<JsonValue, String> {
+    let Some(reference) = reference else {
+        return Ok(JsonValue::Null);
+    };
+    let change = remote
+        .get_change(reference, Some(repo_name))
+        .map_err(|e| e.to_string())?;
+    if string_field(&change, "task_id").as_deref() != Some(task_id)
+        || change_reference_from_payload(&change, Some(reference))? != reference
+    {
+        return Err("Candidate Change lookup returned another owner".into());
+    }
+    Ok(change)
+}
+
 pub(in crate::primitives) fn workflow_land_workspace_context(
     repo: &RepoRuntime,
     ignore_workspace_authoring: bool,
@@ -665,6 +665,13 @@ pub(in crate::primitives) fn workflow_hydrate_land_state(
             include_landing_detail,
         )?
     };
+    if workflow_task_review_required(repo) && remote_state["landed"] == false {
+        let counts = workflow_review_lane_counts(
+            &remote_state["review_summary"],
+            remote_state["patchset"]["patchset_id"].as_str(),
+        );
+        remote_state["task_review_approvals"] = counts["human_task_approvals"].clone();
+    }
 
     let (workspace, current_line_name, revision_snapshot_id) = {
         let _range = perfetto_range!("ait.task_land.local.workspace_context");
@@ -685,32 +692,6 @@ pub(in crate::primitives) fn workflow_hydrate_land_state(
         let patchset_base_snapshot_id = string_field(&remote_state, "patchset_base_snapshot_id");
         let patchset_revision_snapshot_id =
             string_field(&remote_state, "patchset_revision_snapshot_id");
-        let target_line_contains_patchset_revision =
-            if remote_base_snapshot_id.as_deref() != patchset_revision_snapshot_id.as_deref() {
-                snapshot_distance_if_ancestor(
-                    repo,
-                    patchset_revision_snapshot_id.as_deref(),
-                    remote_base_snapshot_id.as_deref(),
-                )?
-                .is_some()
-            } else {
-                false
-            };
-        if target_line_contains_patchset_revision {
-            if let Some(landing_summary) = workflow_target_line_contains_revision_landing_summary(
-                &required_string_field(&remote_state, "resolved_change_id")?,
-                &base_line_name,
-                patchset.as_ref(),
-                remote_base_snapshot_id.as_deref(),
-                patchset_revision_snapshot_id.as_deref(),
-            ) {
-                let object = remote_state
-                    .as_object_mut()
-                    .ok_or_else(|| "Workflow finish remote state must be an object.".to_string())?;
-                object.insert("landed".to_string(), JsonValue::Bool(true));
-                object.insert("landing_summary".to_string(), landing_summary);
-            }
-        }
         let base_is_fresh = remote_state
             .get("base_is_fresh")
             .and_then(JsonValue::as_bool)

@@ -2,6 +2,7 @@
 
 extern crate self as ait_cli;
 
+mod closeout_context;
 mod main_app;
 
 pub use main_app::{entry, entry_with_args};
@@ -21,14 +22,28 @@ macro_rules! perfetto_range {
 mod actionable_messages;
 pub mod agent_harness;
 pub mod agent_surface;
+pub mod agent_teams;
 pub mod aitk_surface;
 pub mod auth_surface;
+pub mod binding_binary_db;
+pub mod binding_changes;
+pub mod binding_external;
+pub mod binding_git;
+pub mod binding_maintenance;
+pub mod binding_output;
+pub mod binding_release;
+pub mod binding_review;
+pub mod binding_services;
+pub mod binding_source_cache;
+pub mod binding_team;
+pub mod binding_worktrees;
 pub mod blame_surface;
 pub mod config_surface;
 pub mod doctor_surface;
 pub(crate) mod external_readiness_gate;
 pub mod external_surface;
 pub(crate) mod filesystem_permissions;
+mod import_workspace_bootstrap;
 pub mod init_surface;
 pub(crate) mod json_support;
 pub mod patchset_ci_smoke;
@@ -42,12 +57,15 @@ pub mod remote_surface;
 pub mod render;
 pub mod repo_surface;
 pub mod repository_retirement;
+pub(crate) mod reviewer_identity;
+pub(crate) mod role_templates;
 pub mod runner_hint;
 pub mod runtime;
 pub mod snapshot_restore_surface;
 pub mod tag_surface;
 pub mod task_land_contract;
 pub(crate) mod task_worktree_layout;
+pub mod team_remote;
 pub mod workspace_lock;
 
 #[cfg(test)]

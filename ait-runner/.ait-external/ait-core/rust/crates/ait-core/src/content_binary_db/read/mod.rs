@@ -6,6 +6,7 @@ pub use filters::{
     BinaryTreeRootLocator, BinaryTreeRootReadResolver, BinaryTreeRootResolver,
     StaticBinaryTreeRootResolver,
 };
+pub(crate) use surface::BinaryBlobReadSession;
 pub use surface::{BinaryDbSnapshotReader, BinaryDbTreeReadCache};
 pub use views::{
     BinaryBlobView, BinaryObjectPackMemberView, BinaryObjectPackView, BinarySnapshotView,

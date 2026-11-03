@@ -12,6 +12,44 @@ pub struct LandJson<S> {
 }
 
 impl<S> LandJson<S> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "legacy request ports plus optional exact candidate"
+    )]
+    pub fn build_submit_task_land_guarded_request_spec(
+        &self,
+        config: &PlanHttpClientConfig,
+        task_or_change_ref: &str,
+        target_line: Option<&str>,
+        mode: &str,
+        idempotency_key: &str,
+        repo_name: Option<&str>,
+        expected: Option<&crate::workflow_expected_identity::WorkflowExpectedIdentity>,
+    ) -> PlanHttpClientResult<PlanHttpRequestSpec> {
+        let mut spec = self.build_submit_task_land_request_spec(
+            config,
+            task_or_change_ref,
+            target_line,
+            mode,
+            idempotency_key,
+            repo_name,
+        )?;
+        if let Some(expected) = expected {
+            expected.validate().map_err(PlanHttpClientError::Invalid)?;
+            if config.repository_index.map(|index| index.get()) != Some(expected.repository_index) {
+                return Err(PlanHttpClientError::Invalid(
+                    "Expected candidate Repository disagrees with numeric HTTP authority."
+                        .to_string(),
+                ));
+            }
+            let body = spec.body.as_mut().expect("atomic request has a body");
+            body["contract"] = json!(crate::workflow_expected_identity::GUARDED_TASK_LAND_CONTRACT);
+            body["expected_identity"] = serde_json::to_value(expected)
+                .map_err(|error| PlanHttpClientError::Invalid(error.to_string()))?;
+        }
+        Ok(spec)
+    }
+
     pub fn new(store: S) -> Self {
         Self { store }
     }
@@ -24,6 +62,94 @@ impl LandJson<()> {
 }
 
 impl<S> LandJson<S> {
+    pub fn task_successful_receipt(
+        &self,
+        task: &JsonValue,
+        task_id: &str,
+        repository_index: Option<u32>,
+    ) -> Result<Option<JsonValue>, String> {
+        if task["task_id"].as_str() != Some(task_id) {
+            return Err("Task readback returned another owner".into());
+        }
+        let receipt = task
+            .get("successful_land")
+            .ok_or("Task readback requires successful_land; update the server")?;
+        if receipt.is_null() {
+            return Ok(None);
+        }
+        let text = |field: &str| {
+            receipt[field]
+                .as_str()
+                .filter(|s| !s.is_empty() && s.trim() == *s)
+                .ok_or_else(|| format!("Task receipt requires exact {field}"))
+        };
+        if text("task_id")? != task_id || text("status")? != "succeeded" {
+            return Err("Task receipt is not its actual successful acceptance".into());
+        }
+        let actual_repo = receipt["repository_index"]
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or("Task receipt has no numeric Repository")?;
+        if repository_index.is_some_and(|expected| actual_repo != expected) {
+            return Err("Task receipt belongs to another Repository".into());
+        }
+        let optional = |field: &str| -> Result<Option<&str>, String> {
+            match receipt.get(field) {
+                Some(JsonValue::Null) => Ok(None),
+                Some(JsonValue::String(s)) if !s.is_empty() && s.trim() == s => Ok(Some(s)),
+                _ => Err(format!("Task receipt requires nullable exact {field}")),
+            }
+        };
+        let change = optional("change_ref")?;
+        let child = optional("change_id")?;
+        if change.is_some() != child.is_some()
+            || change.is_some_and(|reference| {
+                reference.rsplit_once('/') != Some((task_id, child.unwrap_or_default()))
+            })
+        {
+            return Err("Task receipt optional Change identity disagrees".into());
+        }
+        crate::workflow_expected_identity::validate_patchset_reference_owner(
+            text("patchset_id")?,
+            task_id,
+            change,
+        )?;
+        let (owner, ordinal) = text("submission_id")?
+            .rsplit_once("/L-")
+            .ok_or("Task receipt has no Task-scoped submission")?;
+        let number = ordinal
+            .parse::<u8>()
+            .map_err(|_| "Invalid Task receipt ordinal")?;
+        if owner != task_id || !(1..=64).contains(&number) || ordinal != format!("{number:02}") {
+            return Err("Task receipt submission has a foreign owner or ordinal".into());
+        }
+        for field in [
+            "base_snapshot_id",
+            "revision_snapshot_id",
+            "target_line",
+            "landed_snapshot_id",
+            "created_at",
+            "updated_at",
+        ] {
+            text(field)?;
+        }
+        optional("pre_land_target_snapshot_id")?;
+        if receipt["target_line_index"].as_u64().is_none() {
+            return Err("Task receipt requires numeric target Line".into());
+        }
+        if !matches!(text("mode")?, "direct" | "merge" | "ff-only") {
+            return Err("Task receipt has invalid mode".into());
+        }
+        Ok(Some(receipt.clone()))
+    }
+
+    pub fn task_has_successful_receipt(&self, task: &JsonValue) -> bool {
+        task["task_id"].as_str().is_some_and(|id| {
+            self.task_successful_receipt(task, id, None)
+                .is_ok_and(|receipt| receipt.is_some())
+        })
+    }
+
     pub fn build_submit_task_land_request_spec(
         &self,
         config: &PlanHttpClientConfig,
@@ -47,7 +173,7 @@ impl<S> LandJson<S> {
         let mut body = JsonMap::new();
         body.insert(
             "contract".to_string(),
-            JsonValue::String("task-land-atomic/v1".to_string()),
+            JsonValue::String("task-land-atomic/v2".to_string()),
         );
         body.insert(
             "idempotency_key".to_string(),

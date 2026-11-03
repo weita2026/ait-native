@@ -157,6 +157,12 @@ struct RemoteOperationPlan {
 impl RemoteOperationPlan {
     fn from_request(request: &JsonValue) -> Result<Self, String> {
         let request = require_object(request, "remote runtime backend request")?;
+        if request.contains_key("workflow_mode") {
+            return Err(
+                "Retired execution field `workflow_mode`; resubmit with explicit target.mode."
+                    .to_string(),
+            );
+        }
         let operation = require_text(request.get("operation"), "operation")?;
         let target = require_object(
             request.get("target").ok_or_else(|| {
@@ -164,13 +170,7 @@ impl RemoteOperationPlan {
             })?,
             "target",
         )?;
-        let workflow_mode = validate_remote_target(target)?;
-        if workflow_mode == "solo_local" && operation != "read_task_queue" {
-            return Err(
-                "solo_local may use a remote runtime only for the optional task-queue notification read"
-                    .to_string(),
-            );
-        }
+        validate_remote_target(target)?;
         let repo_name = require_text(target.get("repo_name"), "target.repo_name")?;
         let server_url = validate_server_url(&require_text(
             target.get("server_url"),
@@ -210,6 +210,7 @@ impl RemoteOperationPlan {
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "None".to_string()),
         });
+        let optional_authority = operation == "probe_task_queue";
         Ok(Self {
             operation,
             server_url,
@@ -217,7 +218,7 @@ impl RemoteOperationPlan {
             url,
             http_request,
             retry_safe: built.retry_safe,
-            optional_authority: workflow_mode == "solo_local",
+            optional_authority,
             response_shape: built.response_shape,
         })
     }
@@ -317,7 +318,7 @@ fn build_operation(
     let object_response = ResponseShape::Object;
     let null = JsonValue::Null;
     match operation {
-        "read_task_queue" => Ok(BuiltOperation {
+        "read_task_queue" | "probe_task_queue" => Ok(BuiltOperation {
             method: "GET",
             path_and_query: format!("/v1/native/read/task-queue?repo_name={repo}&status=active"),
             payload: null,
@@ -368,22 +369,18 @@ fn build_operation(
     }
 }
 
-fn validate_remote_target(target: &Map<String, JsonValue>) -> Result<String, String> {
+fn validate_remote_target(target: &Map<String, JsonValue>) -> Result<(), String> {
+    if target.contains_key("workflow_mode") {
+        return Err(
+            "Retired execution field `workflow_mode`; resubmit with explicit target.mode."
+                .to_string(),
+        );
+    }
     let mode = require_text(target.get("mode"), "target.mode")?;
     if mode != "remote" {
         return Err("remote runtime backend target mode must be `remote`".to_string());
     }
-    let workflow_mode = require_text(target.get("workflow_mode"), "target.workflow_mode")?;
-    if !matches!(
-        workflow_mode.as_str(),
-        "solo_local" | "solo_remote" | "team_remote"
-    ) {
-        return Err(
-            "remote runtime backend workflow_mode must be `solo_local`, `solo_remote`, or `team_remote`"
-                .to_string(),
-        );
-    }
-    Ok(workflow_mode)
+    Ok(())
 }
 
 fn validate_server_url(value: &str) -> Result<String, String> {
@@ -516,7 +513,7 @@ fn require_text(value: Option<&JsonValue>, field: &str) -> Result<String, String
 }
 
 #[cfg(test)]
-mod solo_local_optional_authority_tests {
+mod optional_queue_authority_tests {
     use super::*;
 
     struct TransportFailureExecutor;
@@ -535,7 +532,7 @@ mod solo_local_optional_authority_tests {
 
     impl AgentRuntimeRetrySleeper for NoRetrySleeper {
         fn sleep(&self, _delay: Duration) {
-            panic!("optional solo_local authority must not wait for a retry");
+            panic!("optional queue probe must not wait for a retry");
         }
     }
 
@@ -544,7 +541,6 @@ mod solo_local_optional_authority_tests {
             "operation": operation,
             "target": {
                 "mode": "remote",
-                "workflow_mode": "solo_local",
                 "repo_name": "fixture",
                 "remote_name": "origin",
                 "server_url": "http://127.0.0.1:8088",
@@ -559,22 +555,52 @@ mod solo_local_optional_authority_tests {
     }
 
     #[test]
-    fn solo_local_remote_authority_is_narrow_and_non_retrying() {
-        let plan = RemoteOperationPlan::from_request(&request("read_task_queue"))
+    fn required_remote_queue_retries_and_reports_failure() {
+        struct CountSleeper(std::cell::Cell<usize>);
+        impl AgentRuntimeRetrySleeper for CountSleeper {
+            fn sleep(&self, _: Duration) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let backend = RemoteAitRuntimeBackend::new(
+            TransportFailureExecutor,
+            CountSleeper(std::cell::Cell::new(0)),
+        );
+        let result = backend.execute(&request("read_task_queue")).unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["attempts"], MAX_RETRY_ATTEMPTS);
+        assert_eq!(result["retry_exhausted"], true);
+        assert_eq!(backend.sleeper.0.get(), MAX_RETRY_ATTEMPTS as usize - 1);
+    }
+
+    #[test]
+    fn optional_probe_is_distinct_and_non_retrying() {
+        let plan = RemoteOperationPlan::from_request(&request("probe_task_queue"))
             .expect("optional queue plan");
         assert!(plan.optional_authority);
         assert!(plan.retry_safe);
-
-        let error = RemoteOperationPlan::from_request(&request("read_task"))
-            .expect_err("manual local task read must not use the optional server");
-        assert!(error.contains("only for the optional task-queue notification"));
-
+        for operation in ["read_task_queue", "read_task"] {
+            let required = RemoteOperationPlan::from_request(&request(operation)).unwrap();
+            assert!(!required.optional_authority);
+        }
         let result = RemoteAitRuntimeBackend::new(TransportFailureExecutor, NoRetrySleeper)
-            .execute(&request("read_task_queue"))
+            .execute(&request("probe_task_queue"))
             .expect("classified optional remote failure");
         assert_eq!(result["ok"], false);
         assert_eq!(result["attempts"], 1);
         assert_eq!(result["retryable"], true);
         assert_eq!(result["retry_exhausted"], false);
+    }
+
+    #[test]
+    fn mode_bearing_requests_fail_before_http_execution() {
+        for mode in ["solo_local", "solo_remote", "team_remote"] {
+            let mut retired = request("read_task_queue");
+            retired["target"]["workflow_mode"] = json!(mode);
+            let error = RemoteAitRuntimeBackend::new(TransportFailureExecutor, NoRetrySleeper)
+                .execute(&retired)
+                .unwrap_err();
+            assert!(error.contains("Retired execution field `workflow_mode`"));
+        }
     }
 }

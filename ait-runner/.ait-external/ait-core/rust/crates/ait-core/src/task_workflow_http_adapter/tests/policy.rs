@@ -100,7 +100,9 @@ fn policy_http_adapter_evaluates_through_repository_authority() {
         "decision": "pass"
     }));
     config.repository_index = Some(crate::server_operational::RepositoryIndex::new(9));
-    let mut remote = HttpWorkflowCloseoutRemote::new(config).unwrap();
+    let mut remote = HttpWorkflowCloseoutRemote::new(config)
+        .unwrap()
+        .with_resolved_test_actor(0);
     remote
         .evaluate_policy("P-RCT-1/C-01-1", Some("legacy-name"), true)
         .unwrap();

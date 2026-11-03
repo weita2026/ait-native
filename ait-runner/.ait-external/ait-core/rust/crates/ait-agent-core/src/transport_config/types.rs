@@ -32,23 +32,6 @@ impl fmt::Debug for AgentSecret {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentWorkflowMode {
-    SoloLocal,
-    SoloRemote,
-    TeamRemote,
-}
-
-impl AgentWorkflowMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::SoloLocal => "solo_local",
-            Self::SoloRemote => "solo_remote",
-            Self::TeamRemote => "team_remote",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentRuntimeMode {
     Local,
     Remote,
@@ -66,7 +49,6 @@ impl AgentRuntimeMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRuntimeTarget {
     pub mode: AgentRuntimeMode,
-    pub workflow_mode: AgentWorkflowMode,
     pub repo_name: String,
     pub repo_root: PathBuf,
     pub remote_name: Option<String>,
@@ -222,7 +204,6 @@ impl AgentWorkerRuntimeConfig {
             "transport": shared.transport,
             "runtime": {
                 "mode": shared.runtime_target.mode.as_str(),
-                "workflow_mode": shared.runtime_target.workflow_mode.as_str(),
                 "repo_name": shared.runtime_target.repo_name,
                 "remote_name": shared.runtime_target.remote_name,
                 "server_url_set": shared.runtime_target.server_url.is_some(),

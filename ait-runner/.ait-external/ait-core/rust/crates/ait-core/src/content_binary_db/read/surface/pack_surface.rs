@@ -566,6 +566,8 @@ where
 {
     let _range = crate::perfetto_range!("ait.core.tree_pack.locate_for_tree_cached");
     if !cache.tree_pack_index_loaded {
+        #[cfg(test)]
+        crate::binary_db::read_profile::note("tree_pack_locator_builds", 0);
         let _range = crate::perfetto_range!("ait.core.tree_pack.locator_cache_build");
         let Some(layout) =
             persisted_content_layout(read, TREE_PACK_BIN, TREE_PACK_RECORD_SIZE, "tree pack")?

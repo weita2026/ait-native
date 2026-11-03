@@ -273,6 +273,19 @@ pub(super) fn binary_db_reachable_tree_and_blob_state<const WRITE_LAYOUT: u32>(
         };
         binary_db_walk_tree(content, read, root_tree_id, &mut state, tree_read_cache)?;
     }
+    for tree in crate::agent_binary_db::content_gc_trees(content, read, tree_read_cache)? {
+        binary_db_walk_tree(content, read, &tree, &mut state, tree_read_cache)?;
+    }
+    let repo = content.db().local_repo_root().as_path();
+    if crate::git_binary_db::GitInteropBundle::exists(repo) {
+        let git = crate::git_binary_db::GitInteropBundle::open(repo, false)?
+            .database(repo, crate::binary_db::AuthorityId::new("git-gc"));
+        let pins = crate::git_binary_db::content_gc_pins(&git, content, read, tree_read_cache)?;
+        state.blob_ids.extend(pins.blob_ids);
+        for tree in pins.tree_ids {
+            binary_db_walk_tree(content, read, &tree, &mut state, tree_read_cache)?;
+        }
+    }
     Ok(state)
 }
 

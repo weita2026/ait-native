@@ -232,27 +232,6 @@ pub(in crate::pack_substrate) fn pack_index_entries_equivalent(
         && left.delta_algorithm == right.delta_algorithm
 }
 
-pub(in crate::pack_substrate) fn delta_match_granularity(
-    base_len: usize,
-    target_len: usize,
-) -> usize {
-    let max_size = base_len.max(target_len);
-    if max_size < 8 * 1024 {
-        1
-    } else if max_size < 64 * 1024 {
-        8
-    } else {
-        32
-    }
-}
-
-pub(in crate::pack_substrate) fn chunk_bytes(data: &[u8], unit: usize) -> Vec<Vec<u8>> {
-    if unit <= 1 {
-        return data.iter().map(|byte| vec![*byte]).collect();
-    }
-    data.chunks(unit).map(|chunk| chunk.to_vec()).collect()
-}
-
 pub(in crate::pack_substrate) fn encode_size_varint(mut value: usize) -> Vec<u8> {
     let mut out = Vec::new();
     loop {

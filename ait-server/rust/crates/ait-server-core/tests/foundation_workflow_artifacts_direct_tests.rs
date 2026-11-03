@@ -1,9 +1,9 @@
 use ait_server_core::foundation::workflow_artifacts::{
     attestation_id_for_patchset, land_submission_id_for_change, release_artifact_media_type,
     release_formula_payload, review_summary_from_rows, sanitize_release_artifact_path,
-    validate_release_artifact_pack, workflow_artifacts_json, RELEASE_ARTIFACT_PACK_FORMAT_V1,
-    RELEASE_ARTIFACT_PACK_MANIFEST_ENTRY, WORKFLOW_ARTIFACTS_CONTRACT,
-    WORKFLOW_ARTIFACTS_REFERENCE_MODULE,
+    validate_release_artifact_pack, workflow_artifacts_json, ReleaseArtifactPackValidation,
+    RELEASE_ARTIFACT_PACK_FORMAT_V1, RELEASE_ARTIFACT_PACK_MANIFEST_ENTRY,
+    WORKFLOW_ARTIFACTS_CONTRACT, WORKFLOW_ARTIFACTS_REFERENCE_MODULE,
 };
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
@@ -29,10 +29,24 @@ fn sha256_hex(data: &[u8]) -> String {
 }
 
 fn release_pack_bytes(entry_name: &str, artifact_path: &str, data: &[u8]) -> Vec<u8> {
+    release_pack_bytes_with_compression(
+        entry_name,
+        artifact_path,
+        data,
+        CompressionMethod::Deflated,
+    )
+}
+
+fn release_pack_bytes_with_compression(
+    entry_name: &str,
+    artifact_path: &str,
+    data: &[u8],
+    compression: CompressionMethod,
+) -> Vec<u8> {
     let mut cursor = std::io::Cursor::new(Vec::new());
     {
         let mut writer = ZipWriter::new(&mut cursor);
-        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let options = SimpleFileOptions::default().compression_method(compression);
         let manifest = json!({
             "pack_format": RELEASE_ARTIFACT_PACK_FORMAT_V1,
             "entry_name": entry_name,
@@ -51,6 +65,25 @@ fn release_pack_bytes(entry_name: &str, artifact_path: &str, data: &[u8]) -> Vec
         writer.finish().expect("zip should finish");
     }
     cursor.into_inner()
+}
+
+fn validate_test_release_pack(
+    pack_bytes: Vec<u8>,
+) -> Result<ReleaseArtifactPackValidation, String> {
+    validate_release_artifact_pack(
+        "REL-1",
+        json!({
+            "kind": "sdist",
+            "path": "dist/right.tar.gz",
+            "content_pack": {
+                "pack_format": RELEASE_ARTIFACT_PACK_FORMAT_V1,
+                "entry_name": "payload.tar.gz",
+                "bytes": pack_bytes
+            }
+        })
+        .as_object()
+        .unwrap(),
+    )
 }
 
 #[test]
@@ -253,6 +286,67 @@ fn release_artifact_pack_validation_rejects_manifest_and_digest_mismatches() {
     )
     .expect_err("sha mismatch should fail");
     assert!(digest_mismatch.starts_with("Release artifact sdist sha256 mismatch:"));
+}
+
+#[test]
+fn release_artifact_pack_validation_accepts_stored_content() {
+    let content = b"hello release\n";
+    let pack = release_pack_bytes_with_compression(
+        "payload.tar.gz",
+        "dist/right.tar.gz",
+        content,
+        CompressionMethod::Stored,
+    );
+    let validation = validate_test_release_pack(pack).expect("stored content should validate");
+    assert_eq!(validation.content, content);
+    assert_eq!(validation.artifact["sha256"], json!(sha256_hex(content)));
+}
+
+#[test]
+fn release_artifact_pack_validation_rejects_inconsistent_local_headers() {
+    for entry_name in [RELEASE_ARTIFACT_PACK_MANIFEST_ENTRY, "payload.tar.gz"] {
+        let mut pack =
+            release_pack_bytes("payload.tar.gz", "dist/right.tar.gz", b"hello release\n");
+        let header_start = {
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(pack.as_slice())).unwrap();
+            let entry = archive.by_name(entry_name).unwrap();
+            entry.header_start() as usize
+        };
+        // Change only the local filename; the central directory still names the expected entry.
+        pack[header_start + 30] ^= 1;
+        let error = validate_test_release_pack(pack).expect_err("dual-header cloaking must fail");
+        assert!(
+            error.contains("header inconsistency"),
+            "{entry_name}: {error}"
+        );
+    }
+}
+
+#[test]
+fn release_artifact_pack_validation_rejects_corrupt_stored_content() {
+    let mut pack = release_pack_bytes_with_compression(
+        "payload.tar.gz",
+        "dist/right.tar.gz",
+        b"hello release\n",
+        CompressionMethod::Stored,
+    );
+    let data_start = {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(pack.as_slice())).unwrap();
+        let entry = archive.by_name("payload.tar.gz").unwrap();
+        entry.data_start().expect("content offset should be known") as usize
+    };
+    pack[data_start] ^= 1;
+    validate_test_release_pack(pack).expect_err("a payload with an invalid CRC must fail");
+}
+
+#[test]
+fn release_artifact_pack_validation_rejects_invalid_and_truncated_archives() {
+    let mut truncated =
+        release_pack_bytes("payload.tar.gz", "dist/right.tar.gz", b"hello release\n");
+    truncated.truncate(truncated.len() / 2);
+    for pack in [b"not a ZIP archive".to_vec(), truncated] {
+        validate_test_release_pack(pack).expect_err("invalid or truncated ZIP data must fail");
+    }
 }
 
 #[test]

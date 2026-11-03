@@ -384,7 +384,7 @@ fn contains_absolute_or_host_path(value: &str) -> bool {
 }
 
 fn absolute_path_like(value: &str) -> bool {
-    Path::new(value).is_absolute()
+    value.starts_with('/')
         || value.starts_with("\\\\")
         || (value.len() >= 3
             && value.as_bytes()[0].is_ascii_alphabetic()

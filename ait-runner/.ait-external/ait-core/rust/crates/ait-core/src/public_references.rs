@@ -4,7 +4,7 @@ fn is_numbered_component(value: &str, prefix: &str) -> bool {
     })
 }
 
-fn is_task_id(value: &str) -> bool {
+pub(crate) fn is_task_id(value: &str) -> bool {
     let Some((prefix, ordinal)) = value.rsplit_once('-') else {
         return false;
     };

@@ -19,18 +19,14 @@ fn plan_http_config() -> PlanHttpClientConfig {
 #[test]
 fn attest_json_builds_request_specs() {
     let attest = AttestJson::stateless();
-    let evaluation = json!({"tests": "pass"});
-    let provenance = json!({"policy_readable": true});
-    let detail = json!({"minimum_evidence": {"policy_readable": true}});
+    let statement = crate::attest_json::RemoteAttestationStatement::default();
 
     let put = attest
         .build_put_attestation_request_spec(
             &plan_http_config(),
             " RCP-1 ",
             " ai_with_human_review ",
-            &evaluation,
-            &provenance,
-            &detail,
+            &statement,
         )
         .unwrap();
     assert_eq!(put.method, "PUT");
@@ -42,9 +38,11 @@ fn attest_json_builds_request_specs() {
         put.body,
         Some(json!({
             "author_mode": "ai_with_human_review",
-            "evaluation_summary": evaluation,
-            "provenance_summary": provenance,
-            "detail": detail,
+            "verification_state":"unknown",
+            "require_tests_pass":true,
+            "require_human_review":false,
+            "require_lint_pass":false,
+            "revoked":false,
         }))
     );
 
@@ -69,9 +67,7 @@ fn attest_json_prefers_repository_authority_paths() {
             &config,
             "P-RCT-1/C-01-1",
             "ai_with_human_review",
-            &json!({}),
-            &json!({}),
-            &json!({}),
+            &crate::attest_json::RemoteAttestationStatement::default(),
         )
         .unwrap();
     assert_eq!(
@@ -87,32 +83,185 @@ fn attest_json_prefers_repository_authority_paths() {
     );
 }
 
+fn compact_candidate() -> JsonValue {
+    json!({"task_id":"RT-0001","change_id":null,"change_ref":null,"patchset_id":"RT-0001/P-01","base_snapshot_id":"B","revision_snapshot_id":"R","author_mode":"ai_with_human_review","invalidated":false})
+}
+fn compact_statement(state: &str, required: bool) -> JsonValue {
+    json!({"attestation_id":"RT-0001/P-01/AT-01","task_id":"RT-0001","change_id":null,"change_ref":null,"patchset_id":"RT-0001/P-01","author_mode":"ai_with_human_review","verification_state":state,"require_tests_pass":required,"require_human_review":false,"require_lint_pass":false,"revoked":false,"ci_backed":false,"evaluation_summary":{"tests":"none","lint":"none"}})
+}
+fn compact_http(
+    responses: Vec<(u16, JsonValue)>,
+) -> (
+    TaskWorkflowHttpClientConfig,
+    JoinHandle<Vec<RecordedHttpRequest>>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let handle = thread::spawn(move || {
+        let mut requests = Vec::new();
+        for (status, response) in responses {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("compact fixture: {error}; received {}", requests.len()),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            requests.push(read_recorded_http_request(&mut stream));
+            if status == 0 {
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(200));
+                    drop(stream);
+                });
+                continue;
+            }
+            let body = response.to_string();
+            write!(stream,"HTTP/1.1 {status} response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+        }
+        requests
+    });
+    (
+        TaskWorkflowHttpClientConfig {
+            base_url: format!("http://{address}/"),
+            repository_index: Some(crate::server_operational::RepositoryIndex::new(19)),
+            headers: BTreeMap::new(),
+            default_timeout_ms: 5000,
+            retry_attempts: 2,
+            retry_backoff_ms: 0,
+            pool_max_idle_per_host: 1,
+        },
+        handle,
+    )
+}
+fn compact_preflight() -> Vec<(u16, JsonValue)> {
+    vec![
+        (200, compact_candidate()),
+        (
+            200,
+            json!({"task_id":"RT-0001","status":"active","successful_land":null,"current_patchset_id":"RT-0001/P-01"}),
+        ),
+        (200, compact_candidate()),
+    ]
+}
 #[test]
-fn attestation_http_adapter_writes_through_repository_authority() {
-    let (mut config, server) = serve_task_workflow_json_once(json!({
-        "attestation_id": "ATT-1",
-        "patchset_id": "P-RCT-1/C-01-1"
-    }));
-    config.repository_index = Some(crate::server_operational::RepositoryIndex::new(9));
-    let mut remote = HttpWorkflowCloseoutRemote::new(config).unwrap();
-    remote
-        .put_attestation(
-            "P-RCT-1/C-01-1",
-            "ai_with_human_review",
-            &json!({"tests": "pass"}),
-            &json!({}),
-            &json!({}),
-            Some("legacy-name"),
-            true,
-        )
-        .unwrap();
-
-    let recorded = server.join().unwrap();
-    assert_eq!(recorded.method, "PUT");
+fn compact_attestation_http_writes_exact_statement_and_reuses_retry() {
+    let statement = crate::attest_json::RemoteAttestationStatement {
+        verification_state: crate::attest_json::RemoteVerificationState::Pass,
+        ..Default::default()
+    };
+    let mut responses = compact_preflight();
+    responses.extend([
+        (404, json!({"detail":"Unknown attestation"})),
+        (200, compact_statement("pass", true)),
+    ]);
+    responses.extend(compact_preflight());
+    responses.push((200, compact_statement("pass", true)));
+    let (config, server) = compact_http(responses);
+    let mut remote = HttpWorkflowCloseoutRemote::new(config)
+        .unwrap()
+        .with_resolved_test_actor(0);
+    for _ in 0..2 {
+        let value = remote
+            .put_attestation(
+                "RT-0001/P-01",
+                "ai_with_human_review",
+                &statement,
+                Some("repo"),
+                true,
+            )
+            .unwrap();
+        assert_eq!(value["evaluation_summary"]["tests"], "none");
+        assert_eq!(value["ci_backed"], false);
+    }
+    let requests = server.join().unwrap();
+    let writes: Vec<_> = requests.iter().filter(|r| r.method == "PUT").collect();
+    assert_eq!(writes.len(), 1);
+    assert!(writes[0]
+        .target
+        .ends_with("/patchsets/RT-0001%2FP-01/attestation"));
     assert_eq!(
-        recorded.target,
-        "/v1/native/repository-authorities/9/patchsets/P-RCT-1%2FC-01-1/attestation"
+        writes[0].body,
+        Some(
+            json!({"author_mode":"ai_with_human_review","verification_state":"pass","require_tests_pass":true,"require_lint_pass":false,"require_human_review":false,"revoked":false})
+        )
     );
+}
+#[test]
+fn compact_attestation_incompatible_readback_and_candidate_drift_stop_writes() {
+    for failure in ["readback", "owner", "drift", "existing"] {
+        let mut responses = compact_preflight();
+        if failure == "drift" {
+            responses[2].1["revision_snapshot_id"] = json!("NEW");
+        } else if failure == "existing" {
+            responses.push((200, json!({"evaluation_summary":{"tests":"pass"}})));
+        } else {
+            responses.push((404, json!({"detail":"Unknown attestation"})));
+            let mut result = compact_statement("unknown", true);
+            if failure == "owner" {
+                result["task_id"] = json!("RT-9999");
+            }
+            responses.push((200, result));
+        }
+        let (config, server) = compact_http(responses);
+        let mut remote = HttpWorkflowCloseoutRemote::new(config)
+            .unwrap()
+            .with_resolved_test_actor(0);
+        let statement = crate::attest_json::RemoteAttestationStatement {
+            verification_state: crate::attest_json::RemoteVerificationState::Pass,
+            ..Default::default()
+        };
+        assert!(remote
+            .put_attestation(
+                "RT-0001/P-01",
+                "ai_with_human_review",
+                &statement,
+                Some("repo"),
+                true
+            )
+            .is_err());
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests.iter().filter(|r| r.method == "PUT").count(),
+            usize::from(matches!(failure, "readback" | "owner"))
+        );
+    }
+}
+#[test]
+fn compact_attestation_optional_retry_keeps_exact_flags_and_required_flags_never_weaken() {
+    for required in [false, true] {
+        let mut responses = compact_preflight();
+        responses.push((200, compact_statement("pass", required)));
+        let (config, server) = compact_http(responses);
+        let mut remote = HttpWorkflowCloseoutRemote::new(config)
+            .unwrap()
+            .with_resolved_test_actor(0);
+        let statement = crate::attest_json::RemoteAttestationStatement {
+            verification_state: crate::attest_json::RemoteVerificationState::Pass,
+            require_tests_pass: false,
+            ..Default::default()
+        };
+        let result = remote
+            .put_attestation(
+                "RT-0001/P-01",
+                "ai_with_human_review",
+                &statement,
+                Some("repo"),
+                true,
+            )
+            .unwrap();
+        assert_eq!(result["require_tests_pass"], required);
+        assert!(server.join().unwrap().iter().all(|r| r.method == "GET"));
+    }
 }
 
 #[test]
@@ -146,9 +295,7 @@ fn task_workflow_attestation_helpers_accept_attestation_remote_trait() {
             remote_port,
             "P-C-1-1",
             "manual",
-            &json!({"state": "pass"}),
-            &json!({"source": "test"}),
-            &json!({"detail": true}),
+            &crate::attest_json::RemoteAttestationStatement::default(),
             Some("repo"),
             true,
         )
@@ -177,9 +324,7 @@ fn task_workflow_attestation_helpers_accept_single_capability_ports() {
             &mut writer,
             "P-C-1-1",
             "manual",
-            &json!({"state": "pass"}),
-            &json!({"source": "test"}),
-            &json!({"detail": true}),
+            &crate::attest_json::RemoteAttestationStatement::default(),
             Some("repo"),
             true,
         )
@@ -196,4 +341,36 @@ fn task_workflow_attestation_helpers_accept_single_capability_ports() {
         .unwrap()["attestation"],
         true
     );
+}
+
+#[test]
+fn compact_attestation_transport_timeout_recovers_by_get_without_replaying_append() {
+    let mut responses = compact_preflight();
+    responses.extend([
+        (404, json!({"detail":"Unknown attestation"})),
+        (0, compact_statement("pass", true)),
+        (200, compact_statement("pass", true)),
+    ]);
+    let (mut config, server) = compact_http(responses);
+    config.default_timeout_ms = 100;
+    let mut remote = HttpWorkflowCloseoutRemote::new(config)
+        .unwrap()
+        .with_resolved_test_actor(0);
+    let statement = crate::attest_json::RemoteAttestationStatement {
+        verification_state: crate::attest_json::RemoteVerificationState::Pass,
+        ..Default::default()
+    };
+    let value = remote
+        .put_attestation(
+            "RT-0001/P-01",
+            "ai_with_human_review",
+            &statement,
+            Some("repo"),
+            true,
+        )
+        .unwrap();
+    assert_eq!(value["verification_state"], "pass");
+    let requests = server.join().unwrap();
+    assert_eq!(requests.iter().filter(|row| row.method == "PUT").count(), 1);
+    assert_eq!(requests.last().unwrap().method, "GET");
 }

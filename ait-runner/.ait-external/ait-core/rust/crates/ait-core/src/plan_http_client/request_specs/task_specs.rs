@@ -77,6 +77,7 @@ pub fn build_close_line_request_spec(
 
 pub fn build_start_plan_bound_task_request_spec(
     config: &PlanHttpClientConfig,
+    actor_key_index: u32,
     _repo_name: &str,
     payload: &Value,
 ) -> PlanHttpClientResult<PlanHttpRequestSpec> {
@@ -86,17 +87,20 @@ pub fn build_start_plan_bound_task_request_spec(
             "Plan HTTP atomic task-start payload must be an object.".to_string(),
         )
     })?;
-    if body.get("contract").and_then(Value::as_str) != Some("task-start-atomic/v1") {
+    if body.get("contract").and_then(Value::as_str) != Some("task-start-atomic/v2") {
         return Err(PlanHttpClientError::Invalid(
-            "Plan HTTP atomic task-start contract must be `task-start-atomic/v1`.".to_string(),
+            "Plan HTTP atomic task-start contract must be `task-start-atomic/v2`.".to_string(),
         ));
     }
+    super::super::actor_registration::validate_actor_key_index(actor_key_index)?;
+    let mut body = body.clone();
+    body.insert("actor_key_index".into(), Value::from(actor_key_index));
     plan_http_transport::build_request_spec(
         config,
         Method::POST,
         &format!("/v1/native/repository-authorities/{repository_index}/task-start"),
         Vec::new(),
-        Some(Value::Object(body.clone())),
+        Some(Value::Object(body)),
     )
 }
 
@@ -112,10 +116,10 @@ pub fn build_prepare_history_promotion_request_spec(
     })?;
     if !matches!(
         body.get("contract").and_then(Value::as_str),
-        Some("history-promotion-prepare/v1" | "history-promotion-prepare/v2")
+        Some("history-promotion-prepare/v3" | "history-promotion-correction-prepare/v2")
     ) {
         return Err(PlanHttpClientError::Invalid(
-            "Plan HTTP history promotion contract must be `history-promotion-prepare/v1` or `history-promotion-prepare/v2`.".to_string(),
+            "Plan HTTP history promotion contract is unsupported.".to_string(),
         ));
     }
     let idempotency_key = body
@@ -133,6 +137,21 @@ pub fn build_prepare_history_promotion_request_spec(
         ));
     }
     let repository_index = configured_repository_authority_path_segment(config)?;
+    if body.get("contract").and_then(Value::as_str)
+        == Some("history-promotion-correction-prepare/v2")
+        && body
+            .get("expected_identity")
+            .and_then(|v| v.get("repository_index"))
+            .and_then(Value::as_u64)
+            .map(|v| v.to_string())
+            .as_deref()
+            != Some(repository_index.as_str())
+    {
+        return Err(PlanHttpClientError::Invalid(
+            "Aggregate correction expected Repository differs from numeric routing authority."
+                .to_string(),
+        ));
+    }
     let path =
         format!("/v1/native/repository-authorities/{repository_index}/history-promotion:prepare");
     plan_http_transport::build_request_spec(

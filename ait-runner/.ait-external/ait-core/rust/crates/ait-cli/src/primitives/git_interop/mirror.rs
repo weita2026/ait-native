@@ -153,6 +153,9 @@ fn git_mirror_with_control(
     control: MirrorExecutionControl,
 ) -> Result<JsonValue, String> {
     let direction = MirrorDirection::parse(direction)?;
+    if native::exists(repo) || native::admit_fresh(repo)? {
+        return native_mirror(repo, endpoint, direction, dry_run, control);
+    }
     let endpoint = inspect_mirror_endpoint(endpoint, direction)?;
     if endpoint.object_format != OBJECT_FORMAT_SHA1 {
         return Ok(json!({
@@ -173,6 +176,18 @@ fn git_mirror_with_control(
             "dry_run": dry_run,
             "mutated": false,
         }));
+    }
+    if let Some(source) = endpoint.source.as_ref() {
+        let unsupported = source
+            .refs
+            .iter()
+            .filter(|r| r.name.starts_with("refs/notes/") || r.name.starts_with("refs/replace/"))
+            .count();
+        if unsupported > 0 {
+            return Ok(
+                json!({"contract":MIRROR_CONTRACT,"operation":"mirror","status":"blocked","state":"unsupported","blockers":[{"kind":"unsupported_notes_or_replace_refs","count":unsupported,"disposition":"fail_closed"}],"dry_run":dry_run,"mutated":false}),
+            );
+        }
     }
 
     let interop = InteropStore::new(repo);
@@ -431,6 +446,252 @@ fn git_mirror_with_control(
     Ok(result)
 }
 
+fn native_mirror(
+    repo: &RepoRuntime,
+    requested: &str,
+    direction: MirrorDirection,
+    dry_run: bool,
+    control: MirrorExecutionControl,
+) -> Result<JsonValue, String> {
+    let endpoint = inspect_mirror_endpoint(requested, direction)?;
+    if endpoint.object_format != OBJECT_FORMAT_SHA1 {
+        return Ok(
+            json!({"contract":MIRROR_CONTRACT,"operation":"mirror","status":"blocked","state":"unsupported","direction":direction.as_str(),"git_object_format":endpoint.object_format,"supported_object_formats":[OBJECT_FORMAT_SHA1],"blockers":[{"kind":"unsupported_object_format","count":1,"disposition":"fail_closed"}],"dry_run":dry_run,"mutated":false}),
+        );
+    }
+    if let Some(source) = endpoint.source.as_ref() {
+        let unsupported = source
+            .refs
+            .iter()
+            .filter(|r| r.name.starts_with("refs/notes/") || r.name.starts_with("refs/replace/"))
+            .count();
+        if unsupported > 0 {
+            return Ok(
+                json!({"contract":MIRROR_CONTRACT,"operation":"mirror","status":"blocked","state":"unsupported","blockers":[{"kind":"unsupported_notes_or_replace_refs","count":unsupported,"disposition":"fail_closed"}],"dry_run":dry_run,"mutated":false}),
+            );
+        }
+    }
+    let projection = native::mirror_projection(repo, &endpoint.identity, &endpoint.fingerprint)?;
+    let states = classify_mirror_refs(
+        &endpoint,
+        &projection,
+        &collect_ait_refs(repo)?,
+        &collect_git_refs(endpoint.source.as_ref()),
+    )?;
+    let counts = MirrorCounts::from_states(&states);
+    let material = states
+        .iter()
+        .map(|s| {
+            format!(
+                "{} {:?} {:?} {:?} {:?} {}",
+                s.git_ref_name,
+                s.git_object_id,
+                s.ait_state_id,
+                s.previous_git_object_id,
+                s.previous_ait_state_id,
+                s.classification
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let plan = sha256_prefixed(
+        "GMP",
+        format!(
+            "{} {}\n{material}",
+            endpoint.fingerprint,
+            direction.as_str()
+        )
+        .as_bytes(),
+        24,
+    );
+    let generation = sha256_prefixed("GIT-MIR", plan.as_bytes(), 16);
+    let operation = sha256_prefixed("GIO-MIRROR", plan.as_bytes(), 16);
+    let base = mirror_report(
+        &endpoint,
+        direction,
+        &operation,
+        &generation,
+        &plan,
+        &states,
+        &counts,
+    );
+    let mut blockers = Vec::new();
+    for (blocked, kind, count) in [
+        (
+            counts.divergent > 0,
+            "bidirectional_divergence",
+            counts.divergent,
+        ),
+        (
+            !direction.permits_inbound() && counts.inbound_only > 0,
+            "inbound_changes_in_outbound_mirror",
+            counts.inbound_only,
+        ),
+        (
+            !direction.permits_outbound() && counts.outbound_only > 0,
+            "outbound_changes_in_inbound_mirror",
+            counts.outbound_only,
+        ),
+    ] {
+        if blocked {
+            blockers.push(
+                json!({"kind":kind,"count":count,"disposition":"explicit_reconciliation_required"}),
+            );
+        }
+    }
+    if blockers.is_empty() && counts.inbound_only > 0 {
+        let source = endpoint
+            .source
+            .as_ref()
+            .ok_or("inbound mirror source absent")?;
+        let check = git_import(repo, &source.source, true, true)?;
+        if json_text(&check, "status") == Some("blocked") {
+            blockers.extend(check["blockers"].as_array().cloned().unwrap_or_default());
+        }
+    }
+    if blockers.is_empty()
+        && counts.outbound_only > 0
+        && states
+            .iter()
+            .any(|s| s.classification == "outbound_only" && s.ait_ref.is_some())
+    {
+        let target = endpoint
+            .target
+            .as_ref()
+            .ok_or("outbound mirror target absent")?;
+        let _ = native::export_mirror(repo, &target.requested, true, false)?;
+    }
+    if !blockers.is_empty() || dry_run {
+        return Ok(with_report_fields(
+            base,
+            &[
+                (
+                    "status",
+                    json!(if blockers.is_empty() {
+                        "dry_run"
+                    } else {
+                        "blocked"
+                    }),
+                ),
+                ("requires_decision", json!(!blockers.is_empty())),
+                ("blockers", json!(blockers)),
+                ("dry_run", json!(dry_run)),
+                ("mutated", json!(false)),
+            ],
+        ));
+    }
+    let mut child_results = Vec::new();
+    if counts.inbound_only > 0 {
+        let source = endpoint.source.as_ref().ok_or("inbound source absent")?;
+        let prior = native::latest_mirror_baseline(repo, &endpoint.identity)?;
+        let import_generation = sha256_prefixed(
+            "GIT-IMP",
+            format!(
+                "mirror-import/v1\n{}\n{}\n{}\n",
+                source.generation_id,
+                endpoint.identity,
+                native::hex(&prior)
+            )
+            .as_bytes(),
+            16,
+        );
+        child_results.push(git_import_with_generation(
+            repo,
+            &source.source,
+            true,
+            false,
+            Some(&import_generation),
+        )?);
+        apply_inbound_deletions(repo, &states)?;
+        #[cfg(test)]
+        if states.iter().any(|s| {
+            s.classification == "inbound_only" && s.git_object_id.is_none() && s.ait_ref.is_some()
+        }) {
+            mirror_deletion_pause()?;
+        }
+    }
+    if counts.outbound_only > 0 {
+        let target = endpoint.target.as_ref().ok_or("outbound target absent")?;
+        if states
+            .iter()
+            .any(|s| s.classification == "outbound_only" && s.ait_ref.is_some())
+        {
+            child_results.push(native::export_mirror(
+                repo,
+                &target.requested,
+                false,
+                control.interrupt_after_object_transfer,
+            )?);
+        }
+        let mut updates = String::from("start\n");
+        let mut deletes = 0;
+        for s in states
+            .iter()
+            .filter(|s| s.classification == "outbound_only" && s.ait_ref.is_none())
+        {
+            if let Some(expected) = &s.git_object_id {
+                updates.push_str(&format!("delete {} {expected}\n", s.git_ref_name));
+                deletes += 1;
+            }
+        }
+        if deletes > 0 {
+            updates.push_str("prepare\ncommit\n");
+            git_repo_bytes_os(
+                &target.git_dir,
+                vec!["update-ref".into(), "--stdin".into()],
+                &[],
+                Some(updates.as_bytes()),
+            )?;
+            #[cfg(test)]
+            mirror_deletion_pause()?;
+        }
+    }
+    let source = inspect_source(&mirror_source_argument(&endpoint)?)?;
+    let final_git = collect_git_refs(Some(&source));
+    let final_ait = collect_ait_refs(repo)?;
+    native::record_mirror_baseline(repo, &source, &final_ait)?;
+    let final_projection =
+        native::mirror_projection(repo, &endpoint.identity, &endpoint.fingerprint)?;
+    let final_states = classify_mirror_refs(&endpoint, &final_projection, &final_ait, &final_git)?;
+    if final_states.iter().any(|s| s.classification != "equal") {
+        return Err(format!("native mirror did not converge; typed child checkpoints remain available for recovery: {}",final_states.iter().filter(|s|s.classification!="equal").map(|s|format!("{} {} git={:?}/{:?} ait={:?}/{:?}",s.git_ref_name,s.classification,s.git_object_id,s.previous_git_object_id,s.ait_state_id,s.previous_ait_state_id)).collect::<Vec<_>>().join("; ")));
+    }
+    let changed = counts.inbound_only + counts.outbound_only > 0;
+    let heads = final_states.iter().map(|s| s.payload()).collect::<Vec<_>>();
+    let resumed = child_results.iter().any(|r| r["resumed"] == json!(true));
+    Ok(with_report_fields(
+        base,
+        &[
+            ("status", json!(if changed { "completed" } else { "no_op" })),
+            ("state", json!("equal")),
+            ("execution_mode", json!("native_child_checkpoints")),
+            ("compare_and_swap", json!(true)),
+            ("force_updated", json!(false)),
+            ("requires_decision", json!(false)),
+            ("dry_run", json!(false)),
+            ("mutated", json!(changed)),
+            ("replayed", json!(!changed)),
+            ("resumed", json!(resumed)),
+            ("blockers", json!([])),
+            ("child_operations", json!(child_results)),
+            ("last_mirrored_heads", json!(heads)),
+            ("mapping_json_count", json!(0)),
+        ],
+    ))
+}
+
+#[cfg(test)]
+fn mirror_deletion_pause() -> Result<(), String> {
+    if let Some(marker) = std::env::var_os("AIT_GIT_MIRROR_DELETE_TEST_PAUSE") {
+        fs::write(marker, b"mirror deletion durable before full-set baseline")
+            .map_err(|e| e.to_string())?;
+        loop {
+            std::thread::park();
+        }
+    }
+    Ok(())
+}
+
 fn inspect_mirror_endpoint(
     requested: &str,
     direction: MirrorDirection,
@@ -489,7 +750,7 @@ fn collect_ait_refs(repo: &RepoRuntime) -> Result<BTreeMap<String, ExportRef>, S
         .collect())
 }
 
-fn ait_ref_state_id(reference: &ExportRef) -> String {
+pub(super) fn ait_ref_state_id(reference: &ExportRef) -> String {
     sha256_prefixed(
         "AIR",
         format!(
@@ -632,6 +893,8 @@ fn current_ref_has_identity_mapping(
                 && json_text(row, "git_ref_name") == Some(git_ref_name)
                 && json_text(row, "git_object_id") == Some(git_object_id)
                 && json_text(row, "snapshot_id") == Some(ait_ref.snapshot_id.as_str())
+                && (ait_ref.ait_kind != "tag"
+                    || json_text(row, "ait_state_id") == Some(ait_ref_state_id(ait_ref).as_str()))
         })
     });
     if imported {
@@ -639,13 +902,15 @@ fn current_ref_has_identity_mapping(
     }
     endpoint.target.as_ref().is_some_and(|target| {
         mappings.iter().any(|row| {
-            json_text(row, "kind") == Some("ref")
+            matches!(json_text(row, "kind"), Some("ref" | "tag"))
                 && json_text(row, "direction") == Some("export")
                 && json_text(row, "target_repository_fingerprint")
                     == Some(target.fingerprint.as_str())
                 && json_text(row, "git_ref_name") == Some(git_ref_name)
                 && json_text(row, "git_object_id") == Some(git_object_id)
                 && json_text(row, "snapshot_id") == Some(ait_ref.snapshot_id.as_str())
+                && (ait_ref.ait_kind != "tag"
+                    || json_text(row, "ait_state_id") == Some(ait_ref_state_id(ait_ref).as_str()))
         })
     })
 }
@@ -950,8 +1215,7 @@ fn apply_inbound_deletions(repo: &RepoRuntime, states: &[MirrorRefState]) -> Res
             && state.ait_ref.is_some()
     }) {
         if state.ait_kind == "tag" {
-            let tag_store =
-                FilesystemTagStore::new(repo.authoritative_repo_root().to_string_lossy().as_ref())?;
+            let tag_store = crate::tag_surface::tag_store(repo)?;
             tag_store.delete_tag(&state.ait_name)?.ok_or_else(|| {
                 format!(
                     "Git mirror could not delete missing AIT tag {}.",
@@ -1146,5 +1410,138 @@ mod tests {
         )
         .is_empty());
         git_output(&target, &["fsck", "--full", "--no-dangling"]);
+    }
+
+    #[test]
+    fn mirror_delete_process_child() {
+        let Some(root) = std::env::var_os("AIT_GIT_MIRROR_DELETE_TEST_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let repo = RepoRuntime::discover_from_path(&root.join("ait")).unwrap();
+        git_mirror(
+            &repo,
+            root.join("source").to_str().unwrap(),
+            &std::env::var("AIT_GIT_MIRROR_DELETE_TEST_DIRECTION").unwrap(),
+            false,
+        )
+        .unwrap();
+        panic!("mirror child must be killed at its owned boundary");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mirror_sigkill_deletion_and_full_set_checkpoint_replay_preserves_tag_slot() {
+        use std::os::unix::process::ExitStatusExt;
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let ait = temp.path().join("ait");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&ait).unwrap();
+        git_output(&source, &["init", "-b", "main"]);
+        git_output(&source, &["config", "user.name", "Mirror"]);
+        git_output(&source, &["config", "user.email", "mirror@local"]);
+        fs::write(source.join("code.txt"), b"code\n").unwrap();
+        fs::write(source.join("README.md"), b"raw\r\n\xff\0").unwrap();
+        git_output(&source, &["add", "."]);
+        git_output(&source, &["commit", "-m", "source"]);
+        git_output(&source, &["tag", "v1"]);
+        init_repo(&InitRequest {
+            root: ait.clone(),
+            name: Some("mirror-crash".into()),
+            default_line: "main".into(),
+            policy_profile: "prototype".into(),
+            default_author_mode: "ai_with_human_review".into(),
+            default_model: None,
+            repair_existing: false,
+        })
+        .unwrap();
+        let repo = RepoRuntime::discover_from_path(&ait).unwrap();
+        git_mirror(&repo, source.to_str().unwrap(), "inbound", false).unwrap();
+        let tag_path = ait.join(".ait/binary-db/tag.bin");
+        let width = fs::read(&tag_path).unwrap().len();
+        let plans = ["plan.bin", "plan_revision.bin", "plan_revision_payload.bin"]
+            .map(|name| fs::read(ait.join(".ait/binary-db").join(name)).unwrap());
+        for (phase, direction, hook) in [
+            (
+                "inbound-delete",
+                "inbound",
+                "AIT_GIT_MIRROR_DELETE_TEST_PAUSE",
+            ),
+            (
+                "outbound-delete",
+                "outbound",
+                "AIT_GIT_MIRROR_DELETE_TEST_PAUSE",
+            ),
+            (
+                "baseline-complete",
+                "inbound",
+                "AIT_GIT_MIRROR_BASELINE_TEST_PAUSE",
+            ),
+        ] {
+            if direction == "inbound" {
+                git_output(&source, &["tag", "-d", "v1"]);
+            } else {
+                crate::tag_surface::tag_store(&repo)
+                    .unwrap()
+                    .delete_tag("v1")
+                    .unwrap()
+                    .unwrap();
+            }
+            let marker = temp.path().join(phase);
+            let mut child = Child(
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "primitives::git_interop::mirror::tests::mirror_delete_process_child",
+                        "--nocapture",
+                    ])
+                    .env("AIT_GIT_MIRROR_DELETE_TEST_ROOT", temp.path())
+                    .env("AIT_GIT_MIRROR_DELETE_TEST_DIRECTION", direction)
+                    .env(hook, &marker)
+                    .stdin(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            );
+            for _ in 0..400 {
+                if marker.exists() || child.0.try_wait().unwrap().is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            assert!(marker.exists(), "{phase} did not reach boundary");
+            child.0.kill().unwrap();
+            assert_eq!(child.0.wait().unwrap().signal(), Some(9));
+            let fresh = RepoRuntime::discover_from_path(&ait).unwrap();
+            git_mirror(&fresh, source.to_str().unwrap(), direction, false).unwrap();
+            assert_eq!(
+                git_mirror(&fresh, source.to_str().unwrap(), direction, false).unwrap()["status"],
+                json!("no_op")
+            );
+            git_output(&source, &["tag", "v1"]);
+            assert_eq!(
+                git_mirror(&fresh, source.to_str().unwrap(), "inbound", false).unwrap()["status"],
+                json!("completed")
+            );
+            assert_eq!(fs::read(&tag_path).unwrap().len(), width);
+            assert_eq!(fs::read(&tag_path).unwrap()[4] & 128, 0);
+            assert_eq!(
+                plans,
+                ["plan.bin", "plan_revision.bin", "plan_revision_payload.bin"]
+                    .map(|name| fs::read(ait.join(".ait/binary-db").join(name)).unwrap())
+            );
+        }
+        git_output(&source, &["fsck", "--strict", "--full"]);
+        let interop = InteropStore::new(&repo).root;
+        assert!(!interop.join("mappings").exists());
+        assert!(!interop.join("operations").exists());
+        println!("three actual Mirror SIGKILL phases: inbound Tag tombstone, Git ref deletion, full-set owners before completion; repeated delete/recreate converges with one retained Tag ordinal and exact raw Plan/revision bytes; 0 runtime JSON");
     }
 }

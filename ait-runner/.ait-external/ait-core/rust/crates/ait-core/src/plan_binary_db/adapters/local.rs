@@ -144,6 +144,9 @@ impl<const WRITE_LAYOUT: u32> LocalPlanBinaryDb<WRITE_LAYOUT> {
     where
         F: BinaryDbFsyncPolicy,
     {
+        if WRITE_LAYOUT != crate::plan_binary_db::PLAN_LAYOUT_ID {
+            return Err("Local Plan Binary DB requires unchanged layout 1".into());
+        }
         let write = self
             .inner
             .begin_write_txn_with_fsync_policy(purpose.command_scope(), fsync_policy)?;

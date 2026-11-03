@@ -1,0 +1,35 @@
+{
+  "identity": {
+    "base_is_fresh": true,
+    "base_snapshot_id": "SNP-4388BF37C436",
+    "dirty": null,
+    "invalidated": false,
+    "patchset_id": "RCT-1825/C-01/P-02",
+    "repository_index": 0,
+    "revision_snapshot_id": "SNP-211B21DAF44A",
+    "withdrawn": false,
+    "workspace_matches_patchset": null
+  },
+  "patchset_ci_status": {
+    "blocking_failure_count": 0,
+    "ci_completed_at_s": 0,
+    "ci_run_seq": 1,
+    "contract": "ait.server.patchset_ci.readiness.v1",
+    "has_runnable_evidence": false,
+    "latest_job": null,
+    "lint_status": "none",
+    "overall_status": "none",
+    "patchset_id": "RCT-1825/C-01/P-02",
+    "projection": "embedded_patchset",
+    "recent_jobs": [],
+    "selected_suite_count": 0,
+    "suite_result_count": 0,
+    "tests_status": "none"
+  },
+  "next_action": {
+    "code": "run_patchset_ci",
+    "command": "ait patchset rerun-ci RCT-1825/P-02 --remote origin",
+    "detail": "Routine patchsets must rely on completed remote CI state embedded in the selected Patchset; local or manual tests pass is not enough for this repository.",
+    "summary": "Run patchset CI so completed CI state is recorded on the selected Patchset."
+  }
+}

@@ -269,7 +269,18 @@ pub(super) fn build_http_client_manager(
     request: &SyncRequest,
     base_url: &str,
 ) -> Result<PlanHttpClientManager, String> {
-    PlanHttpClientManager::new(PlanHttpClientConfig {
+    let identity = crate::plan_http_client::RemoteActorIdentity::new(
+        request
+            .user_name
+            .as_deref()
+            .ok_or("Remote Plan sync requires effective AIT config user_name.")?,
+        request
+            .user_email
+            .as_deref()
+            .ok_or("Remote Plan sync requires effective AIT config user_email.")?,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut manager = PlanHttpClientManager::new(PlanHttpClientConfig {
         base_url: base_url.to_string(),
         repository_index: request.repository_index,
         headers: plan_sync_http_headers(request),
@@ -278,7 +289,20 @@ pub(super) fn build_http_client_manager(
         retry_backoff_ms: 0,
         pool_max_idle_per_host: 1,
     })
-    .map_err(|err| err.to_string())
+    .map_err(|err| err.to_string())?;
+    manager
+        .ensure_repository_with_actor(
+            request
+                .remote_repo_name
+                .as_deref()
+                .unwrap_or(&request.repo_name),
+            "main",
+            None,
+            request.id_namespace_prefix.as_deref(),
+            &identity,
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(manager)
 }
 
 pub(super) fn plan_sync_http_headers(request: &SyncRequest) -> BTreeMap<String, String> {

@@ -1,5 +1,6 @@
 use super::*;
 
+mod abandon_cleanup;
 mod attestation;
 mod change;
 mod land;
@@ -10,11 +11,12 @@ mod shared;
 mod task_lifecycle;
 
 pub use attestation::{attest_put, attest_show};
-pub use change::change_create;
+#[cfg(test)]
 pub(in crate::primitives) use change::change_create_for_worktree_bootstrap;
 pub use change::{
     change_close, change_list, change_publish, change_replay, change_revert, change_show,
 };
+pub use change::{change_create, change_create_revision};
 pub use land::{land_retry, land_show, land_submit};
 pub use patchset::{
     patchset_ci_status, patchset_list, patchset_publish, patchset_publish_explicit,
@@ -22,8 +24,8 @@ pub use patchset::{
 };
 pub use policy::{policy_eval, policy_show, policy_waive};
 pub use review::{
-    review_code_submit, review_code_template, review_record, review_request, review_show,
-    review_task_approve, review_task_record, review_team_approve,
+    review_code_submit, review_code_submit_with_reviewer, review_code_template, review_record,
+    review_request, review_show, review_task_approve, review_task_record, review_team_approve,
 };
 pub use task_lifecycle::task_abandon;
 pub(in crate::primitives) use task_lifecycle::task_close;
@@ -34,11 +36,13 @@ pub(super) use attestation::{
     attestation_put_payload_with_closeout_remote, attestation_put_with_closeout_remote,
     attestation_show_with_closeout_remote,
 };
+#[cfg(test)]
+pub(super) use change::change_create_remote_flow_with_task_remote;
 #[allow(unused_imports)]
 pub(super) use change::{
     change_base_line_head_with_task_remote, change_base_line_read_with_task_remote,
-    change_close_with_task_remote, change_create_remote_flow_with_task_remote,
-    change_create_remote_lineage_with_task_remote, change_create_with_task_remote,
+    change_close_with_task_remote, change_create_remote_lineage_with_task_remote,
+    change_create_remote_revision_with_remotes, change_create_with_task_remote,
     change_list_with_task_remote, change_local_close_with_change_store,
     change_local_create_with_change_store, change_local_list_with_change_store,
     change_local_mark_published_with_change_store, change_local_read_with_change_store,
@@ -72,9 +76,10 @@ pub(super) use policy::{
 };
 #[allow(unused_imports)]
 pub(super) use review::{
-    review_code_submit_with_closeout_remote, review_record_flow_with_task_and_closeout_remotes,
-    review_record_with_closeout_remote, review_request_flow_with_task_and_closeout_remotes,
-    review_request_with_closeout_remote, review_show_with_closeout_remote,
+    review_code_submit_with_closeout_remote, review_record_as_actor_with_closeout_remote,
+    review_record_flow_with_task_and_closeout_remotes, review_record_with_closeout_remote,
+    review_request_flow_with_task_and_closeout_remotes, review_request_with_closeout_remote,
+    review_show_with_closeout_remote,
 };
 #[allow(unused_imports)]
 pub(super) use shared::{

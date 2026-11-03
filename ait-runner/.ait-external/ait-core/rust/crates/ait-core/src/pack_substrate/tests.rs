@@ -553,6 +553,64 @@ fn object_pack_index_json_converts_zstd_fixture_and_rejects_invalid_member_ordin
         }],
     };
 
+    // The direct immutable-reader view must preserve the historical JSON
+    // normalization/error contract, including normalized-key collisions.
+    let compare = |index: &ZstdChunkedPackIndex| {
+        validate_zstd_chunked_index(
+            index,
+            ZSTD_CHUNKED_INDEX_KIND_OBJECT,
+            PACK_FORMAT_ZSTD_CHUNKED_V1,
+            None,
+        )
+        .unwrap();
+        let old = contract
+            .zstd_chunked_index_json(index)
+            .and_then(|json| contract.entries_by_name(&json));
+        let direct = contract.entries_by_name_from_validated_index(index);
+        match (old, direct) {
+            (Ok(old), Ok(direct)) => {
+                assert_eq!(
+                    old.keys().collect::<Vec<_>>(),
+                    direct.keys().collect::<Vec<_>>()
+                );
+                for (key, value) in old {
+                    assert!(pack_index_entries_equivalent(&value, &direct[&key]));
+                }
+            }
+            (Err(old), Err(direct)) => assert_eq!(old, direct),
+            _ => panic!("direct archive lookup changed JSON acceptance"),
+        }
+    };
+    compare(&pack_index);
+    let mut normalized = pack_index.clone();
+    normalized.members[0].entry_name = "  blobs/BLB-1  ".into();
+    normalized.members[0].content_id = "  BLB-1  ".into();
+    normalized.members[0].entry_type = " full ".into();
+    normalized.members[0].checksum = format!(" {} ", normalized.members[0].checksum);
+    normalized.members[0].base_content_id = Some("  ".into());
+    normalized.members[0].delta_algorithm = Some("  ".into());
+    compare(&normalized);
+    for field in ["entry_name", "blob_id", "entry_type", "checksum"] {
+        let mut invalid = pack_index.clone();
+        let member = &mut invalid.members[0];
+        match field {
+            "entry_name" => member.entry_name = " ".into(),
+            "blob_id" => member.content_id = " ".into(),
+            "entry_type" => member.entry_type = " ".into(),
+            "checksum" => member.checksum = " ".into(),
+            _ => unreachable!(),
+        }
+        compare(&invalid);
+    }
+    let mut duplicate = pack_index.clone();
+    let mut second = duplicate.members[0].clone();
+    second.member_ordinal = 1;
+    second.entry_name = format!(" {} ", second.entry_name);
+    duplicate.members.push(second);
+    compare(&duplicate);
+    duplicate.members[1].content_id = "DIFFERENT".into();
+    compare(&duplicate);
+
     let pack_index_json = contract.zstd_chunked_index_json(&pack_index).unwrap();
     assert_eq!(
         pack_index_json,
@@ -721,6 +779,51 @@ fn cached_zstd_pack_entry_archive_reuses_one_decoded_chunk_for_multiple_reads() 
             .unwrap(),
         b"world\n"
     );
+}
+
+#[test]
+#[ignore = "explicit read-only profile of one retained acceptance pack"]
+fn retained_pack_fresh_and_batch_readback_cost() {
+    let path = std::env::var("AIT_PACK_BENCH_PATH").unwrap();
+    let initial = PackEntryArchive::open(&path).unwrap();
+    let names = initial.entries_by_name.keys().cloned().collect::<Vec<_>>();
+    assert_eq!(names.len(), 128);
+    assert!(initial
+        .pack_index
+        .members
+        .iter()
+        .all(|m| m.entry_type == "full"));
+    let raw_bytes = initial
+        .pack_index
+        .chunks
+        .iter()
+        .map(|c| c.raw_len)
+        .sum::<usize>();
+    let mut expected = Vec::new();
+    let mut fresh_decoded_chunks = 0;
+    let started = std::time::Instant::now();
+    for name in &names {
+        let mut reader = PackEntryArchive::open(&path).unwrap();
+        expected.push(
+            reader
+                .read_entry(name, None, DEFAULT_MAX_DELTA_CHAIN_DEPTH)
+                .unwrap(),
+        );
+        fresh_decoded_chunks += reader.raw_chunk_cache.len();
+    }
+    let fresh_seconds = started.elapsed().as_secs_f64();
+    let started = std::time::Instant::now();
+    let mut reader = PackEntryArchive::open(&path).unwrap();
+    for (name, expected) in names.iter().zip(&expected) {
+        assert_eq!(
+            reader
+                .read_entry(name, None, DEFAULT_MAX_DELTA_CHAIN_DEPTH)
+                .unwrap(),
+            *expected
+        );
+    }
+    println!("pack readback members=128 raw_chunk_bytes={raw_bytes} fresh_chunks={fresh_decoded_chunks} batch_chunks={} fresh_seconds={fresh_seconds:.6} batch_seconds={:.6}", reader.raw_chunk_cache.len(), started.elapsed().as_secs_f64());
+    assert!(reader.raw_chunk_cache.len() < fresh_decoded_chunks);
 }
 
 #[test]
@@ -1169,4 +1272,98 @@ fn object_pack_summary_counts_missing_archive_authority_as_an_error() {
 
     assert_eq!(summary["indexed_pack_count"], 0);
     assert_eq!(summary["index_error_count"], 2);
+}
+
+#[test]
+fn shifted_delta_encoder_preserves_bytes_and_bounds_adversarial_work() {
+    use super::delta_encoder::build_with_budget;
+    let mut state = 0x12345678u32;
+    let base = (0..120_000)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        })
+        .collect::<Vec<_>>();
+    let mut cases = vec![
+        (Vec::new(), Vec::new()),
+        (Vec::new(), vec![0, 255, 0]),
+        (vec![1; 7], vec![2; 9]),
+        (base.clone(), Vec::new()),
+    ];
+    for shift in [1usize, 7, 8, 15, 16, 63, 67, 365] {
+        for at in [0usize, 37, base.len() / 2, base.len() - shift] {
+            let mut inserted = base.clone();
+            inserted.splice(at..at, std::iter::repeat_n(0xff, shift));
+            cases.push((base.clone(), inserted));
+            let mut deleted = base.clone();
+            deleted.drain(at..at + shift);
+            cases.push((base.clone(), deleted));
+        }
+    }
+    cases.extend([
+        (vec![0; 131_072], vec![0; 131_072]),
+        (vec![255; 131_072], vec![0; 131_072]),
+        (vec![1; 131_073], vec![1; 131_074]),
+    ]);
+    let repetitive = (0..131_072)
+        .map(|i| if i % 17 == 16 { 1 } else { 0 })
+        .collect::<Vec<_>>();
+    let adversarial = (0..131_072)
+        .map(|i| if i % 31 == 30 { 2 } else { 0 })
+        .collect::<Vec<_>>();
+    cases.push((repetitive, adversarial));
+    for (base, target) in cases {
+        let (delta, work) = build_with_budget(&base, &target, 2 * 1024 * 1024);
+        assert_eq!(apply_git_binary_delta(&base, &delta).unwrap(), target);
+        assert!(work.comparisons <= 2 * 1024 * 1024, "{work:?}");
+        assert!(work.anchors <= 8192, "{work:?}");
+        assert!(work.candidates <= target.len() * 8, "{work:?}");
+        let (fallback, limited) = build_with_budget(&base, &target, 32);
+        assert_eq!(apply_git_binary_delta(&base, &fallback).unwrap(), target);
+        assert!(limited.comparisons <= 32);
+        if limited.exhausted {
+            assert_eq!(limited.comparisons, 32);
+        }
+    }
+    let mut shifted = base.clone();
+    shifted.splice(63..63, [0, 1, 0, 255, 0]);
+    let (delta, work) = build_with_budget(&base, &shifted, 2 * 1024 * 1024);
+    assert!(
+        delta.len() < 64,
+        "shifted full bytes must be copied, got {}",
+        delta.len()
+    );
+    assert!(!work.exhausted);
+    let (_, exhausted) = build_with_budget(&base, &base, 32);
+    assert!(exhausted.exhausted);
+    assert_eq!(exhausted.comparisons, 32);
+}
+
+#[test]
+fn direct_archive_open_keeps_index_and_chunk_checksum_guards() {
+    let path = temp_path("direct-archive-integrity");
+    let members = json!([
+        {"entry_name":"blobs/BLB-GUARD", "blob_id":"BLB-GUARD", "data":[1,2,3,4], "entry_type":"full", "chain_depth":0}
+    ]);
+    write_pack_archive(&path, "PCK-DIRECT-GUARD", "2026-10-14T00:00:00Z", &members).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let mut damaged = original.clone();
+    let last = damaged.len() - 1;
+    damaged[last] ^= 1;
+    std::fs::write(&path, damaged).unwrap();
+    assert!(PackEntryArchive::open(&path).is_err());
+    std::fs::write(&path, &original).unwrap();
+    let mut reader = PackEntryArchive::open(&path).unwrap();
+    assert!(reader.has_entry("blobs/BLB-GUARD"));
+    assert!(!reader.has_entry("absent"));
+    let at = reader.pack_index.chunks[0].compressed_offset as usize;
+    let mut damaged = original;
+    damaged[at] ^= 1;
+    std::fs::write(&path, damaged).unwrap();
+    assert!(reader
+        .read_entry("blobs/BLB-GUARD", None, DEFAULT_MAX_DELTA_CHAIN_DEPTH)
+        .is_err());
+    std::fs::remove_file(path).unwrap();
 }

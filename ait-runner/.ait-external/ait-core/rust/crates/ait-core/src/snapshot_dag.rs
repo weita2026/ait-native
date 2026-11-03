@@ -666,6 +666,34 @@ where
         SnapshotParentMode::AllParents,
         limits,
     )?;
+    merge_bases_from_traversals(left, right)
+}
+
+/// Resolve merge bases from a bounded, caller-provided parent graph. This
+/// permits verified remote metadata to supplement a truncated local view
+/// without replacing persisted Snapshot records.
+pub fn snapshot_merge_bases_from_parent_map(
+    parents: &BTreeMap<String, Vec<String>>,
+    left_snapshot_id: &str,
+    right_snapshot_id: &str,
+    limits: SnapshotDagLimits,
+) -> Result<Vec<String>, String> {
+    let closure = |id: &str| {
+        snapshot_ancestor_closure_from_parent_map(
+            parents,
+            &[id.to_string()],
+            &BTreeSet::new(),
+            SnapshotParentMode::AllParents,
+            limits,
+        )
+    };
+    merge_bases_from_traversals(closure(left_snapshot_id)?, closure(right_snapshot_id)?)
+}
+
+fn merge_bases_from_traversals(
+    left: SnapshotDagTraversal,
+    right: SnapshotDagTraversal,
+) -> Result<Vec<String>, String> {
     let common = left
         .parent_snapshot_ids
         .keys()
@@ -1286,6 +1314,16 @@ mod tests {
         assert_eq!(
             snapshot_merge_bases(
                 &store,
+                "SNP-LEFT",
+                "SNP-RIGHT",
+                SnapshotDagLimits::default()
+            )
+            .unwrap(),
+            vec!["SNP-A1", "SNP-B1"]
+        );
+        assert_eq!(
+            snapshot_merge_bases_from_parent_map(
+                &store.parents,
                 "SNP-LEFT",
                 "SNP-RIGHT",
                 SnapshotDagLimits::default()

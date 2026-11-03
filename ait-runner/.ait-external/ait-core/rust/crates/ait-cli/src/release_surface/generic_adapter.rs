@@ -984,7 +984,28 @@ fn generic_component_working_directory(
             component.id, component.working_directory
         ));
     }
-    Ok(working_directory)
+    Ok(canonical_working)
+}
+
+fn generic_command_program(working_directory: &Path, program: &str) -> PathBuf {
+    let path = Path::new(program);
+    let first = path.components().next();
+    // Rooted/prefixed programs retain their native addressing semantics. Bare
+    // names still use PATH; only component-relative paths need an explicit base.
+    let anchored = matches!(
+        first,
+        Some(std::path::Component::Prefix(_) | std::path::Component::RootDir)
+    );
+    let explicit_relative = program.chars().any(std::path::is_separator)
+        || matches!(
+            first,
+            Some(std::path::Component::CurDir | std::path::Component::ParentDir)
+        );
+    if !anchored && explicit_relative {
+        working_directory.join(path)
+    } else {
+        path.to_path_buf()
+    }
 }
 
 fn resolve_generic_command_argv(
@@ -1050,7 +1071,8 @@ fn run_generic_commands(
                     evidence: evidence.clone(),
                 },
             )?;
-        let mut command = Command::new(&resolved_argv[0]);
+        let program = generic_command_program(&working_directory, &resolved_argv[0]);
+        let mut command = Command::new(program);
         command
             .args(&resolved_argv[1..])
             .current_dir(&working_directory)
@@ -2336,6 +2358,101 @@ mod tests {
     use super::*;
 
     #[test]
+    fn component_relative_programs_use_canonical_cwd_without_changing_path_search() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("nested component");
+        fs::create_dir(&cwd).unwrap();
+        let cwd = cwd.canonicalize().unwrap();
+        for program in ["./tool", "bin/tool with spaces", "../tool"] {
+            let resolved = generic_command_program(&cwd, program);
+            assert!(resolved.is_absolute());
+            assert_eq!(resolved, cwd.join(program));
+        }
+        #[cfg(windows)]
+        assert_eq!(
+            generic_command_program(&cwd, r".\component-bin.exe"),
+            cwd.join(r".\component-bin.exe")
+        );
+        for program in ["rustc", "rustc.exe", "tool with spaces"] {
+            assert_eq!(
+                generic_command_program(&cwd, program).as_os_str(),
+                Path::new(program).as_os_str()
+            );
+        }
+        let absolute = std::env::current_exe().unwrap();
+        assert_eq!(
+            generic_command_program(&cwd, absolute.to_str().unwrap()).as_os_str(),
+            absolute.as_os_str()
+        );
+    }
+
+    #[test]
+    fn shared_command_runner_preserves_missing_and_nonzero_failure_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("nested component");
+        fs::create_dir(&cwd).unwrap();
+        let component = GenericReleaseComponent {
+            id: "component".into(),
+            ecosystem: "fixture".into(),
+            working_directory: "nested component".into(),
+            dependency_files: Vec::new(),
+            prepare_commands: Vec::new(),
+            test_commands: Vec::new(),
+            build_commands: Vec::new(),
+            smoke_commands: Vec::new(),
+            artifacts: Vec::new(),
+        };
+        let record = json!({"release_id":"REL-TEST","version":"1.2.3"});
+        let missing = format!(".{}missing program", std::path::MAIN_SEPARATOR);
+        let argv = vec![
+            missing,
+            "$AIT_RELEASE_VERSION".into(),
+            "arg with spaces".into(),
+        ];
+        for phase in ["prepare", "test", "build", "smoke"] {
+            let failure = run_generic_commands(
+                temp.path(),
+                &component,
+                &record,
+                1767225600,
+                phase,
+                std::slice::from_ref(&argv),
+                Vec::new(),
+            )
+            .unwrap_err();
+            assert!(failure.detail.contains("could not start"));
+            assert_eq!(failure.evidence[0]["declared_argv"], json!(argv));
+            assert_eq!(
+                failure.evidence[0]["argv"],
+                json!([argv[0], "1.2.3", "arg with spaces"])
+            );
+            assert!(failure.evidence[0]["exit_code"].is_null());
+        }
+        let argv = vec![
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            "--adapter-intentional-invalid-option".into(),
+        ];
+        let failure = run_generic_commands(
+            temp.path(),
+            &component,
+            &record,
+            1767225600,
+            "smoke",
+            std::slice::from_ref(&argv),
+            Vec::new(),
+        )
+        .unwrap_err();
+        assert!(failure.detail.contains("failed with exit code"));
+        assert_ne!(failure.evidence[0]["exit_code"].as_i64().unwrap(), 0);
+        assert_eq!(failure.evidence[0]["declared_argv"], json!(argv));
+        assert_eq!(failure.evidence[0]["argv"], json!(argv));
+        assert!(!failure.evidence[0]["output"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
     fn core_release_license_is_apache_only_and_locked_dependency_notice_stays_complete() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../..")
@@ -2413,6 +2530,71 @@ mod tests {
         assert!(generator.contains("locked --format-version 1"));
         assert!(generator.contains("Complete deduplicated upstream legal texts"));
         assert!(generator.contains("cmp -s \"$generated\" \"$notice\""));
+    }
+
+    #[test]
+    fn core_release_profile_binds_one_active_component_and_six_target_declarations() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .expect("ait-core repository root should resolve");
+        let manifest_bytes = fs::read(repo_root.join(GENERIC_RELEASE_MANIFEST_PATH))
+            .expect("canonical Core release adapter should be readable");
+        let manifest = parse_slice_value(&manifest_bytes, "Core release adapter should parse")
+            .expect("canonical Core release adapter should contain valid JSON");
+        let adapter = parse_generic_release_adapter(&manifest)
+            .expect("canonical Core release adapter should satisfy its contract");
+        assert_eq!(adapter.components.len(), 1);
+        assert_eq!(adapter.components[0].id, "ait");
+        assert_eq!(adapter.components[0].ecosystem, "native");
+
+        let targets = [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-pc-windows-msvc",
+            "x86_64-pc-windows-msvc",
+        ];
+        assert_eq!(adapter.declared_artifact_count(), targets.len());
+        let mut bundle = bundle_for_manifest(&manifest, &[]);
+        bundle
+            .files
+            .get_mut(GENERIC_RELEASE_MANIFEST_PATH)
+            .unwrap()
+            .data = manifest_bytes.clone();
+        let mut record = executable_record(&adapter, &bundle);
+        record["version"] = json!(adapter.package.version);
+        let metadata = &record["metadata"]["release_adapter"];
+        assert_eq!(metadata["component_count"], 1);
+        assert_eq!(metadata["declared_artifact_count"], 6);
+        assert_eq!(metadata["manifest_sha256"], sha256_hex(&manifest_bytes));
+        assert_eq!(metadata["definition"], adapter.to_json());
+        for target in targets {
+            assert_eq!(adapter.selected_components(Some(target)).len(), 1);
+            assert_eq!(adapter.selected_artifact_count(Some(target)), 1);
+            record["target"] = json!(target);
+            validate_generic_release_identity(&record, &adapter, &bundle).unwrap();
+        }
+
+        let mut projected_definition = record.clone();
+        projected_definition["metadata"]["release_adapter"]["definition"]["components"][0]
+            ["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(1);
+        assert!(
+            validate_generic_release_identity(&projected_definition, &adapter, &bundle)
+                .unwrap_err()
+                .contains("candidate-bound Snapshot manifest")
+        );
+        let mut wrong_hash = record;
+        wrong_hash["metadata"]["release_adapter"]["manifest_sha256"] = json!("0".repeat(64));
+        assert!(
+            validate_generic_release_identity(&wrong_hash, &adapter, &bundle)
+                .unwrap_err()
+                .contains("candidate-bound Snapshot manifest")
+        );
     }
 
     fn component_row(id: &str, ecosystem: &str, working_directory: &str) -> JsonValue {
@@ -2707,7 +2889,6 @@ mod tests {
         })
     }
 
-    #[cfg(unix)]
     fn executable_record(adapter: &GenericReleaseAdapter, bundle: &ReleaseBundle) -> JsonValue {
         json!({
             "contract": GENERIC_RELEASE_RECEIPT_CONTRACT,

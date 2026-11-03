@@ -1,9 +1,11 @@
 fn run_stash(repo: RepoRuntime, command: StashCommand) -> Result<(), String> {
     match command {
         StashCommand::Save(args) => {
-            let payload = run_locked_workspace_command(&repo, "ait-cli stash save", || {
-                stash_save(&repo, args.message.as_deref(), args.keep_workspace)
-            })?;
+            let payload = crate::binding_services::save_stash(
+                &repo,
+                args.message.as_deref(),
+                args.keep_workspace,
+            )?;
             emit_stash_record("ait-cli stash save", &payload, args.json)?;
         }
         StashCommand::List(args) => {
@@ -11,20 +13,7 @@ fn run_stash(repo: RepoRuntime, command: StashCommand) -> Result<(), String> {
             if args.json {
                 print_json(&payload)?;
             } else {
-                let rows = payload
-                    .as_array()
-                    .ok_or_else(|| "stash list payload must decode to a list.".to_string())?;
-                print_list(
-                    rows,
-                    &[
-                        "stash_id",
-                        "source_line_name",
-                        "snapshot_id",
-                        "file_count",
-                        "created_at",
-                        "message",
-                    ],
-                );
+                println!("{}", crate::binding_output::format_stash_list(&payload)?);
             }
         }
         StashCommand::Show(args) => {
@@ -32,46 +21,37 @@ fn run_stash(repo: RepoRuntime, command: StashCommand) -> Result<(), String> {
             emit_stash_record("ait-cli stash show", &payload, args.json)?;
         }
         StashCommand::Apply(args) => {
-            let payload = run_locked_workspace_command(&repo, "ait-cli stash apply", || {
-                stash_apply(&repo, &args.stash_id, args.force)
-                    .map_err(|err| stash_restore_error(err, args.force))
-            })?;
+            let payload = crate::binding_services::apply_stash(&repo, &args.stash_id, args.force)?;
             emit_stash_restore("ait-cli stash apply", &payload, args.json)?;
         }
         StashCommand::Pop(args) => {
-            let payload = run_locked_workspace_command(&repo, "ait-cli stash pop", || {
-                stash_pop(&repo, &args.stash_id, args.force)
-                    .map_err(|err| stash_restore_error(err, args.force))
-            })?;
+            let payload = crate::binding_services::pop_stash(&repo, &args.stash_id, args.force)?;
             emit_stash_restore("ait-cli stash pop", &payload, args.json)?;
         }
         StashCommand::Drop(args) => {
-            let payload = run_locked_workspace_command(&repo, "ait-cli stash drop", || {
-                stash_drop(&repo, &args.stash_id)
-            })?;
-            emit_result(
-                "ait-cli stash drop",
-                &payload,
-                args.json,
-                &["stash_id", "snapshot_id", "dropped", "snapshot_deleted"],
-            )?;
+            let payload = crate::binding_services::drop_stash(&repo, &args.stash_id)?;
+            if args.json {
+                print_json(&payload)?;
+            } else {
+                println!("{}", crate::binding_output::format_stash_drop(&payload)?);
+            }
         }
     }
     Ok(())
 }
 
-fn stash_restore_error(err: String, force: bool) -> String {
-    if !force && err.starts_with("Workspace has unsaved changes") {
-        return format!("{err}. Re-run with --force to replace those workspace changes.");
+fn emit_stash_record(title: &str, payload: &JsonValue, json_output: bool) -> Result<(), String> {
+    if json_output {
+        return print_json(payload);
     }
-    err
+    println!("{}", stash_record_text(title, payload)?);
+    Ok(())
 }
 
-fn emit_stash_record(title: &str, payload: &JsonValue, json_output: bool) -> Result<(), String> {
-    emit_result(
+pub(crate) fn stash_record_text(title: &str, payload: &JsonValue) -> Result<String, String> {
+    result_text(
         title,
         payload,
-        json_output,
         &[
             "stash_id",
             "source_line_name",
@@ -86,10 +66,17 @@ fn emit_stash_record(title: &str, payload: &JsonValue, json_output: bool) -> Res
 }
 
 fn emit_stash_restore(title: &str, payload: &JsonValue, json_output: bool) -> Result<(), String> {
-    emit_result(
+    if json_output {
+        return print_json(payload);
+    }
+    println!("{}", stash_restore_text(title, payload)?);
+    Ok(())
+}
+
+pub(crate) fn stash_restore_text(title: &str, payload: &JsonValue) -> Result<String, String> {
+    result_text(
         title,
         payload,
-        json_output,
         &[
             "stash_id",
             "source_line_name",

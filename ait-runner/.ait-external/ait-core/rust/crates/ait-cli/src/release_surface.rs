@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tar::{Builder as TarBuilder, Header};
 use tempfile::{Builder as TempDirBuilder, NamedTempFile, TempDir};
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions as FileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 const PUBLIC_PACKAGE_TARGETS_CONTRACT_PATH: &str =

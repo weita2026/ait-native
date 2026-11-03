@@ -11,7 +11,9 @@ fn review_http_adapter_records_through_repository_authority() {
         "action": "approve"
     }));
     config.repository_index = Some(crate::server_operational::RepositoryIndex::new(9));
-    let mut remote = HttpWorkflowCloseoutRemote::new(config).unwrap();
+    let mut remote = HttpWorkflowCloseoutRemote::new(config)
+        .unwrap()
+        .with_resolved_test_actor(0);
     remote
         .set_bound_change_context(Some("RCT-1"), Some("C-01"))
         .unwrap();

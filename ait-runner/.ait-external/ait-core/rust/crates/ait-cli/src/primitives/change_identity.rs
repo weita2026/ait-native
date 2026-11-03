@@ -206,6 +206,76 @@ pub fn resolve_task_finish_change_input(
     )
 }
 
+pub(super) fn inspect_task_change_reference(
+    rows: &[JsonValue],
+    task_id: &str,
+) -> Result<String, String> {
+    let mut references = Vec::new();
+    for row in rows {
+        if change_task_id_from_payload(row).as_deref() != Some(task_id)
+            || row["tombstoned"].as_bool() == Some(true)
+        {
+            continue;
+        }
+        let reference = change_reference_from_payload(row, None)?;
+        change_reference_for_context(Some(task_id), &reference)?;
+        references.push(reference);
+    }
+    match references.as_slice() {
+        [reference] => Ok(reference.clone()),
+        [] => Err(format!("Task {task_id} has no Change.")),
+        _ => Err(format!(
+            "Task {task_id} has multiple Changes; inspect an exact {task_id}/C-## reference."
+        )),
+    }
+}
+
+pub fn resolve_task_inspect_change_input(
+    repo: &RepoRuntime,
+    requested: &str,
+    local: bool,
+    remote_name: Option<&str>,
+) -> Result<String, String> {
+    let use_local = repo.change_uses_local_scope(local, remote_name);
+    if !is_task_id(requested) {
+        if !use_local
+            && requested
+                .split_once('/')
+                .is_some_and(|(owner, _)| owner.starts_with('L') && is_task_id(owner))
+        {
+            return Err("Use the exact remote Task/Change reference; local and remote revision ordinals do not establish correspondence.".into());
+        }
+        return Ok(requested.into());
+    }
+    if use_local {
+        task_show(repo, requested, true, None)?;
+        let rows = change_list(repo, true, None)?;
+        return inspect_task_change_reference(
+            rows.as_array().ok_or("Change inventory must be an array")?,
+            requested,
+        );
+    }
+    let task_id = if requested.starts_with('L') {
+        resolve_remote_task_reference(repo, requested, remote_name)?
+    } else {
+        requested.into()
+    };
+    if task_id.starts_with('L') {
+        return Err(format!(
+            "Task {requested} has no published remote Task identity."
+        ));
+    }
+    let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
+    let mut remote = http_task_remote(repo, &remote_row)?;
+    remote
+        .get_task(&task_id, Some(&repo_name))
+        .map_err(|error| error.to_string())?;
+    let rows = remote
+        .list_changes(&repo_name)
+        .map_err(|error| error.to_string())?;
+    inspect_task_change_reference(&rows, &task_id)
+}
+
 pub fn resolve_task_remote_change_input(
     repo: &RepoRuntime,
     requested: &str,
@@ -226,8 +296,32 @@ pub(crate) fn resolve_public_patchset_input(
     else {
         return Ok(requested);
     };
-    let change_ref = resolve_task_remote_change_input(repo, task_id, remote_name)?;
-    Ok(format!("{change_ref}/{patchset_ordinal}"))
+    let task = resolve_remote_task_reference(repo, task_id, remote_name)?;
+    Ok(format!("{task}/{patchset_ordinal}"))
+}
+
+pub(crate) fn resolve_remote_task_reference(
+    repo: &RepoRuntime,
+    task_id: &str,
+    remote_name: Option<&str>,
+) -> Result<String, String> {
+    let namespace = ait_core::workflow_primitives::workflow_origin_namespace_prefix(
+        "L",
+        Some(&repo.id_namespace_prefix()),
+    )?;
+    if !task_id.starts_with(&format!("{namespace}T-")) {
+        return Ok(task_id.to_string());
+    }
+    let task = task_local_read_with_task_store(&repo.task_store()?, task_id)?;
+    let selected = normalized_text(remote_name)
+        .or_else(|| repo.default_remote_name())
+        .ok_or("Task publication requires a configured remote")?;
+    if string_field(&task, "published_remote_name").as_deref() != Some(&selected) {
+        return Err(format!(
+            "Task {task_id} has no publication to the selected remote {selected}."
+        ));
+    }
+    required_string_field(&task, "published_task_id")
 }
 
 pub fn resolve_task_remote_revision_input(
@@ -236,49 +330,76 @@ pub fn resolve_task_remote_revision_input(
     explicit_patchset_id: Option<&str>,
     remote_name: Option<&str>,
 ) -> Result<(String, String), String> {
-    if let Some(patchset_id) = explicit_patchset_id {
-        let change_ref = if is_task_id(requested) {
-            resolve_task_remote_change_input(repo, requested, remote_name)?
-        } else {
-            requested.to_string()
-        };
-        let patchset = patchset_show(repo, patchset_id, remote_name)?;
-        let resolved_patchset_id = required_string_field(&patchset, "patchset_id")?;
-        let expected_change_id = canonical_change_id(&change_ref)?;
-        if !payload_belongs_to_change(&patchset, &expected_change_id, &change_ref) {
-            let task_id = string_field(&patchset, "task_id")
-                .or_else(|| is_task_id(requested).then(|| requested.to_string()))
-                .unwrap_or_else(|| "requested Task".to_string());
-            return Err(format!(
-                "Patchset {patchset_id} does not belong to {task_id}; no review was recorded."
-            ));
-        }
-        return Ok((change_ref, resolved_patchset_id));
+    let owner = if requested.contains("/P-") {
+        requested
+            .rsplit_once("/P-")
+            .ok_or("Patchset has no Task owner")?
+            .0
+            .to_string()
+    } else {
+        resolve_task_remote_change_input(repo, requested, remote_name)?
+    };
+    let task_id = if is_task_id(&owner) {
+        owner.as_str()
+    } else {
+        owner.rsplit_once('/').ok_or("Change has no Task owner")?.0
+    };
+    let (remote_row, repo_name) = remote_context(repo, remote_name, None)?;
+    let mut task_remote = http_task_remote(repo, &remote_row)?;
+    let task = task_remote
+        .get_task(task_id, Some(&repo_name))
+        .map_err(|err| err.to_string())?;
+    let current = required_string_field(&task, "current_patchset_id")?;
+    let patchset_id = explicit_patchset_id.unwrap_or(if requested.contains("/P-") {
+        requested
+    } else {
+        &current
+    });
+    let patchset = patchset_show(repo, patchset_id, remote_name)?;
+    let association =
+        ait_core::workflow_expected_identity::validate_patchset_owner_fields(&patchset, task_id)?;
+    if !is_task_id(&owner) && association.as_deref() != Some(owner.as_str()) {
+        return Err(
+            "Patchset does not belong to the exact requested Change; no review was recorded".into(),
+        );
     }
-    if requested.contains("/P-") {
-        let patchset = patchset_show(repo, requested, remote_name)?;
-        let resolved_patchset_id = required_string_field(&patchset, "patchset_id")?;
-        return Ok((
-            change_reference_from_payload(&patchset, None)?,
-            resolved_patchset_id,
-        ));
-    }
-    let change_ref = resolve_task_remote_change_input(repo, requested, remote_name)?;
-    let change = change_show(repo, &change_ref, false, remote_name, None)?;
-    let patchset_id = string_field(&change, "selected_patchset_id")
-        .or_else(|| string_field(&change, "current_patchset_id"))
-        .ok_or_else(|| {
-            let task_id = string_field(&change, "task_id").unwrap_or_else(|| requested.to_string());
-            format!(
-                "Task {task_id} has no selected remote Patchset. Run `ait workflow ready {task_id} --apply`."
-            )
-        })?;
-    Ok((change_ref, patchset_id))
+    let expected = ait_core::workflow_expected_identity::WorkflowExpectedIdentity {
+        repository_index: 0,
+        patchset_id: current,
+        base_snapshot_id: required_string_field(&patchset, "base_snapshot_id")?,
+        revision_snapshot_id: required_string_field(&patchset, "revision_snapshot_id")?,
+    };
+    expected.validate_patchset(0, &patchset)?;
+    Ok((
+        association.unwrap_or_else(|| task_id.to_string()),
+        required_string_field(&patchset, "patchset_id")?,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inspection_uses_all_retained_changes_without_finish_eligibility() {
+        for status in ["canceled", "archived", "completed", "landed", "draft"] {
+            let rows = vec![
+                json!({"task_id":"LT-0003","change_id":"C-01","change_ref":"LT-0003/C-01","status":status}),
+            ];
+            assert_eq!(
+                inspect_task_change_reference(&rows, "LT-0003").unwrap(),
+                "LT-0003/C-01"
+            );
+            assert!(inspect_task_change_reference(&rows, "LT-0001")
+                .unwrap_err()
+                .contains("has no Change"));
+            let mut multiple = rows;
+            multiple.push(json!({"task_id":"LT-0003","change_id":"C-02","change_ref":"LT-0003/C-02","status":"canceled"}));
+            assert!(inspect_task_change_reference(&multiple, "LT-0003")
+                .unwrap_err()
+                .contains("exact LT-0003/C-##"));
+        }
+    }
 
     #[test]
     fn task_selection_uses_complete_inventory_and_ignores_terminal_siblings() {

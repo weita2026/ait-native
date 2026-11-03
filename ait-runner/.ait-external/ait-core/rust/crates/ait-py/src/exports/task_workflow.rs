@@ -654,7 +654,7 @@ fn task_workflow_review_record_py(
 }
 
 #[pyfunction(name = "task_workflow_review_code_submit")]
-#[pyo3(signature = (repo_root, change_id, patchset_id, *, message, remote_name=None))]
+#[pyo3(signature = (repo_root, change_id, patchset_id, *, message, remote_name=None, reviewer=None))]
 fn task_workflow_review_code_submit_py(
     py: Python<'_>,
     repo_root: &str,
@@ -662,14 +662,16 @@ fn task_workflow_review_code_submit_py(
     patchset_id: &str,
     message: &str,
     remote_name: Option<&str>,
+    reviewer: Option<&str>,
 ) -> PyResult<Py<PyDict>> {
     let repo = discover_task_workflow_repo(repo_root)?;
     let payload = py.detach(|| {
-        task_workflow_primitives::review_code_submit(
+        task_workflow_primitives::review_code_submit_with_reviewer(
             &repo,
             change_id,
             patchset_id,
             message,
+            reviewer,
             remote_name,
         )
     });
@@ -2425,23 +2427,12 @@ fn project_workflow_landed_read_model_py(
     ctx: Bound<'_, PyAny>,
     state: Bound<'_, PyAny>,
 ) -> PyResult<Py<PyDict>> {
-    let state_value = parse_json_value(state.clone(), "state")?;
-    let facts = build_rust_workflow_landed_facts(&state_value).map_err(PyValueError::new_err)?;
-    let facts_state = facts.as_object().cloned().unwrap_or_default();
-    let command_hints = rust_workflow_land_command_hints(
-        &ctx,
-        string_or_empty(&facts_state, "change", "change_id").as_str(),
-        string_or_empty(&facts_state, "task", "task_id").as_str(),
-        facts_state.get("patchset"),
-        string_or_empty_root(&facts_state, "target_line").as_str(),
-        string_or_empty_root(&facts_state, "target_line").as_str(),
-        None,
-        0,
-        false,
-        true,
-    )?;
-    let payload = project_rust_workflow_landed_read_model(&facts, &command_hints)
-        .map_err(PyValueError::new_err)?;
+    let state_value = parse_json_value(state, "state")?;
+    let context = task_workflow_shell_support::PyWorkflowContext::new(&ctx);
+    let payload = ait_core::workflow_context_sdk::project_workflow_landed_read_model_for_context(
+        &context, &state_value,
+    )
+    .map_err(|error| context.map_error(error))?;
     render_json_dict(py, payload)
 }
 
@@ -2452,50 +2443,12 @@ fn project_workflow_land_full_read_model_py(
     state: Bound<'_, PyAny>,
     apply_owned_continuation: bool,
 ) -> PyResult<Py<PyDict>> {
-    let state_value = parse_json_value(state.clone(), "state")?;
-    let landed_facts =
-        build_rust_workflow_landed_facts(&state_value).map_err(PyValueError::new_err)?;
-    if landed_facts
-        .as_object()
-        .and_then(|value| value.get("landed"))
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(false)
-    {
-        return project_workflow_landed_read_model_py(py, ctx, state);
-    }
-    let facts = build_rust_workflow_land_full_facts(&state_value).map_err(PyValueError::new_err)?;
-    let facts_state = facts.as_object().cloned().unwrap_or_default();
-    let task_review_enabled = rust_task_review_enabled(&ctx)?;
-    let command_hints = rust_workflow_land_command_hints(
-        &ctx,
-        string_or_empty_root(&facts_state, "resolved_change_id").as_str(),
-        string_or_empty(&facts_state, "task", "task_id").as_str(),
-        facts_state.get("patchset"),
-        string_or_empty_root(&facts_state, "base_line_name").as_str(),
-        string_or_empty_root(&facts_state, "target_line").as_str(),
-        facts_state.get("worktree_retarget"),
-        int_or_zero_root(&facts_state, "review_blocking"),
-        bool_or_false_root(&facts_state, "requires_code_review_summary"),
-        task_review_enabled,
-    )?;
-    let task_review_config = rust_effective_task_review(&ctx)?;
-    let mut payload = project_rust_workflow_land_full_read_model(
-        &facts,
-        &command_hints,
-        &task_review_config,
-        apply_owned_continuation,
+    let state_value = parse_json_value(state, "state")?;
+    let context = task_workflow_shell_support::PyWorkflowContext::new(&ctx);
+    let payload = ait_core::workflow_context_sdk::project_workflow_land_full_read_model_for_context(
+        &context, &state_value, apply_owned_continuation,
     )
-    .map_err(PyValueError::new_err)?;
-    let next_action = payload
-        .as_object()
-        .and_then(|value| value.get("next_action"))
-        .cloned()
-        .unwrap_or(JsonValue::Null);
-    if let Some(wait_hint) = rust_workflow_closeout_wait_hint(&ctx, &state_value, &next_action)? {
-        if let JsonValue::Object(ref mut object) = payload {
-            object.insert("wait_hint".to_string(), wait_hint);
-        }
-    }
+    .map_err(|error| context.map_error(error))?;
     render_json_dict(py, payload)
 }
 
@@ -2508,35 +2461,12 @@ fn project_workflow_ready_read_model_py(
     patchset_is_authoritative: bool,
     apply_owned_continuation: bool,
 ) -> PyResult<Py<PyDict>> {
-    let state_value = parse_json_value(state.clone(), "state")?;
-    let facts = build_rust_workflow_ready_facts(&state_value).map_err(PyValueError::new_err)?;
-    let facts_state = facts.as_object().cloned().unwrap_or_default();
-    let command_hints = rust_workflow_ready_command_hints(
-        &ctx,
-        string_or_empty(&facts_state, "change", "change_id").as_str(),
-        string_or_empty(&facts_state, "task", "task_id").as_str(),
-        facts_state.get("patchset"),
-        string_or_empty_root(&facts_state, "base_line_name").as_str(),
-        facts_state.get("worktree_retarget"),
-    )?;
-    let mut payload = project_rust_workflow_ready_read_model(
-        &facts,
-        &command_hints,
-        ignore_workspace_authoring,
-        patchset_is_authoritative,
-        apply_owned_continuation,
+    let state_value = parse_json_value(state, "state")?;
+    let context = task_workflow_shell_support::PyWorkflowContext::new(&ctx);
+    let payload = ait_core::workflow_context_sdk::project_workflow_ready_read_model_for_context(
+        &context, &state_value, ignore_workspace_authoring, patchset_is_authoritative, apply_owned_continuation,
     )
-    .map_err(PyValueError::new_err)?;
-    let next_action = payload
-        .as_object()
-        .and_then(|value| value.get("next_action"))
-        .cloned()
-        .unwrap_or(JsonValue::Null);
-    if let Some(wait_hint) = rust_workflow_closeout_wait_hint(&ctx, &state_value, &next_action)? {
-        if let JsonValue::Object(ref mut object) = payload {
-            object.insert("wait_hint".to_string(), wait_hint);
-        }
-    }
+    .map_err(|error| context.map_error(error))?;
     render_json_dict(py, payload)
 }
 
@@ -2717,21 +2647,24 @@ fn workflow_ready_apply_direct_py(
 }
 
 #[pyfunction(name = "workflow_land_apply_direct")]
-#[pyo3(signature = (repo_root, change_id, review_message=None, remote_name=None))]
+#[pyo3(signature = (repo_root, change_id, review_message=None, remote_name=None, reviewer=None))]
 fn workflow_land_apply_direct_py(
     py: Python<'_>,
     repo_root: &str,
     change_id: &str,
     review_message: Option<&str>,
     remote_name: Option<&str>,
+    reviewer: Option<&str>,
 ) -> PyResult<Py<PyDict>> {
     let repo = discover_task_workflow_repo(repo_root)?;
     let payload = py.detach(|| {
-        task_workflow_primitives::workflow_land_apply(
+        task_workflow_primitives::workflow_finish_apply_guarded_with_reviewer(
             &repo,
             change_id,
             review_message,
+            reviewer,
             remote_name,
+            None,
             None::<fn(&JsonValue) -> Result<(), String>>,
         )
     });

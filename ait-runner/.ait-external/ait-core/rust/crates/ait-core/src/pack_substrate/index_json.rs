@@ -20,10 +20,63 @@ impl<S> ObjectPackIndexJson<S> {
         pack_entries_by_name(pack_index)
     }
 
+    /// Build the legacy lookup view only after the native container reader has
+    /// verified index SHA, structure and data ranges. This conversion retains
+    /// the JSON contract's text normalization and duplicate-name semantics;
+    /// it creates no proof/cache beyond the owning immutable archive reader.
+    pub(in crate::pack_substrate) fn entries_by_name_from_validated_index(
+        &self,
+        pack_index: &ZstdChunkedPackIndex,
+    ) -> Result<BTreeMap<String, PackIndexEntry>, String> {
+        #[cfg(test)]
+        crate::binary_db::read_profile::note("object_index_typed_map_builds", 0);
+        let required = |value: &str, field: &str| {
+            let value = value.trim();
+            if value.is_empty() {
+                Err(format!("missing required field: {field}"))
+            } else {
+                Ok(value.to_string())
+            }
+        };
+        let optional = |value: Option<&str>| {
+            value
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        let mut out = BTreeMap::new();
+        for member in &pack_index.members {
+            let entry_name = required(&member.entry_name, "entry_name")?;
+            let parsed = PackIndexEntry {
+                entry_name: entry_name.clone(),
+                blob_id: required(&member.content_id, "blob_id")?,
+                entry_type: required(&member.entry_type, "entry_type")?,
+                byte_length: member.stored_len,
+                uncompressed_byte_length: member.logical_len,
+                base_blob_id: optional(member.base_content_id.as_deref()),
+                chain_depth: member.chain_depth,
+                checksum: required(&member.checksum, "checksum")?,
+                delta_algorithm: optional(member.delta_algorithm.as_deref()),
+            };
+            if let Some(existing) = out.get(&entry_name) {
+                if pack_index_entries_equivalent(existing, &parsed) {
+                    continue;
+                }
+                return Err(format!(
+                    "Invalid pack index: duplicate entry_name {entry_name}"
+                ));
+            }
+            out.insert(entry_name, parsed);
+        }
+        Ok(out)
+    }
+
     pub(in crate::pack_substrate) fn zstd_chunked_index_json(
         &self,
         pack_index: &ZstdChunkedPackIndex,
     ) -> Result<JsonValue, String> {
+        #[cfg(test)]
+        crate::binary_db::read_profile::note("object_index_json_materializations", 0);
         validate_zstd_chunked_index(
             pack_index,
             ZSTD_CHUNKED_INDEX_KIND_OBJECT,

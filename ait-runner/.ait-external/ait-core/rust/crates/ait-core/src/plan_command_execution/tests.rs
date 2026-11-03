@@ -175,6 +175,7 @@ fn seed_binary_plan_command_fixture(store: &CommandTestPlanStore) {
         .append_plan_revision(
             &mut tx,
             PlanRevisionRecord {
+                actor_index_plus1: 0,
                 revision_meta: 0b0000_0001,
                 reserved0: 0,
                 payload_len: 0,
@@ -206,6 +207,7 @@ fn seed_binary_plan_command_fixture(store: &CommandTestPlanStore) {
         .append_plan(
             &mut tx,
             PlanRecord {
+                actor_index_plus1: 0,
                 plan_meta: 0b0000_0100,
                 reserved0: 0,
                 payload_len: 0,

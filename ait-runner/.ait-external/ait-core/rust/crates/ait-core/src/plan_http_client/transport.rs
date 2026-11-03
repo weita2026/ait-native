@@ -126,6 +126,10 @@ pub struct PlanHttpClientStats {
 #[derive(Debug)]
 pub struct PlanHttpClientManager {
     pub(crate) config: PlanHttpClientConfig,
+    /// Attribution resolved for one caller operation, never persisted or shared
+    /// between Repository authorities.
+    pub(crate) actor_context: Option<(RepositoryIndex, u32)>,
+    pub(crate) actor_registration: Option<super::actor_registration::RequestActorRegistration>,
     pub(crate) client: Option<Client>,
     pub(crate) request_count: usize,
     pub(crate) retry_count: usize,
@@ -138,6 +142,8 @@ impl PlanHttpClientManager {
         let client = build_client(&normalized_config)?;
         Ok(Self {
             config: normalized_config,
+            actor_context: None,
+            actor_registration: None,
             client: Some(client),
             request_count: 0,
             retry_count: 0,
@@ -160,25 +166,28 @@ impl PlanHttpClientManager {
 
     pub fn close(&mut self) -> PlanHttpClientStats {
         self.client = None;
+        self.actor_context = None;
+        self.actor_registration = None;
         self.closed = true;
         self.inspect()
     }
 
     pub(super) fn execute_json(
         &mut self,
-        spec: PlanHttpRequestSpec,
+        mut spec: PlanHttpRequestSpec,
     ) -> PlanHttpClientResult<Option<Value>> {
         if self.closed {
             return Err(PlanHttpClientError::Closed(
                 "Rust plan HTTP client manager is already closed.".to_string(),
             ));
         }
+        require_secure_transport(&spec.url)?;
+        self.attach_workflow_actor(&mut spec)?;
         let Some(client) = self.client.as_ref() else {
             return Err(PlanHttpClientError::Closed(
                 "Rust plan HTTP client manager is not available.".to_string(),
             ));
         };
-        require_secure_transport(&spec.url)?;
         let mut transport_attempt = 0usize;
         let mut busy_read_retry_count = 0usize;
         loop {
@@ -210,6 +219,46 @@ impl PlanHttpClientManager {
                 Err(err) => return Err(map_transport_error(&spec.method, &spec.url, err)),
             }
         }
+    }
+
+    /// Startup health intentionally uses HTTP503 while upgrading. Preserve its
+    /// progress body without entering the fixed generic busy-read retry loop.
+    pub fn get_upgrade_health(
+        &mut self,
+    ) -> PlanHttpClientResult<crate::workflow_admission::UpgradeHealth> {
+        let spec = super::build_get_server_health_request_spec(&self.config)?;
+        if self.closed {
+            return Err(PlanHttpClientError::Closed("HTTP client is closed".into()));
+        }
+        require_secure_transport(&spec.url)?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| PlanHttpClientError::Closed("HTTP client is unavailable".into()))?;
+        self.request_count += 1;
+        let response = perform_request(client, &spec)
+            .map_err(|error| map_transport_error(&spec.method, &spec.url, error))?;
+        let status = response.status().as_u16();
+        if !matches!(status, 200 | 503) {
+            return parse_response_payload(&spec.method, &spec.url, response).and_then(|_| {
+                Err(PlanHttpClientError::Remote(
+                    "Unexpected health HTTP status".into(),
+                ))
+            });
+        }
+        let body = response
+            .text()
+            .map_err(|error| map_transport_error(&spec.method, &spec.url, error))?;
+        let value = JsonCodec::parse_value_with_error_prefix(&body, "Invalid health JSON")
+            .map_err(|error| PlanHttpClientError::Remote(error.to_string()))?;
+        let health = crate::workflow_admission::UpgradeHealth::from_value(&value)
+            .map_err(PlanHttpClientError::Remote)?;
+        if health.ready != (status == 200) {
+            return Err(PlanHttpClientError::Remote(
+                "Health readiness disagrees with HTTP status".into(),
+            ));
+        }
+        Ok(health)
     }
 
     pub(super) fn execute_bytes(
@@ -303,6 +352,8 @@ impl PlanHttpClientManager {
                         scope.spawn(move || {
                             let mut worker = PlanHttpClientManager {
                                 config: worker_config,
+                                actor_context: None,
+                                actor_registration: None,
                                 client: Some(client),
                                 request_count: 0,
                                 retry_count: 0,

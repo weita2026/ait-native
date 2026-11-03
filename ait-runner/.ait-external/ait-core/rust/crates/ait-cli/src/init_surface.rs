@@ -155,7 +155,6 @@ fn init_repo_impl(request: &InitRequest, scaffold_workspace: bool) -> Result<Jso
         "plan_language": config_payload["plan_language"].clone(),
         "plan_style": config_payload["plan_style"].clone(),
         "default_line": default_line,
-        "workflow_mode": config_payload.get("workflow_mode").cloned().unwrap_or(JsonValue::Null),
         "task_worktree": config_payload.get("task_worktree").cloned().unwrap_or(JsonValue::Null),
         "policy_profile": repo.config.get("policy_profile").cloned().unwrap_or(JsonValue::Null),
         "default_author_mode": repo.config.get("default_author_mode").cloned().unwrap_or(JsonValue::Null),
@@ -164,34 +163,67 @@ fn init_repo_impl(request: &InitRequest, scaffold_workspace: bool) -> Result<Jso
     }))
 }
 
-fn create_workspace_ignore_if_absent(root: &Path) -> Result<(), String> {
+pub(crate) fn create_workspace_ignore_if_absent(root: &Path) -> Result<bool, String> {
     let path = root.join(".aitignore");
-    if regular_file_state(&path, "workspace ignore file")? {
-        return Ok(());
+    write_workspace_file_if_absent(&path, WORKSPACE_IGNORE_TEMPLATE.as_bytes(), 0o600)
+}
+
+/// Write a complete workspace artifact atomically, never replacing another
+/// writer's file. Initialization and import use the same no-clobber substrate.
+pub(crate) fn write_workspace_file_if_absent(
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+) -> Result<bool, String> {
+    if regular_file_state(path, "workspace setup file")? {
+        return Ok(false);
     }
-    let mut staged = NamedTempFile::new_in(root)
-        .map_err(|error| format!("Failed to stage .aitignore: {error}"))?;
+    let parent = path.parent().ok_or("Workspace setup file has no parent")?;
+    require_real_directory(parent, "Workspace setup parent")?;
+    let mut staged = NamedTempFile::new_in(parent)
+        .map_err(|error| format!("Failed to stage {}: {error}", path.display()))?;
+    #[cfg(unix)]
     staged
-        .write_all(WORKSPACE_IGNORE_TEMPLATE.as_bytes())
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(mode))
+        .map_err(|error| format!("Failed to set {} permissions: {error}", path.display()))?;
+    #[cfg(not(unix))]
+    let _ = mode;
+    staged
+        .write_all(bytes)
         .and_then(|_| staged.flush())
         .and_then(|_| staged.as_file().sync_all())
-        .map_err(|error| format!("Failed to stage .aitignore: {error}"))?;
-    match staged.persist_noclobber(&path) {
-        Ok(_) => sync_directory(root),
+        .map_err(|error| format!("Failed to stage {}: {error}", path.display()))?;
+    match staged.persist_noclobber(path) {
+        Ok(_) => {
+            sync_directory(parent)?;
+            Ok(true)
+        }
         Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
             // Another writer owns the path. Preserve regular files, including
             // empty ones; reject symlinks and non-files without following them.
-            if regular_file_state(&path, "workspace ignore file")? {
-                Ok(())
+            if regular_file_state(path, "workspace setup file")? {
+                Ok(false)
             } else {
-                Err("Workspace ignore file disappeared during initialization; inspect .aitignore before continuing".into())
+                Err(format!(
+                    "Workspace setup file disappeared during creation: {}",
+                    path.display()
+                ))
             }
         }
-        Err(error) => Err(format!("Failed to create .aitignore: {}", error.error)),
+        Err(error) => Err(format!(
+            "Failed to create {}: {}",
+            path.display(),
+            error.error
+        )),
     }
 }
 
 pub fn render_human_init(payload: &JsonValue) {
+    println!("{}", human_init_text(payload));
+}
+
+pub fn human_init_text(payload: &JsonValue) -> String {
     let action = payload
         .get("action")
         .and_then(JsonValue::as_str)
@@ -201,7 +233,7 @@ pub fn render_human_init(payload: &JsonValue) {
         "repaired" => "Repaired existing",
         _ => "Initialized empty",
     };
-    println!(
+    let mut text = format!(
         "{verb} AIT repository in {} (plan={}/{})",
         display_value(payload.get("authority_path")),
         display_value(
@@ -223,9 +255,10 @@ pub fn render_human_init(payload: &JsonValue) {
             .flatten()
             .filter_map(JsonValue::as_str)
         {
-            println!("- {repair}");
+            text.push_str(&format!("\n- {repair}"));
         }
     }
+    text
 }
 
 fn ensure_repo_dirs(ait_dir: &Path) -> Result<(), String> {
@@ -330,6 +363,7 @@ fn fresh_config(
     request: &ValidatedInitRequest,
 ) -> JsonMap<String, JsonValue> {
     let mut config = JsonMap::new();
+    config.insert("agent_teams".into(), json!(true));
     config.insert("plan_language".to_string(), json!(detect_language()));
     config.insert("plan_style".to_string(), json!(DEFAULT_STYLE));
     config.insert(
@@ -1174,7 +1208,15 @@ fn directory_tree_is_missing(base: &Path, relative: &str) -> Result<bool, String
     Ok(false)
 }
 
-fn create_real_directory_tree(base: &Path, relative: &str) -> Result<(), String> {
+pub(crate) fn create_real_directory_tree(base: &Path, relative: &str) -> Result<(), String> {
+    inspect_directory_tree(base, relative, true)
+}
+
+pub(crate) fn validate_real_directory_tree(base: &Path, relative: &str) -> Result<(), String> {
+    inspect_directory_tree(base, relative, false)
+}
+
+fn inspect_directory_tree(base: &Path, relative: &str, create: bool) -> Result<(), String> {
     require_real_directory(base, "Directory-tree root")?;
     let mut current = base.to_path_buf();
     for component in relative.split('/') {
@@ -1194,12 +1236,14 @@ fn create_real_directory_tree(base: &Path, relative: &str) -> Result<(), String>
             }
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir(&current).map_err(|create_error| {
-                    format!(
-                        "Failed to create repository directory {}: {create_error}",
-                        current.display()
-                    )
-                })?;
+                if create {
+                    fs::create_dir(&current).map_err(|create_error| {
+                        format!(
+                            "Failed to create repository directory {}: {create_error}",
+                            current.display()
+                        )
+                    })?;
+                }
             }
             Err(error) => {
                 return Err(format!(
@@ -1212,7 +1256,7 @@ fn create_real_directory_tree(base: &Path, relative: &str) -> Result<(), String>
     Ok(())
 }
 
-fn regular_file_state(path: &Path, label: &str) -> Result<bool, String> {
+pub(crate) fn regular_file_state(path: &Path, label: &str) -> Result<bool, String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
             "Refusing symbolic-link {label}: {}",

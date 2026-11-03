@@ -21,7 +21,9 @@ fn task_audit_http_adapter_fixture_roundtrips_request_and_response() {
     });
     let (config, server) = serve_task_workflow_json_once(expected_response.clone());
     let spec_config = config.clone();
-    let mut remote = HttpTaskRemote::new(config).expect("http task remote");
+    let mut remote = HttpTaskRemote::new(config)
+        .expect("http task remote")
+        .with_resolved_test_actor(0);
 
     let audit = remote
         .read_task_audit("repo", "T-1", "main")
@@ -63,7 +65,9 @@ fn task_start_http_adapter_fixture_roundtrips_task_and_change_requests() {
     });
     let (task_config, task_server) = serve_task_workflow_json_once(task_response.clone());
     let task_spec_config = task_config.clone();
-    let mut task_remote = HttpTaskRemote::new(task_config).expect("http task remote");
+    let mut task_remote = HttpTaskRemote::new(task_config)
+        .expect("http task remote")
+        .with_resolved_test_actor(0);
 
     assert_eq!(
         task_remote
@@ -88,6 +92,7 @@ fn task_start_http_adapter_fixture_roundtrips_task_and_change_requests() {
     assert_eq!(
         recorded_task.body,
         Some(json!({
+            "actor_key_index": 0,
             "title": "Add JSON fixtures",
             "intent": "Lock adapter JSON",
             "task_id": "T-2",
@@ -139,7 +144,9 @@ fn task_start_http_adapter_fixture_roundtrips_task_and_change_requests() {
     });
     let (change_config, change_server) = serve_task_workflow_json_once(change_response.clone());
     let change_spec_config = change_config.clone();
-    let mut change_remote = HttpTaskRemote::new(change_config).expect("http task remote");
+    let mut change_remote = HttpTaskRemote::new(change_config)
+        .expect("http task remote")
+        .with_resolved_test_actor(0);
 
     assert_eq!(
         change_remote
@@ -170,6 +177,7 @@ fn task_start_http_adapter_fixture_roundtrips_task_and_change_requests() {
     assert_eq!(
         recorded_change.body,
         Some(json!({
+            "actor_key_index": 0,
             "task_id": "T-2",
             "title": "Add JSON fixtures",
             "base_line": "main",

@@ -14,6 +14,7 @@ use crate::plan_workflow_json::PlanWorkflowJson;
 mod application_orchestration;
 mod request_models;
 mod response_projection;
+pub mod sdk;
 mod text_rendering;
 mod validation_helpers;
 
