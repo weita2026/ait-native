@@ -1114,6 +1114,29 @@ fn path_with_parent_traversal_is_rejected() {
         .append_payload(bad_payload.clone(), &record, &mut write)
         .is_err());
 
+    let native_absolute = tempdir().unwrap().path().join("absolute-payload.bin");
+    assert!(native_absolute.is_absolute());
+    assert!(db
+        .append_payload(
+            BinaryPayloadFileId::new(native_absolute, 1),
+            &record,
+            &mut write
+        )
+        .is_err());
+    #[cfg(windows)]
+    for path in [
+        r"\root-payload.bin",
+        r"C:drive-payload.bin",
+        r"\\server\share\payload.bin",
+        r"\\?\C:\payload.bin",
+    ] {
+        assert!(
+            db.append_payload(BinaryPayloadFileId::new(path, 1), &record, &mut write)
+                .is_err(),
+            "{path}"
+        );
+    }
+
     let bad_index = BinaryIndexId::new("../bad_index.idx", 1);
     assert!(db
         .append_index_candidate(bad_index, b"x", 1, &mut write)
@@ -1577,8 +1600,16 @@ fn write_txn_uses_command_scoped_external_command_locks() {
         .iter()
         .all(|path| !path.starts_with(temp.path().join("records"))));
 
-    let first_lock = fs::read_to_string(&lock_paths[0]).expect("lock metadata");
-    assert!(first_lock.contains("PlanSyncLocal"));
+    #[cfg(not(windows))]
+    {
+        let first_lock = fs::read_to_string(&lock_paths[0]).expect("lock metadata");
+        assert!(first_lock.contains("PlanSyncLocal"));
+    }
+    #[cfg(windows)]
+    assert_eq!(
+        fs::read(&lock_paths[0]).unwrap_err().raw_os_error(),
+        Some(33)
+    );
 
     tx.abort().expect("abort write txn");
     for path in lock_paths {

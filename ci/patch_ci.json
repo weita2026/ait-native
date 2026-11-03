@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "suites": [
+    {
+      "schema_version": 1,
+      "suite_id": "release_control",
+      "display_name": "Release Control",
+      "plane": "patchset",
+      "default_blocking": true,
+      "mode": "gate",
+      "purpose": "Run every release control plane test before a Snapshot can register or finish.",
+      "runner": {
+        "kind": "command_bundle",
+        "commands": [
+          "./ci/run.sh"
+        ]
+      },
+      "artifacts": {
+        "log_path": ".ait/generated/ci/release_control.log"
+      }
+    }
+  ]
+}

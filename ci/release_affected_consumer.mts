@@ -1,0 +1,21 @@
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import { NativeRuntime, type NativeJsonValue } from "@wa120/ait-native";
+
+const ait = new NativeRuntime();
+assert.equal(ait.version(), "1.2.1");
+const info = ait.bindingInfo();
+assert.equal(info.runtime_authority, "rust");
+assert.equal(info.node_binding, "napi");
+assert.equal(info.process_transport_allowed, false);
+assert.deepEqual(info.supported_surfaces, ["ait-core"]);
+assert.equal(ait.buildQueryString({}), null);
+assert.equal(ait.normalizeRemoteText(), null);
+assert.equal(ait.workflowApplyPhaseSummary(null), null);
+const wide: NativeJsonValue = { n: (1n << 63n) + 17n };
+assert.deepEqual(ait.decodeJson(ait.encodeJson(wide)), wide);
+const addon = createRequire(import.meta.url)(process.argv[2]);
+assert.equal(JSON.parse(addon.bindingInfoJson()).version, "1.2.1");
+assert.equal(addon.runCli, undefined);
+assert.equal(addon.entry_with_args, undefined);
+console.log("Strict TS + installed JS + direct N-API: pass");

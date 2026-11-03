@@ -1,0 +1,54 @@
+[[external]]
+name = "ait-core"
+repo_name = "ait-core"
+repository_index = 0
+remote = "origin"
+line = "main"
+snapshot = "SNP-49762426B59A"
+materialize_to = ".ait-external/ait-core"
+license = "Apache-2.0"
+version = "1.2.1"
+
+[[external]]
+name = "ait-server"
+repo_name = "ait-server"
+repository_index = 1
+remote = "origin"
+line = "main"
+snapshot = "SNP-720371F44A21"
+materialize_to = ".ait-external/ait-server"
+license = "AGPL-3.0-only"
+version = "1.2.1"
+
+[[external]]
+name = "ait-python"
+repo_name = "ait-python"
+repository_index = 2
+remote = "origin"
+line = "main"
+snapshot = "SNP-33459A90024F"
+materialize_to = ".ait-external/ait-python"
+license = "Apache-2.0"
+version = "1.2.1"
+
+[[external]]
+name = "ait-node"
+repo_name = "ait-node"
+repository_index = 3
+remote = "origin"
+line = "main"
+snapshot = "SNP-271BA1BD3422"
+materialize_to = ".ait-external/ait-node"
+license = "Apache-2.0"
+version = "1.2.1"
+
+[[external]]
+name = "ait-runner"
+repo_name = "ait-runner"
+repository_index = 4
+remote = "origin"
+line = "main"
+snapshot = "SNP-07E0076369EE"
+materialize_to = ".ait-external/ait-runner"
+license = "Apache-2.0"
+version = "1.2.1"

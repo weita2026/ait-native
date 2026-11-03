@@ -388,6 +388,25 @@ pub fn parsed(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("Successful CLI output was not valid JSON")
 }
 
+pub fn failure_output(output: &Output) -> String {
+    #[cfg(unix)]
+    let signal = {
+        use std::os::unix::process::ExitStatusExt;
+        output.status.signal()
+    };
+    #[cfg(not(unix))]
+    let signal: Option<i32> = None;
+    format!(
+        "raw status: {:?}\nexit code: {:?}\nsignal: {signal:?}\nstdout ({} bytes):\n{}\nstderr ({} bytes):\n{}",
+        output.status,
+        output.status.code(),
+        output.stdout.len(),
+        String::from_utf8_lossy(&output.stdout),
+        output.stderr.len(),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
 pub fn cli_json(root: &Path, args: &[&str]) -> Value {
     parsed_cli(root, args, None)
 }

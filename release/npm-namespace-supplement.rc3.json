@@ -1,0 +1,181 @@
+{
+  "contract": "ait.release.npm-namespace-supplement/v1",
+  "release": {
+    "id": "REL-FAM-600EFDC327FE7860",
+    "version": "1.0.0-rc.3",
+    "tag": "v1.0.0-rc.3",
+    "tag_object": "810265c705ffececba3d74924f60ed2d0453ef7d",
+    "source_commit": "ba368cf4d0750035345f14a8a91c22fb9e450260",
+    "github_release_id": 369674917,
+    "source_dossier_run_id": 31664713921,
+    "source_dossier_artifact_id": 9167933771,
+    "source_dossier_artifact_digest": "sha256:08afc391688c902f3c2259392286b51612e6b6eb0aa51c388e8e513329705823",
+    "protected_authorization_run_id": 31666479359,
+    "protected_authorization_artifact_id": 9168120753,
+    "protected_authorization_artifact_digest": "sha256:54079d53bc3e115f314d99591228cc80dbab4c56c5ae361530f9c490c0764be9",
+    "protected_authorization_evidence_sha256": "cc18cf39db59147d5ee94359f0c00813be6841bf317686451eafd1152f870b32",
+    "failed_endpoint_run_id": 31668411148,
+    "failed_endpoint_workflow_commit": "30672445b7321226f81db280f3e2531ad6fc2a5d"
+  },
+  "node_source": {
+    "repository": "ait-node",
+    "snapshot": "SNP-22993C1FEF52",
+    "snapshot_manifest_hash": "22993c1fef528a53c1e3815956e3fc082197ca4700f64ac2051da32598c7c21c",
+    "snapshot_created_at_s": 1786598582,
+    "binding_repository": "ait-core",
+    "binding_snapshot": "SNP-158C9C5BB3D7",
+    "files": {
+      "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "NOTICE": "ba14cd6cfd2e17c4a9051c8a699bef0bac0060999de2d3b4a36a457dc41e780d",
+      "bin/ait.mjs": "e604222ca94fa1bda8aa63632c8edccf2a418d3a34df9b2f64085097d8645b21",
+      "lib/npm-payload-contract.json": "4ef243e83306705c54002cd766a93b9968e777abaebfe8043cff9a7ab1089c2c",
+      "package.json": "b1d86bdbaf3fdb637729d8904b7120c23b89d234d502eb7ea5334a7b3b02f67d",
+      "release/npm-readme.txt": "2b5ed5c9e31f9a3806f2851b193f2b01a0e04be4e8679308c776e8873a8fa262",
+      "release/release-adapter.mjs": "12aed3f86a22d31ffce57e4a96a024ea7fbcc076d79a8082cb3364208e9551d6",
+      "scripts/fixture-payloads.mjs": "eb24fe819cb1bb7a0207d27a0382747c0e59a8c932720c7e37dd0e4ba2578b06",
+      "scripts/installed-smoke.mjs": "a5b79b0b756335a11c21e445fcb4f79c57f81f7bcc23fa908effaaf50df5aa20",
+      "scripts/native-build.mjs": "455092e2cb2d8ecf35ac366b0b3adb7615f85b5cabdf12c6c7bd2581b0c61e18",
+      "scripts/npm-command.mjs": "6fbe84595bfb55a05cadc6ea93e6250c083c67c52c1564e8add2c9066f0a49cc",
+      "src/agent.js": "351201bfe74af02ae9f8fb820d156b9fc2a9fced29451b29159611e825421dec",
+      "src/contract.js": "d75e5eb7aa2f43a82104356036d1d04c3423ee341c20a10d98815eac611d76e6",
+      "src/errors.js": "27c9a81eaa055cd0bbffe8a3fde491b47ee8d3603b6c1b5b63a0c256c5b5d59a",
+      "src/index.d.ts": "9a97b4893e0b4cec7e055622903d1e004f7e942131e86b05eb8c1418f59780c9",
+      "src/index.js": "6ebcb01fb0ed9cf14ef3a2dcb190a92a7a3c40edcdc7dd3ee74d5556a392375b",
+      "src/runtime.js": "8f178f6b836293205dd26bb79f44c580c41f8756f8c52540b96d8db5d8daf218"
+    }
+  },
+  "publisher": {
+    "repository": "weita2026/ait-native",
+    "workflow": "npm-namespace-supplement.yml",
+    "environment": "pypi",
+    "npm_username": "wa120",
+    "credential_secret": "AIT_NPM_TOKEN"
+  },
+  "build_toolchain": {
+    "node": "22.17.1",
+    "npm": "10.9.2"
+  },
+  "registry": {
+    "url": "https://registry.npmjs.org",
+    "dist_tag": "rc",
+    "top_level_package": "@wa120/ait-native",
+    "packages": [
+      "@wa120/ait-native",
+      "@wa120/ait-native-darwin-arm64",
+      "@wa120/ait-native-darwin-x64",
+      "@wa120/ait-native-linux-arm64",
+      "@wa120/ait-native-linux-x64",
+      "@wa120/ait-native-win32-arm64",
+      "@wa120/ait-native-win32-x64"
+    ]
+  },
+  "original_envelope": {
+    "package": "ait-native",
+    "filename": "ait-native-1.0.0-rc.3.tgz",
+    "github_release_asset_id": 512511134,
+    "size_bytes": 64813,
+    "sha256": "8862dc3621320fda30e6923c85eee872751bfc92d95f319382b5b690540392f8"
+  },
+  "addons": [
+    {
+      "target": "aarch64-apple-darwin",
+      "os": "darwin",
+      "cpu": "arm64",
+      "source_package": "ait-native-ait-darwin-arm64",
+      "source_filename": "ait-native-ait-darwin-arm64-1.0.0-rc.3.tgz",
+      "source_github_release_asset_id": 512511135,
+      "source_size_bytes": 12805286,
+      "source_sha256": "262b2860df61c64dd8c358d0e36c5ae136ae0f98ee1bbc04511ba0608313abd2",
+      "native_size_bytes": 30020304,
+      "native_sha256": "9eb30748f9ab4502dd5f5f496a4872fbc59f8bd25e5440f554c644dda500c36a",
+      "package": "@wa120/ait-native-darwin-arm64",
+      "filename": "wa120-ait-native-darwin-arm64-1.0.0-rc.3.tgz"
+    },
+    {
+      "target": "x86_64-apple-darwin",
+      "os": "darwin",
+      "cpu": "x64",
+      "source_package": "ait-native-ait-darwin-x64",
+      "source_filename": "ait-native-ait-darwin-x64-1.0.0-rc.3.tgz",
+      "source_github_release_asset_id": 512511136,
+      "source_size_bytes": 13672582,
+      "source_sha256": "42cb08e1651e8d96cd4dfc56cabf63ce0c50629b9c122ce065351cf67747e870",
+      "native_size_bytes": 34678664,
+      "native_sha256": "2afb7a96120e6e9fe65c510752bb85730a1f0a669bf19791afa1193c6533ccd9",
+      "package": "@wa120/ait-native-darwin-x64",
+      "filename": "wa120-ait-native-darwin-x64-1.0.0-rc.3.tgz"
+    },
+    {
+      "target": "aarch64-unknown-linux-gnu",
+      "os": "linux",
+      "cpu": "arm64",
+      "source_package": "ait-native-ait-linux-arm64",
+      "source_filename": "ait-native-ait-linux-arm64-1.0.0-rc.3.tgz",
+      "source_github_release_asset_id": 512511141,
+      "source_size_bytes": 13666865,
+      "source_sha256": "e59c1d29819454d20943dad038e7e3273d114c29033ff22d2430ae427778b221",
+      "native_size_bytes": 33245720,
+      "native_sha256": "f003bafd782b298ce29004ed590ce321c1d40d13182e156d68aadf7edc3cf7a1",
+      "package": "@wa120/ait-native-linux-arm64",
+      "filename": "wa120-ait-native-linux-arm64-1.0.0-rc.3.tgz"
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "os": "linux",
+      "cpu": "x64",
+      "source_package": "ait-native-ait-linux-x64",
+      "source_filename": "ait-native-ait-linux-x64-1.0.0-rc.3.tgz",
+      "source_github_release_asset_id": 512511145,
+      "source_size_bytes": 14366081,
+      "source_sha256": "b594c192d921aa2e9c0fd6868d477b76fb431bac6ef0b89c8c0f011ac5cc1843",
+      "native_size_bytes": 38123024,
+      "native_sha256": "d92b365c0e827dc6bbf02d92b44edd618f8e3c1edfcda40be941ce7d31335733",
+      "package": "@wa120/ait-native-linux-x64",
+      "filename": "wa120-ait-native-linux-x64-1.0.0-rc.3.tgz"
+    },
+    {
+      "target": "aarch64-pc-windows-msvc",
+      "os": "win32",
+      "cpu": "arm64",
+      "source_package": "ait-native-ait-win32-arm64",
+      "source_filename": "ait-native-ait-win32-arm64-1.0.0-rc.3.tgz",
+      "source_github_release_asset_id": 512511151,
+      "source_size_bytes": 12815503,
+      "source_sha256": "510ad5a977948c9a71c5434f721370fd2265b7665d3198bac597e563d2d4a8be",
+      "native_size_bytes": 31294464,
+      "native_sha256": "8c43ade941d26e20039081c55039ac7af4d8cadb0f2613dc749c885e53d4f75e",
+      "package": "@wa120/ait-native-win32-arm64",
+      "filename": "wa120-ait-native-win32-arm64-1.0.0-rc.3.tgz"
+    },
+    {
+      "target": "x86_64-pc-windows-msvc",
+      "os": "win32",
+      "cpu": "x64",
+      "source_package": "ait-native-ait-win32-x64",
+      "source_filename": "ait-native-ait-win32-x64-1.0.0-rc.3.tgz",
+      "source_github_release_asset_id": 512511152,
+      "source_size_bytes": 13636502,
+      "source_sha256": "7e09475a008b9a36993c9efe89ee99fd493da0457d06ca349143449e95b3298b",
+      "native_size_bytes": 38702592,
+      "native_sha256": "623e701daa9771694a2b55a4dbbf0c48c5e8b3428e13ef7b6b5c0eae6c3fcf44",
+      "package": "@wa120/ait-native-win32-x64",
+      "filename": "wa120-ait-native-win32-x64-1.0.0-rc.3.tgz"
+    }
+  ],
+  "legal_material": {
+    "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "license_size_bytes": 11357,
+    "notice_sha256": "ba14cd6cfd2e17c4a9051c8a699bef0bac0060999de2d3b4a36a457dc41e780d",
+    "notice_size_bytes": 617320
+  },
+  "mutation": {
+    "npm_tarball_rebuild": true,
+    "javascript_envelope_rebuild": true,
+    "package_metadata_rebuild": true,
+    "native_addon_rebuild": false,
+    "release_family_rebuild": false,
+    "tag_write": false,
+    "github_release_write": false,
+    "existing_unscoped_package_write": false
+  }
+}

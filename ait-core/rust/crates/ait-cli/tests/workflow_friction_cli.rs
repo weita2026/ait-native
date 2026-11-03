@@ -552,7 +552,12 @@ fn post_finish_hook_fail_policy_keeps_the_finish_but_changes_the_exit_code() {
             "--local",
         ],
     );
-    assert_eq!(finished.status.code(), Some(3), "{}", text(&finished));
+    assert_eq!(
+        finished.status.code(),
+        Some(3),
+        "{}",
+        workflow_process::failure_output(&finished)
+    );
     let stdout = String::from_utf8_lossy(&finished.stdout);
     assert!(
         stdout.contains("hooks: failed (1 configured, 1 failed)"),
@@ -1290,7 +1295,11 @@ fn compact_payloads_carry_read_only_evidence_commands() {
         &edit_root,
         &["task", "finish", &task_id, "--local", "--json"],
     );
-    assert!(finished.status.success(), "{}", text(&finished));
+    assert!(
+        finished.status.success(),
+        "{}",
+        workflow_process::failure_output(&finished)
+    );
     let finished = finished_payload(&finished);
     assert_eq!(
         finished["evidence"]["command"].as_str(),

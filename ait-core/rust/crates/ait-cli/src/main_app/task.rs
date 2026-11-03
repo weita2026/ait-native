@@ -93,7 +93,20 @@ fn run_task(repo: RepoRuntime, command: TaskCommand) -> Result<ExitCode, String>
                 },
             )?;
             emit_task_finish_result(&payload, &args.task_or_change_id, args.json, args.full)?;
-            Ok(ExitCode::from(task_finish_exit_code(&payload)))
+            let exit_code = task_finish_exit_code(&payload);
+            #[cfg(debug_assertions)]
+            if exit_code != 0 && !(args.json && args.full) {
+                // Keep the same operation's phase evidence when compact/text
+                // stdout intentionally omits it. Never replay a successful apply.
+                if let Ok(detail) = crate::json_support::encode_value_pretty(
+                    &payload,
+                    "Failed to encode Task finish diagnostic",
+                ) {
+                    use std::io::Write as _;
+                    let _ = writeln!(std::io::stderr().lock(), "Task finish failure reply:\n{detail}");
+                }
+            }
+            Ok(ExitCode::from(exit_code))
         }
         TaskCommand::Abandon(args) => {
             let result = crate::binding_services::abandon_task(

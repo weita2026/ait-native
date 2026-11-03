@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ait-python"
-version = "1.2.0"
+version = "1.2.1"
 description = "In-process PyO3 bindings for the Rust-owned AIT runtime"
 readme = { text = "Direct Python bindings for the Rust-owned ait-core runtime.", content-type = "text/plain" }
 requires-python = ">=3.11"
@@ -23,7 +23,7 @@ test = [
 [tool.maturin]
 bindings = "pyo3"
 features = ["pyo3/abi3-py311"]
-manifest-path = "../ait-core/rust/crates/ait-py/Cargo.toml"
+manifest-path = ".ait-external/ait-core/rust/crates/ait-py/Cargo.toml"
 module-name = "ait_py"
 python-source = "src"
 python-packages = ["ait_py", "ait_python"]

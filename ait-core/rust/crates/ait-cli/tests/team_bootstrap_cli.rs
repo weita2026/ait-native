@@ -242,6 +242,22 @@ fn new_init_four_seats_and_repeated_enable_preserve_newton() {
         assert!(guidance.contains("scope=`local`"));
         assert!(guidance.contains(&format!("author-mode=`{effective_author_mode}`")));
         assert_eq!(guidance.contains("Fresh team candidates"), teams_enabled);
+        for rule in [
+            "With teams disabled, the current executor rebases",
+            "With teams enabled, Developer does this work and Reviewer",
+            "need no PM relay or approval.",
+        ] {
+            assert!(
+                guidance.contains(rule),
+                "missing shared rebase rule: {rule}"
+            );
+        }
+        assert_eq!(
+            guidance
+                .matches("Rebase as needed when main or the target Line advances")
+                .count(),
+            1
+        );
         assert!(!guidance.contains("Newton"));
         assert!(!guidance.contains("<scope-args>"));
         assert!(guidance.ends_with(unrelated_guidance));

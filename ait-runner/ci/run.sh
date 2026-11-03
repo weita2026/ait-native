@@ -30,7 +30,7 @@ run_clippy() {
 }
 
 run_tests() {
-  cargo test --locked --workspace --all-targets
+  cargo test --locked --workspace --all-targets --no-fail-fast
 }
 
 case "${1:-patchset}" in
@@ -44,9 +44,11 @@ case "${1:-patchset}" in
     run_tests
     ;;
   patchset|repo|all)
-    run_fmt
-    run_clippy
-    run_tests
+    ci_status=0
+    run_fmt || ci_status=$?
+    run_clippy || ci_status=$?
+    run_tests || ci_status=$?
+    exit "$ci_status"
     ;;
   *)
     printf 'usage: %s {fmt|clippy|test|patchset|repo|all}\n' "$0" >&2

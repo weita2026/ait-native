@@ -24,10 +24,6 @@ permissions:
   actions: read
   contents: read
 
-defaults:
-  run:
-    working-directory: source/ait-core
-
 concurrency:
   group: ait-release-component-receipts-${{ github.sha }}-${{ inputs.source_commit }}-${{ inputs.coordinator_snapshot }}
   cancel-in-progress: false

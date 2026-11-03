@@ -1,0 +1,425 @@
+# AIT
+
+[English](README.md) · [简体中文](README_CN.md) · **[繁體中文](README_ZH.md)**
+
+**目前穩定版：1.2.0。**
+
+**開發目標：1.2.1。** 原始碼、相依元件相容性與最終產物仍在驗證中。
+1.2.1 套件與通路可用性須待實際發布；下方安裝範例選用已發布的 1.2.0。
+
+**將多個並行的 coding agent 對話，變成經過驗證、可追溯的 Task。**
+
+AIT 是以本地工作為主的 CLI，適合將程式修改交給 agent、並對結果負責的個人開發者與維護者。
+它將每個需求連結到獨立 worktree、通過檢查的確切版本，以及發生回歸時需要的歷史紀錄。
+使用你自己的 coding agent，由你掌握任務意圖與驗收。
+
+[![最新穩定版本](https://img.shields.io/github/v/release/weita2026/ait-native?label=stable)](https://github.com/weita2026/ait-native/releases)
+[![文件](https://img.shields.io/badge/docs-ait--native.dev-0ea5e9)](https://ait-native.dev/)
+[![授權](https://img.shields.io/badge/license-Apache--2.0%20%2B%20AGPL--3.0--only-22c55e)](#license-map)
+
+**[試跑第一個 Task](https://ait-native.dev/zh-tw/local-quickstart/#first-task)** ·
+[觀看演示](https://ait-native.dev/zh-tw/demo/#in-action) ·
+[1.2.1 手冊準備](https://ait-native.dev/zh-tw/technical/1.2.1/) ·
+[取得協助](https://github.com/weita2026/ait-native/discussions)
+
+[简体中文入门](https://ait-native.dev/zh-cn/local-quickstart/#first-task) ·
+[繁體中文入門](https://ait-native.dev/zh-tw/local-quickstart/#first-task)
+
+## 1.2.1 開發目標
+
+開發版本整合經審查的安全與平台修正，以及共用的自主 rebase 指引。
+完整原始碼准入、相符套件產物、跨平台與 Web 驗證、發布後回讀仍須完成。
+以下已發布的 1.2.0 工作流邊界繼續適用：
+
+- **[新儲存庫預設啟用 Agent Teams。](#agent-teams-如何運作)** 全新 `ait init` 預設啟用團隊；既有儲存庫的設定與
+  session 綁定保持不變。團隊設定、sprint 綁定與 Local/Remote 範圍各自獨立；
+  可用對話仍需受支援的 agent host 準備。
+- **固定遠端審查內容，支援故障後續行。** 後續 Local finish 不會改變已封存的遠端內容。
+  Server 在正式接受前重啟，重新準備時須取得新的 CI 與必要審查；
+  已接受的 finish 重試則沿用原 acceptance。
+- **Python 與 JavaScript CLI 直接呼叫 Rust。** 兩種 `ait` 前端透過具型別的
+  PyO3 或 Node-API 操作，在同一程序執行，不以子程序啟動 Rust CLI。
+- **聊天整合退役，原始碼保留。** 1.2.0 不再提供獨立的 `ait-agent` 與
+  `ait-agent-worker`；Agent Teams 與核心 Python/Node 綁定繼續支援，
+  原始碼、授權與歷史發行保留。
+
+## Agent Teams 如何運作
+
+你定義意圖與驗收標準。Product Manager 釐清產品方向與可衡量的驗收條件；
+Project Manager 組織工作，指派 Developer 與獨立的 Reviewer。
+Developer 在各自的 Task worktree 中實作變更並執行相關檢查。
+Reviewer 檢查實作與驗證證據；需要修正時，將發現的問題退回負責的 Developer，
+並負責必要的審查與 finish 步驟。僅準備 session 不代表已指派工作或開始實作。
+
+新的團隊候選版本以 `ai_only_experimental` 作為有效預設模式：
+由獨立 agent 審查程式碼，無須額外的人工程式碼審查核准步驟。
+明確選擇且有效的 author mode 優先。啟用 Teams 不會改寫已儲存的單人工作 author-mode 預設值；
+已封存的候選版本保留原有模式。實際 CI、Task approval 與強制 Policy 仍然適用。
+
+例如，兩位 Developer 可以並行處理不同 Task，各自使用隔離的 worktree；
+啟用 sprint 綁定時，每個 Task 都綁定自己的需求與驗收標準。
+通過獨立審查與適用檢查後，AIT 會對照共用目標重新檢查每個 Task，再依序套用。
+相容的變更可在完成必要驗證後協調整合；實際衝突會阻止完成，
+退回負責的 Developer 修正並重新審查。成功的 Task finish 會報告完成、
+worktree 清理，以及有綁定時的 sprint 項目關閉。後續 Local finish 不會改變已封存的遠端內容。
+
+全新 `ait init` 啟用 Teams 並產生儲存庫工作流程說明。
+重新初始化既有儲存庫會保留設定與 session 綁定。可用對話仍需受支援的 agent host。
+Teams、sprint 綁定與 Local/Remote 範圍是各自獨立的選擇；本機初始化不需要執行中的 Server。
+確切命令與 session 準備前提請遵循產生的說明及已安裝版本的指南。
+
+規劃中的 [1.2.1 Agent Teams 指南](https://ait-native.dev/zh-tw/technical/1.2.1/agent-teams/)
+說明開發版本的契約。Teams 關閉時，執行者自行處理範圍內必要的 rebase；
+Teams 開啟時，由 Developer rebase 並解決範圍內衝突，Reviewer 在 finish 前驗證整合。
+一般目標前進無須透過 PM 中轉；範圍決策與未解決的阻礙仍依既有規則升級處理。
+
+## 走完一個 AIT 任務
+
+[![AIT Task 實際錄製：初始化、開始隔離工作、測試、完成並追溯結果](https://ait-native.dev/public/tour/ait-task-tour.gif)](https://ait-native.dev/zh-tw/demo/#in-action)
+
+這是 2026-09-07 實際執行 AIT 命令的錄製，剪輯成 33 秒的重播，展示一個 Task 如何完成下方可下載的同一個範例。
+路徑已簡化；播放時間不是效能測量。
+[觀看附字幕與完整文字紀錄的版本](https://ait-native.dev/zh-tw/demo/#in-action)。
+
+若要了解多個 Task，請查看另外提供的
+[並行工作與回歸情境示意](https://ait-native.dev/zh-tw/demo/#demo-scene)，
+或[以繁體中文標示的工作流說明圖](https://ait-native.dev/public/tour/ait-workflow-zh-tw.png)。
+
+## 試跑第一個 Task
+
+請從全新的範例資料夾開始。你需要自己的 coding agent，以及執行此小範例所需的 Node.js 22+；
+Node.js 並非 AIT 對儲存庫的通用要求。
+
+**1. 安裝 AIT 1.2.0。**
+
+從 [v1.2.0 發行](https://github.com/weita2026/ait-native/releases/tag/v1.2.0) 或[安裝指南](https://ait-native.dev/zh-tw/local-quickstart/)
+選擇適用平台的原生套件，然後檢查安裝版本：
+
+```sh
+ait --version
+```
+
+版本應為 1.2.0。下方列出 Python 與 JavaScript 套件安裝方式。
+
+其他套件通路請參閱[安裝指南](https://ait-native.dev/zh-tw/local-quickstart/)。
+
+**2. 準備範例。**
+
+[下載範例 ZIP](https://ait-native.dev/downloads/ait-first-task.zip)
+及[它的 SHA-256](https://ait-native.dev/downloads/ait-first-task.sha256)。
+解壓縮後，在解壓得到的 `ait-first-task` 資料夾開啟終端。
+將 `your-name` 換成你希望記錄於本地審查的名稱。
+
+```sh
+node --test tests/baseline.test.mjs
+ait init
+ait config set --user-name "your-name"
+```
+
+三項基準測試應全部通過。Task start 的初始化流程會記錄起始基準。
+之後僅能在回傳的 Task worktree 內，使用 Task ID 建立 checkpoint。
+若使用既有專案，請改依[已發布版本的快速上手](https://ait-native.dev/zh-tw/local-quickstart/)操作。
+
+**3. 初始化完成後，從範例資料夾開啟全新的 coding agent 對話。**
+
+`ait init` 會在 `AGENTS.md` 與 `CLAUDE.md` 產生受管理的工作流區塊。
+支援對應儲存庫指引檔的工具，可在對話開始時載入。接著交辦以下需求：
+
+> 在 src/tasks.mjs 新增 openTasks(tasks)：
+> 回傳新的陣列，包含 done 屬性不等於 true 的任務，保留原有順序、任務物件及輸入資料。
+> 保持 taskTitles 正常運作，加入針對性的測試。不要修改 checks/、移除既有測試或新增相依套件。
+> 完成 Task 前，執行既有測試及 node checks/first-task.mjs。
+
+Agent 依產生的路由，在需要時記錄 sprint 項目，在回傳的 Task worktree 中實作修改並執行檢查。
+產生的區塊提供已安裝版本適用的確切命令與完成要求。
+
+若工具不會自動載入儲存庫指引，請先設定其指引檔整合，或請它讀取產生的檔案後再試。
+詳見[快速上手排錯](https://ait-native.dev/zh-tw/local-quickstart/#first-task)。
+
+**4. 回到原始範例資料夾檢查結果。**
+
+```sh
+node --test tests/*.test.mjs
+node checks/first-task.mjs
+```
+
+功能檢查會輸出 `FIRST_TASK_ACCEPTED`。也請確認實際的 Task finish 結果：Task 已完成、
+worktree 已清理，並在適用時關閉綁定的 sprint 項目。功能驗收與工作流完成是兩項分開的檢查。
+審閱修改後，再到自己的專案嘗試一個小任務。
+
+若結果顯示 partial、pending 或 blocked，即使命令回傳 0 或 Task 已完成，仍有未完成的必要步驟。
+保留已成功的套用與原始身分，只恢復尚未完成的步驟，不重複套用。
+
+## 你能得到什麼
+
+- **讓需求與工作持續相連。** 明確的 Markdown sprint 項目及其 Plan 版本會綁定至 Task。
+  上下文壓縮後，產生的指示要求 agent 重新閱讀該項目。
+- **以專案目前的狀態完成工作。** 獨立 Task 各自擁有 worktree。AIT 會重新檢查目標，
+  由負責的執行者在必要時 rebase 並驗證整合。實質衝突須先修正，才能成功 finish 並清理工作區。
+- **出問題時找到相關脈絡。** `ait blame` 將受影響的程式碼或 Plan 文字連結到已記錄的版本與可用工作流歷史。
+  Agent 可據此診斷問題、做出範圍明確的修正，並驗證結果。
+
+## 除了 worktree，為什麼還需要 AIT？
+
+Worktree 為任務提供獨立檔案。AIT 則以同一個 Task 生命週期管理需求、版本、適用檢查與完成狀態。
+請和你現有的 agent、Git、issue tracker、CI 及腳本一起評估：
+
+| 你需要回答的問題 | AIT 記錄或協調的內容 |
+| --- | --- |
+| 這個修改對應哪個需求與驗收條件？ | 綁定至 Task 的確切 Plan 項目與版本。 |
+| 哪個結果通過檢查？它能否整合至今天的目標？ | 版本身分、適用證據、目標檢查與可復原的完成狀態。 |
+| 後來出現的回歸從哪裡開始？ | 可透過 blame 取得的版本與工作流脈絡。未知來源仍標示為未知。 |
+
+實作與驗證可以並行；套用至共用目標 Line 前，准入會重新驗證並依序處理。
+乾淨的 rebase 仍需要相關驗證。Worktree 指示是工作流約束，並非作業系統沙箱；
+blame 提供來源紀錄，不會自動診斷或修復問題。
+
+試用[相同的工作流情境](https://ait-native.dev/zh-tw/demo/)，比較確認意圖、審查、整合及調查問題所花的時間。
+
+## 與 Git worktree 的測量比較
+
+兩輪分別公開的 200-session 實驗，在相同的五個固定遊戲開發測試專案上使用 GPT-5.6 Sol 的 max 推理設定。
+每種工作負載各有 20 組通過准入的配對嘗試。每輪有效結果包含 100 個全新 AIT session 與 100 個全新 Git session，
+兩組的功能驗收結果均為 100/100。
+
+| 實驗 | 工作流 | 有效 session | 各工作負載 token 節省比例的中位數（95% CI） | 各工作負載耗時節省比例的中位數 |
+| --- | --- | ---: | ---: | ---: |
+| 已發布的 1.1.0 基準 | Sprint 關閉 | 100 AIT + 100 Git | **34.95%** (27.85%-39.77%) | **21.04%** |
+| 自然檢視重複實驗 | Sprint 開啟 | 100 AIT + 100 Git | **36.28%** (28.26%-41.83%) | **15.22%** |
+
+這些模型供應商 token 的工作負載中位數結果，僅適用於指定模型與固定測試資料。
+Session 是依序執行的，因此結果不衡量並行吞吐量，也不保證你的儲存庫會得到相同節省。
+
+<details>
+<summary>方法、排除項目與尚未完成的 Claude Fable 實驗</summary>
+
+已發布基準的 AIT 使用 46,300,272 tokens，Git 使用 70,140,925 tokens（減少 33.99%）；
+證據歷史包含 201 次執行，其中一筆功能結果被排除。
+Sprint 開啟的重複實驗分別使用 45,432,262 與 71,238,660 tokens（減少 36.23%）；
+證據歷史包含 203 次執行，並揭露三筆排除項目。
+表中的工作負載平衡指標是主要測量值；合併總量僅供描述。
+
+兩輪實驗共用相同測試資料位元組、工作負載矩陣、固定模型，以及對稱的唯讀檢視權限。
+它們的工作流模式、提示詞、受測 AIT 執行檔、隨機種子、日期及復原歷史不同。
+這是結果方向相近的重複實驗，不是合併觀察值，也不是能推論 sprint 開關因果效果的 A/B 測試，
+因此不能將 1.33 個百分點的差異歸因於 sprint 模式。
+結果範圍仍限於這些固定測試資料與依序執行的全新 session，不能承諾適用所有工作負載，也未測量高併發執行。
+
+[已發布基準的證據](https://github.com/weita2026/ait-native/tree/v1.1.0/ait-core/release/benchmarks/game-v1-g56s-max-complete200-fx27-20260826) ·
+[Sprint 開啟重複實驗的證據](https://github.com/weita2026/ait-native/tree/benchmark-sprint-on-20260829/ait-core/release/benchmarks/game-v1-g56s-max-sprint-on-natural-complete200-20260828)
+
+### Claude Fable 評測——未完成的檢查點
+
+這輪未完成、設定已固定的 200-session 評測，比較 AIT 的任務導向工作流與 agent 自行管理的本地 Git worktree，
+兩組使用相同的五種遊戲開發工作負載。
+
+**已記錄進度：22 / 200 個 session**
+
+該檢查點觀察到的 22 次執行全部有效且通過驗收，沒有切換至備用模型。
+實驗尚未完成，仍為 `claim_eligible=false`；這是保留的中期紀錄，不能視為已完成的 Claude/Fable 評測或新的成效宣稱。
+
+最新的平衡檢查點為 20/200，每種工作負載各有兩組完整 AIT/Git 配對：
+
+| 工作負載 | 有效配對 | AIT token 節省比例 | Bootstrap CI95 |
+| --- | ---: | ---: | ---: |
+| GD-01 | 2 | 20.32% | 9.13% to 32.72% |
+| GD-02 | 2 | -4.35% | -18.16% to 14.35% |
+| GD-03 | 2 | 37.56% | 6.57% to 52.02% |
+| GD-04 | 2 | 23.77% | 23.50% to 23.97% |
+| GD-05 | 2 | 2.13% | -26.89% to 25.93% |
+
+各工作負載 token 節省比例的中位數為 **20.32%**，整體 bootstrap CI95 為 **6.57% to 25.93%**。
+此檢查點的全部 20 次執行均有效且通過驗收，沒有統計排除，也沒有切換至備用模型。
+每種工作負載僅有兩組配對，部分區間仍很寬或跨越零，因此公布這些中期數字是為了透明揭露，並非產品成效宣稱。
+
+</details>
+
+## 我為什麼打造 AIT
+
+<details>
+<summary>促使我打造 AIT 的六個問題</summary>
+
+1. **AI agent 經常產出一個巨大的 commit，卻很難看出它代表什麼工作。**
+
+   Agent 可能修改數十個檔案，再將所有內容塞進同一個 commit。
+   Commit 看得出改了什麼，卻不清楚說明 agent 想完成哪件工作。
+   我希望歷史紀錄圍繞有意義的任務組織，而非圍繞 agent 剛好存下工作的時點。
+
+2. **Sprint 卡應該對應到真正的工程工作。**
+
+   我想要類似 Jira 的工作流：開一張 sprint 卡，就啟動一個真正隔離的任務；
+   完成任務，應代表問題確實獲得解決。Ticket、agent、程式碼、驗證與最終結果，應屬於同一個生命週期。
+
+3. **傳統 Git 工作流是圍繞人的行為設計的。**
+
+   人通常先做一個小修改，再審查、暫存、commit、rebase，然後繼續下一步。
+   在 vibe coding 時代，agent 產出任務規模修改的速度更快。
+   每次都替每個 agent 重複這些手動 Git 操作，開始成為工作阻力。
+
+4. **Markdown 應該不只是儲存庫裡的另一個檔案。**
+
+   Markdown 可能是人與 agent 最好的共同語言。Git 可以儲存 Markdown，
+   卻不理解一個清單項目代表計劃、任務或驗收條件。
+   我希望寫在 Markdown 裡的意圖，能持續連結到實現它的程式碼。
+
+5. **當 agent 弄壞東西時，我希望很快得到答案。**
+
+   我不想為了理解一個回歸，翻找舊對話、零散 commit 與互不相連的 ticket。
+   AIT 將任務、版本、驗證、agent 脈絡與 Task finish 歷史連在一起，
+   讓 `ait blame` 能從出錯的程式碼行追溯至引入問題的工作。
+
+6. **命令優先為 agent 設計。**
+
+   CLI 的設計重點，不是讓人反覆輸入時覺得順手，而是讓 agent 難以誤解：
+   穩定的命令、明確的狀態、結構化結果、確切的工作區、清楚的失敗訊息，以及明確的下一步。
+   人仍然決定意圖、審閱結果，並承擔後果。
+
+</details>
+
+## 搭配現有工具使用
+
+AIT 不限定儲存庫使用哪種語言，也不嘗試偵測專案類型；建置、測試與忽略規則都來自你的儲存庫。
+Coding agent 負責實作及選定的檢查；AIT 管理任務生命週期，並執行適用的工作流條件。
+
+`ait init` 建立本地 `.ait` 權威資料，並在 `AGENTS.md` 與 `CLAUDE.md` 產生受管理的工作流區塊。
+該產生式區塊是有效命令的依據；本地儲存庫初始化不需要執行中的 `ait-server`。
+
+**AIT 1.2.1 開發工作流：**命令與完成要求，請以已安裝版本產生的指引為準。
+
+Agent Teams、sprint 綁定與 Local/Remote 範圍各自獨立。
+全新 `ait init` 預設啟用 Agent Teams；既有儲存庫保留原設定，仍需受支援的 agent host 準備可用對話。
+`ait team contacts --json` 提供綁定與原生可用性；`ait team session ensure` 準備既有成員，
+不等於派發工作，也不提供桌面執行狀態。準備 Reviewer 對話需要 server registration。
+
+自動 session 準備與檢查目前使用原生 Codex host。AIT 也會產生 `CLAUDE.md` 儲存庫指引；
+實際 Claude host 編排、混合 provider 派送與行動工作流仍延後且未通過資格驗證。
+產生指引與未完成的 benchmark 不能證明 Claude host 已通過驗證。
+
+Agent Teams 與設定參考：
+[Agent Teams 聯絡資料與 session](https://ait-native.dev/zh-tw/technical/1.2.1/agent-teams/) ·
+[原生命令參考，包含 init 與 config](https://ait-native.dev/zh-tw/technical/1.2.1/cli/reference/ait/)。
+這些是規劃中的 1.2.1 參考文件；既有 [1.2.0 文件](https://ait-native.dev/zh-tw/development/1.2.0/)
+保留已發布版本的範圍。目前產生的 Claude 指引要求明確指定安全的 `--edit-root`，
+AGENTS 指引則可使用回傳的目錄。請遵循實際安裝版本的 harness 說明。
+
+依產生的指示執行 `ait task start`、`ait snapshot create` 檢查點、`ait plan sync` Markdown 沿革，
+以及適用的 `ait task finish` 或 `ait workflow finish`。團隊所需的獨立審查與 finish 由指派的 Reviewer 負責。
+Remote `ait workflow ready` 唯讀檢查 readiness；加 `--apply` 才準備 candidate，後續 CI 與 guarded finish
+保留實際回傳的確切 identity。Server 在 formal acceptance 前重啟後，可經明確的 ready apply
+以相同 sealed 內容和 mode 重新準備新 Job、CI 及所需審查。已接受的 formal retry 復用原 acceptance。
+
+- [1.2.1 使用與復原手冊](https://ait-native.dev/zh-tw/technical/1.2.1/)
+- [完整命令目錄](https://ait-native.dev/zh-tw/technical/1.2.1/cli/reference/)與[原生命令，包含 Git 互通](https://ait-native.dev/zh-tw/technical/1.2.1/cli/reference/ait/)
+- [Python CLI/API](https://ait-native.dev/zh-tw/technical/1.2.1/integrations/python/)與[Node.js CLI/API](https://ait-native.dev/zh-tw/technical/1.2.1/integrations/node/)
+- [元件](https://ait-native.dev/zh-tw/components/)與[發行狀態](https://ait-native.dev/zh-tw/proof/)
+
+原始碼目標：**@AIT_RELEASE_TAG@**。`ait-monorepo-source.json` 記錄匯出的元件 Snapshot。
+套件通路可用性請參閱[發行狀態](https://ait-native.dev/zh-tw/proof/)。
+
+<details>
+<summary>已發布的 1.1.4 發行驗證（2026-10-07）</summary>
+
+核對日期 2026-10-07：穩定版 1.1.4 已透過 GitHub、PyPI、npm、Homebrew、APT 與 GHCR 發布，穩定別名也已回讀。[WinGet 1.1.4 PR 448064](https://github.com/microsoft/winget-pkgs/pull/448064) 已合併，並通過新的公開來源查詢與 Windows x64 實際安裝驗證。[安裝證據](https://github.com/weita2026/ait-native/actions/runs/37589427613)。[已核對的 1.1.4 發行封存檔](https://github.com/weita2026/ait-native/releases/tag/v1.1.4) 保留該歷史發行。此時間點之後的變更請查看[發布狀態](https://ait-native.dev/zh-tw/proof/)。
+
+</details>
+
+規劃中的 1.2.1 手冊包括[使用](https://ait-native.dev/zh-tw/technical/1.2.1/#user-manual-pdf)、
+[命令](https://ait-native.dev/zh-tw/technical/1.2.1/#command-manual-pdf)與
+[Agent Teams](https://ait-native.dev/zh-tw/technical/1.2.1/#agent-teams-pdf) PDF。
+這些連結屬於協調中的準備工作，仍待部署及最終產物回讀。封存的 1.1.1 技術手冊、PDF 與錄製示範
+保留原版本及日期。已發布版本的安裝請使用[快速上手](https://ait-native.dev/zh-tw/local-quickstart/)
+及已安裝版本的指引。
+
+## 各安裝通路提供什麼
+
+<details>
+<summary>套件內容與歷史版本差異</summary>
+
+已發布的 AIT 1.2.0 套件內容：
+
+| 通路 | 宣告內容 |
+| --- | --- |
+| PyPI `ait-native` | 呼叫具型別 PyO3 操作的 Python `ait` 前端；不含獨立原生 CLI、Server 或 Runner。 |
+| npm `@wa120/ait-native` | JavaScript/TypeScript API、Node-API 附加元件與 JavaScript `ait` 前端；不含獨立原生 CLI、Server 或 Runner。 |
+| Homebrew | 原生產品組合包含 `ait`、`ait-server` 與 `ait-runner`，安裝時不啟動任何背景程序。 |
+| APT | `ait-native` 擁有全部三個原生命令；`ait-runner` 是僅宣告相依性的過渡別名。套件內的服務仍僅適用伺服器。 |
+| WinGet | [1.2.0 提交](https://github.com/microsoft/winget-pkgs/pull/468379) 正在等待社群審查。在 WinGet 公開目錄列出 1.2.0 前，請使用 GitHub 的 Windows 封存檔。 |
+| OCI | 分開提供 `ait-server` 與 `ait-runner` 映像，版本標籤為 `1.2.0`。 |
+| GitHub Release | 綁定校驗碼的原生壓縮檔，以及各宣告通路使用的套件資產。 |
+
+AIT 1.2.0 使用呼叫具型別 PyO3 與 Node-API 操作的 Python 和 JavaScript `ait` 前端，
+在程序內執行 Core 操作。獨立的原生 CLI、Server 與 Runner 執行檔請使用原生發行通路。
+
+不可變的 1.1.0 Homebrew、apt 與 WinGet 產品套件包含 `ait`／`ait-server` 組合，apt 另外提供 runner。
+這項歷史例外保持不變。現行通路操作請參閱[安裝指南](https://ait-native.dev/zh-tw/local-quickstart/)，
+確切資產請查閱[發行頁面](https://github.com/weita2026/ait-native/releases)。
+
+</details>
+
+## 安裝 Python 或 JavaScript 套件
+
+選擇其中一種套件安裝 `ait` 命令，再以 `ait --version` 確認版本：
+
+Python 套件需要 Python 3.11+；npm 套件需要 Node.js 20+。
+
+```sh
+python -m pip install ait-native==1.2.0
+npm install --global @wa120/ait-native@1.2.0
+```
+
+Python wheel 提供 Python `ait` 前端與 PyO3 綁定；npm 套件提供 JavaScript `ait` 前端與
+Node-API 附加元件。兩者均不含獨立的原生 CLI、Server 或 Runner 執行檔。
+這些命令固定安裝 1.2.0。GitHub 最新發行、npm `latest` 與 Server、Runner 的 OCI `latest` 標籤
+已核對為 1.2.0。各通路目前可用性請查看[發布狀態](https://ait-native.dev/zh-tw/proof/)。
+
+## 遷移至 1.2.0
+
+已發布的 1.2.0 發行組合排除獨立聊天命令
+`ait-agent` 與 `ait-agent-worker`；Agent Teams 及核心 Python/Node
+綁定保留。舊聊天綁定符號仍可匯入，呼叫時回傳明確的退役錯誤。保留設定、儲存庫資料及手動安裝檔案；
+套件升級依對應通路記錄的檔案所有權，不依 PATH 中的命令名稱刪除檔案。
+
+## 建置這份原始碼
+
+<details>
+<summary>原生來源建置與語言綁定</summary>
+
+在 macOS 或 Linux 的乾淨 checkout 中執行：
+
+```sh
+./build-release.sh
+```
+
+在 Windows PowerShell 中執行：
+
+```powershell
+.\build-release.ps1
+```
+
+建置會在 `dist/source-build/` 產生本地原生命令、直接 PyO3 Python wheel、
+可攜的 JS/TS 套件，以及目前主機適用的 Node-API addon。
+這些來源建置產物及其憑證明確標示為不可發布；受保護的發行 CI 只會提升另外通過准入的家族產物。
+
+在 Node.js，`import { NativeRuntime } from "@wa120/ait-native"`
+會在目前程序載入套件自有的 `native/ait_napi.node`。
+npm 的 `ait` JavaScript 前端呼叫具型別的綁定操作，不會尋找或啟動子執行檔。
+
+</details>
+
+## 分享結果或取得協助
+
+[提問或分享工作流](https://github.com/weita2026/ait-native/discussions)，
+或[回報問題](https://github.com/weita2026/ait-native/issues/new/choose)。
+請告訴我們第一個 Task 是否完成、在哪裡需要協助，以及是否能在另一個任務重複完成此工作流。
+只分享你可以公開的資訊；提供回饋不需要私有儲存庫。
+
+<a id="license-map"></a>
+
+## 授權對照
+
+根目錄的 [`LICENSE`](LICENSE) 已明確說明：根層發行控制、文件、`ait-core/**`、
+`ait-runner/**`、`ait-python/**` 與 `ait-node/**` 採用 Apache-2.0。
+唯一的元件例外為 `ait-server/**`，採用 AGPL-3.0-only。
+各元件子樹保留其確切的 `LICENSE` 與 `NOTICE`；綁附發行不會變更任一元件的授權。
+
+完整的套件、原始碼、建置與授權契約位於 [`docs/distribution.md`](docs/distribution.md)。

@@ -158,9 +158,9 @@ fn signed_command_dispatches_typed_rust_job_and_returns_minimal_redacted_output(
     assert_eq!(job["runtime_target"]["server_url"], "http://127.0.0.1:8088");
     assert_eq!(job["command_payload"]["channel_id"], "C1");
     assert_eq!(job["command_payload"]["text"], "hello world");
-    assert!(job["state_path"]
-        .as_str()
-        .is_some_and(|path| path.ends_with(".ait/agent-runtime/slack-main-sync.json")));
+    assert!(job["state_path"].as_str().is_some_and(
+        |path| std::path::Path::new(path).ends_with(".ait/agent-runtime/slack-main-sync.json")
+    ));
     assert!(!job.to_string().contains(SIGNING_SECRET));
 
     let public = output.to_string();

@@ -26,7 +26,12 @@ where
             path.display()
         ))
     })?;
-    let exists = archive.by_name(entry_name).is_ok();
+    let exists = archive
+        .by_name_with_options(
+            entry_name,
+            zip::read::ZipReadOptions::new().enforce_header_consistency(true),
+        )
+        .is_ok();
     Ok(exists)
 }
 
@@ -56,9 +61,14 @@ where
             path.display()
         ))
     })?;
-    let mut member = archive.by_name(entry_name).map_err(|_| {
-        PlanFilesystemError::MissingEntry(format!("Archive member not found: {}", entry_name))
-    })?;
+    let mut member = archive
+        .by_name_with_options(
+            entry_name,
+            zip::read::ZipReadOptions::new().enforce_header_consistency(true),
+        )
+        .map_err(|_| {
+            PlanFilesystemError::MissingEntry(format!("Archive member not found: {}", entry_name))
+        })?;
     let mut output = Vec::new();
     member.read_to_end(&mut output).map_err(|err| {
         PlanFilesystemError::Io(format!(

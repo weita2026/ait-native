@@ -59,16 +59,6 @@ compatibility. Chat calls throw an error containing
 channel. Binding metadata advertises only `ait-core`; loading it does not probe
 chat capabilities. Core CLI and Agent Teams remain available in process.
 
-## Upgrading from 0.x
-
-There is no `ait install` command in 1.0. Install or upgrade
-`@wa120/ait-native` through npm, verify it with `ait --version`, then run `ait
-init` only when creating a new 1.0 repository authority. Keep the Git
-repository and its history, but do not assume that a release candidate can
-migrate an existing 0.x `.ait` authority in place. Preserve the old authority
-for recovery and use a clean clone or a new repository authority unless the
-selected release notes explicitly admit that migration.
-
 ## Package boundary
 
 The package installs one `ait` JavaScript CLI backed by the same addon.

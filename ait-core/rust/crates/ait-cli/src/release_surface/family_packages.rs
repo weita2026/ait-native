@@ -907,21 +907,32 @@ fn read_wheel_entries(bytes: &[u8]) -> Result<PackageEntries, String> {
     let mut entries = PackageEntries::new();
     let mut total_bytes = 0_u64;
     for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|error| {
-            format!("Frozen Python wheel member {index} cannot be opened: {error}")
-        })?;
+        let mut entry = archive
+            .by_index_with_options(
+                index,
+                zip::read::ZipReadOptions::new().enforce_header_consistency(true),
+            )
+            .map_err(|error| {
+                format!("Frozen Python wheel member {index} cannot be opened: {error}")
+            })?;
+        let path = entry
+            .name()
+            .map_err(|error| {
+                format!("Frozen Python wheel member {index} has an invalid name: {error}")
+            })?
+            .into_owned();
         if entry.is_dir() {
             return Err(format!(
                 "Frozen Python wheel contains directory member {:?}; normalized wheels contain files only.",
-                entry.name()
+                path
             ));
         }
-        if entry.name_raw() != entry.name().as_bytes() {
+        if entry.name_raw() != path.as_bytes() {
             return Err("Frozen Python wheel contains a non-UTF-8 member name.".to_string());
         }
-        let path = entry.name().to_string();
         safe_relative_path(&path, "Frozen Python wheel member")?;
-        if !entry.comment().is_empty() || !entry.extra_data().is_empty() {
+        if !entry.comment().is_empty() || entry.extra_data().is_some_and(|extra| !extra.is_empty())
+        {
             return Err(format!(
                 "Frozen Python wheel member {path:?} contains ZIP comment or extra data."
             ));
@@ -4696,6 +4707,16 @@ mod tests {
         assert!(read_npm_envelope_entries(&npm)
             .unwrap_err()
             .contains("regular files only"));
+    }
+
+    #[test]
+    fn registry_archive_reader_rejects_mismatched_local_header_name() {
+        let entries = BTreeMap::from([("module.py".to_string(), (b"pass\n".to_vec(), 0o644))]);
+        let mut wheel = zip_bytes(&entries).unwrap();
+        assert_eq!(&wheel[..4], b"PK\x03\x04");
+        assert_eq!(&wheel[30..39], b"module.py");
+        wheel[30] = b'n';
+        assert!(read_wheel_entries(&wheel).is_err());
     }
 
     #[test]

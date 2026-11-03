@@ -546,7 +546,7 @@ fn file_reads_and_zip_bridge_work() {
     let file = File::create(&archive_path).unwrap();
     let mut writer = zip::ZipWriter::new(file);
     writer
-        .start_file("docs/plan.md", zip::write::FileOptions::default())
+        .start_file("docs/plan.md", zip::write::SimpleFileOptions::default())
         .unwrap();
     writer.write_all(b"# Plan\n").unwrap();
     writer.finish().unwrap();
@@ -560,6 +560,72 @@ fn file_reads_and_zip_bridge_work() {
 }
 
 #[test]
+fn zip_bridge_preserves_legacy_compression_methods() {
+    for method in [
+        zip::CompressionMethod::Stored,
+        zip::CompressionMethod::Deflated,
+        zip::CompressionMethod::Bzip2,
+        zip::CompressionMethod::Zstd,
+    ] {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                "docs/plan.md",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(method)
+                    .last_modified_time(
+                        zip::DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap(),
+                    ),
+            )
+            .unwrap();
+        writer.write_all(b"# Legacy Plan\r\n").unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        let store = FakePlanFilesystemFileIoStore::default();
+        store.insert_file("/home/ait/archive.zip", &bytes);
+
+        assert!(
+            zip_archive_has_member_with_file_io_store(&store, "~/archive.zip", "docs/plan.md")
+                .unwrap()
+        );
+        assert_eq!(
+            read_zip_archive_member_with_file_io_store(&store, "~/archive.zip", "docs/plan.md")
+                .unwrap(),
+            b"# Legacy Plan\r\n",
+            "legacy compression method {method:?} must preserve exact member bytes"
+        );
+    }
+}
+
+#[test]
+fn zip_bridge_rejects_mismatched_local_header_name() {
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            "docs/plan.md",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )
+        .unwrap();
+    writer.write_all(b"# Plan\n").unwrap();
+    let mut bytes = writer.finish().unwrap().into_inner();
+    assert_eq!(&bytes[..4], b"PK\x03\x04");
+    // A ZIP local header has a fixed 30-byte prefix before its member name.
+    assert_eq!(&bytes[30..42], b"docs/plan.md");
+    bytes[30] = b'e';
+    let store = FakePlanFilesystemFileIoStore::default();
+    store.insert_file("/home/ait/archive.zip", &bytes);
+
+    assert!(
+        !zip_archive_has_member_with_file_io_store(&store, "~/archive.zip", "docs/plan.md")
+            .unwrap()
+    );
+    assert!(
+        read_zip_archive_member_with_file_io_store(&store, "~/archive.zip", "docs/plan.md")
+            .is_err()
+    );
+}
+
+#[test]
 fn file_reads_use_file_io_store_entrypoints() {
     let store = FakePlanFilesystemFileIoStore::default();
     store.insert_file("/home/ait/docs/plan.md", b"line one\r\nline two\r");
@@ -569,7 +635,7 @@ fn file_reads_use_file_io_store_entrypoints() {
     {
         let mut writer = zip::ZipWriter::new(&mut zip_buffer);
         writer
-            .start_file("docs/plan.md", zip::write::FileOptions::default())
+            .start_file("docs/plan.md", zip::write::SimpleFileOptions::default())
             .unwrap();
         writer.write_all(b"# Plan\n").unwrap();
         writer.finish().unwrap();

@@ -1283,13 +1283,16 @@ if (existsSync(path.join(root, 'ci/release_web_admission.sh'))) {
     worktree_hygiene: { manual_review_candidate_count: 0, stale_count: 0 }, reconciliation: { total_finding_count: 0 } };
   const queue = { summary: { attention_required_count: 0, dirty_worktree_count: 0 }, remote: { reviewer_inbox: { count: 0 } } };
   const remote = { repository: { repository_index: 23, repository_name: 'ait-web-test', namespace: 'WT', tombstoned: false } };
-  writeFileSync(native, `#!/usr/bin/env node\nconst rows=${JSON.stringify({ config, status: webStatus, queue, worktree: [], repo: remote })};if(!(process.argv[2] in rows))process.exit(99);console.log(JSON.stringify(rows[process.argv[2]]));\n`, { mode: 0o755 });
+  const communityRoot = path.join(scope, 'community'); mkdirSync(communityRoot);
+  const communityStatus = { repo_name: 'ait-web-community', line_name: 'main', head_snapshot_id: webSnapshot,
+    worktree: null, workspace: { dirty: false, changed_count: 0 } };
+  writeFileSync(native, `#!/usr/bin/env node\nimport fs from 'node:fs';const rows=${JSON.stringify({ config, status: webStatus, queue, worktree: [], repo: remote })};if(!(process.argv[2] in rows))process.exit(99);console.log(JSON.stringify(process.cwd()===fs.realpathSync(${JSON.stringify(communityRoot)})&&process.argv[2]==='status'?${JSON.stringify(communityStatus)}:rows[process.argv[2]]));\n`, { mode: 0o755 });
   writeFileSync(service, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(dispatched)},'unexpected service or acceptance launch');process.exit(99);\n`, { mode: 0o755 });
   const componentsFile = path.join(scope, 'web-components.json');
-  json(componentsFile, Object.fromEntries(['core', 'server', 'runner', 'python', 'node', 'web_test'].map(key => [key, webSnapshot])));
+  json(componentsFile, Object.fromEntries(['core', 'server', 'runner', 'python', 'node', 'web_test', 'community'].map(key => [key, webSnapshot])));
   const webInput = path.join(webOutput, 'qualification-input.json');
   const initArgs = [path.join(root, 'ci/release_web_admission_init.mjs'), '--candidate', bindingFile, '--components', componentsFile,
-    '--repository', webRoot, '--ait', native, '--server-bin', service, '--community-bin', service, '--community-cli-bin', service,
+    '--repository', webRoot, '--ait', native, '--server-bin', service, '--community-root', communityRoot, '--community-bin', service, '--community-cli-bin', service,
     '--server-url', 'http://127.0.0.1:8088/', '--seed', '42', '--output', webInput];
   const isolated = { ...process.env, AIT_RELEASE_OPERATION_ROOT: '', AIT_RELEASE_OPERATION_TOKEN: '' };
   const initialized = spawnSync(process.execPath, initArgs, { encoding: 'utf8', env: isolated });

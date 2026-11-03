@@ -339,7 +339,7 @@ pub(in crate::primitives) fn workflow_bound_worktree_cleanup_after_local_land(
             return Err("Task cleanup worktree ownership changed after successful apply; preserve the new work".into());
         }
     }
-    let removed = remove_one_worktree(&root_repo, &worktree_name, true, false)?;
+    let removed = remove_one_worktree_after_local_task_finish(&root_repo, &worktree_name)?;
     Ok(json!({
         "status": "removed",
         "task_id": task_id,

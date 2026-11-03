@@ -1,8 +1,8 @@
 use super::*;
 use crate::executor::{ExecutorConfig, NativeExecutor};
-use crate::protocol::{
-    CommandSpec, NATIVE_JOB_CONTRACT, NativeJobRequest, SourceSpec, TerminalStatus,
-};
+#[cfg(unix)]
+use crate::protocol::TerminalStatus;
+use crate::protocol::{CommandSpec, NATIVE_JOB_CONTRACT, NativeJobRequest, SourceSpec};
 use ait_core::pack_substrate::{
     PACK_FORMAT_ZSTD_CHUNKED_V1, TREE_PACK_FORMAT_ZSTD_CHUNKED_V1, build_tree_pack_members,
     read_tree_pack_index_with_format, tree_pack_checksums_by_tree_id,

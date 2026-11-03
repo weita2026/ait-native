@@ -2106,6 +2106,11 @@ mod tests {
     #[test]
     fn legacy_transition_executes_and_preserves_attempt_cleanup() {
         let runtime = legacy_runtime_request();
+        let (operation, state) = if cfg!(windows) {
+            ("fail-job", "failed")
+        } else {
+            ("complete-job", "succeeded")
+        };
         let server = MockServer::start(vec![
             (200, legacy_health()),
             (
@@ -2118,29 +2123,35 @@ mod tests {
             ),
             (
                 200,
-                legacy_service(
-                    "complete-job",
-                    "job",
-                    legacy_job("succeeded", JsonValue::Null),
-                ),
+                legacy_service(operation, "job", legacy_job(state, JsonValue::Null)),
             ),
         ]);
         let source = source("#!/bin/sh\nset -eu\nprintf 'legacy-ok'\n");
         let attempts = tempfile::tempdir().expect("attempts");
-        let report = ServerClient::new(&server.url, None)
-            .unwrap()
-            .serve(
-                &executor(&source, &attempts),
-                &ServeOptions {
-                    worker_id: "legacy-runner".to_string(),
-                    repository_indexes: Vec::new(),
-                    once: true,
-                    poll_interval: Duration::from_millis(5),
-                    heartbeat_interval: Duration::from_secs(60),
-                },
-            )
-            .expect("legacy delivery");
-        assert_eq!(report["status"], "delivered");
+        let report = ServerClient::new(&server.url, None).unwrap().serve(
+            &executor(&source, &attempts),
+            &ServeOptions {
+                worker_id: "legacy-runner".to_string(),
+                repository_indexes: Vec::new(),
+                once: true,
+                poll_interval: Duration::from_millis(5),
+                heartbeat_interval: Duration::from_secs(60),
+            },
+        );
+        if cfg!(windows) {
+            let error = report.expect_err("Windows must reject legacy execution");
+            // Preflight preserves this error only after fail_claimed validates the ACK.
+            assert!(
+                matches!(
+                    &error,
+                    RunnerError::InvalidRequest(message)
+                        if message == "legacy native-job.v1 execution is unsupported on Windows; use native-job.v3"
+                ),
+                "legacy preflight must preserve its error after failure delivery: {error:?}"
+            );
+        } else {
+            assert_eq!(report.expect("legacy delivery")["status"], "delivered");
+        }
         assert!(
             fs::read_dir(attempts.path())
                 .expect("attempt root")
@@ -2151,6 +2162,7 @@ mod tests {
             "serve may retain only its root lock, never an attempt directory"
         );
         let requests = server.finish();
+        assert_eq!(requests.len(), 3);
         assert_eq!(
             requests[1].path,
             "/v1/worker-queue/operations/claim-next-job"
@@ -2159,7 +2171,22 @@ mod tests {
             requests[1].body["accepted_runtime_contracts"],
             json!([LEGACY_NATIVE_JOB_CONTRACT])
         );
-        assert_eq!(requests[2].path, "/v1/worker-queue/operations/complete-job");
+        assert_eq!(
+            requests[2].path,
+            format!("/v1/worker-queue/operations/{operation}")
+        );
+        if cfg!(windows) {
+            assert_eq!(
+                requests[2].body,
+                json!({
+                    "operation": "fail-job",
+                    "job_id": 41,
+                    "worker_id": "legacy-runner",
+                    "retryable": false,
+                    "error": "invalid native job request: legacy native-job.v1 execution is unsupported on Windows; use native-job.v3",
+                })
+            );
+        }
     }
 
     #[test]

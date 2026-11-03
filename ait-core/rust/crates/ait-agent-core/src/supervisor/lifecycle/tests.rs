@@ -3,9 +3,15 @@ use ait_core::json_support::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+fn plan_repo_root() -> PathBuf {
+    let root = std::env::temp_dir().join("ait-agent-lifecycle-plan-repo");
+    assert!(root.is_absolute(), "fixture repo root must be absolute");
+    root
+}
+
 fn input(operation: AgentWorkerLifecycleOperation) -> AgentWorkerLifecyclePlanInput {
     AgentWorkerLifecyclePlanInput {
-        repo_root: "/repo".to_string(),
+        repo_root: path_to_string(&plan_repo_root()),
         operation,
         worker: AgentWorkerLifecycleSpec {
             transport: TransportKind::Telegram,
@@ -48,33 +54,45 @@ fn acquire_input(
 
 #[test]
 fn supervisor_lifecycle_plans_default_worker_runtime_paths() {
-    let plan = plan_worker_supervisor_lifecycle(input(AgentWorkerLifecycleOperation::Start))
-        .expect("lifecycle plan");
+    let request = input(AgentWorkerLifecycleOperation::Start);
+    let runtime_root = Path::new(&request.repo_root)
+        .join(".ait")
+        .join("agent-runtime");
+    let plan = plan_worker_supervisor_lifecycle(request).expect("lifecycle plan");
 
     assert_eq!(plan.worker_key, "telegram/main");
-    assert_eq!(plan.paths.runtime_root, "/repo/.ait/agent-runtime");
+    assert_eq!(Path::new(&plan.paths.runtime_root), runtime_root);
     assert_eq!(
-        plan.paths.sync_state_path,
-        "/repo/.ait/agent-runtime/telegram-main-sync.json"
+        Path::new(&plan.paths.sync_state_path),
+        runtime_root.join("telegram-main-sync.json")
     );
     assert_eq!(
-        plan.paths.pid_file,
-        "/repo/.ait/agent-runtime/telegram-main.pid"
+        Path::new(&plan.paths.pid_file),
+        runtime_root.join("telegram-main.pid")
     );
     assert_eq!(
-        plan.paths.log_file,
-        "/repo/.ait/agent-runtime/telegram-main.log"
-    );
-    assert_eq!(plan.paths.env_path, "/repo/.ait/agent-runtime/telegram.env");
-    assert_eq!(
-        plan.paths.termination_context_path,
-        "/repo/.ait/agent-runtime/telegram-main-termination.json"
+        Path::new(&plan.paths.log_file),
+        runtime_root.join("telegram-main.log")
     );
     assert_eq!(
-        plan.paths.lifecycle_lock_path,
-        "/repo/.ait/agent-runtime/telegram-lifecycle.lock"
+        Path::new(&plan.paths.env_path),
+        runtime_root.join("telegram.env")
     );
-    assert_eq!(plan.directories_to_create, vec!["/repo/.ait/agent-runtime"]);
+    assert_eq!(
+        Path::new(&plan.paths.termination_context_path),
+        runtime_root.join("telegram-main-termination.json")
+    );
+    assert_eq!(
+        Path::new(&plan.paths.lifecycle_lock_path),
+        runtime_root.join("telegram-lifecycle.lock")
+    );
+    assert_eq!(
+        plan.directories_to_create
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>(),
+        vec![runtime_root]
+    );
     assert!(plan.lock_required);
     assert!(plan.status_probe_required);
     assert!(plan.clear_termination_context_before_start);
@@ -86,27 +104,38 @@ fn supervisor_lifecycle_plans_default_worker_runtime_paths() {
 #[test]
 fn supervisor_lifecycle_resolves_relative_overrides_against_repo_root() {
     let mut request = input(AgentWorkerLifecycleOperation::Stop);
+    let repo_root = PathBuf::from(&request.repo_root);
+    let runtime_root = repo_root.join(".custom-agent-runtime");
+    let env_path = std::env::temp_dir()
+        .join("ait-agent-lifecycle-outside")
+        .join("discord.env");
     request.worker.transport = TransportKind::Discord;
     request.worker.name = "side car!".to_string();
     request.worker.pid_file = Some("runtime/worker.pid".to_string());
     request.worker.log_file = Some("runtime/worker.log".to_string());
-    request.worker.env_path = Some("/var/tmp/discord.env".to_string());
+    request.worker.env_path = Some(path_to_string(&env_path));
     request.runtime_root = Some(".custom-agent-runtime".to_string());
 
     let plan = plan_worker_supervisor_lifecycle(request).expect("lifecycle plan");
 
     assert_eq!(plan.worker_key, "discord/side car!");
-    assert_eq!(plan.paths.runtime_root, "/repo/.custom-agent-runtime");
+    assert_eq!(Path::new(&plan.paths.runtime_root), runtime_root);
     assert_eq!(
-        plan.paths.sync_state_path,
-        "/repo/.custom-agent-runtime/discord-side-car-sync.json"
+        Path::new(&plan.paths.sync_state_path),
+        runtime_root.join("discord-side-car-sync.json")
     );
-    assert_eq!(plan.paths.pid_file, "/repo/runtime/worker.pid");
-    assert_eq!(plan.paths.log_file, "/repo/runtime/worker.log");
-    assert_eq!(plan.paths.env_path, "/var/tmp/discord.env");
     assert_eq!(
-        plan.paths.termination_context_path,
-        "/repo/.custom-agent-runtime/discord-side-car-termination.json"
+        Path::new(&plan.paths.pid_file),
+        repo_root.join("runtime").join("worker.pid")
+    );
+    assert_eq!(
+        Path::new(&plan.paths.log_file),
+        repo_root.join("runtime").join("worker.log")
+    );
+    assert_eq!(Path::new(&plan.paths.env_path), env_path);
+    assert_eq!(
+        Path::new(&plan.paths.termination_context_path),
+        runtime_root.join("discord-side-car-termination.json")
     );
     assert!(plan.lock_required);
     assert!(plan.write_termination_context_before_stop);
@@ -144,7 +173,7 @@ fn supervisor_lifecycle_status_plan_does_not_take_lifecycle_lock() {
 #[test]
 fn supervisor_lifecycle_json_contract_rejects_bad_requests() {
     let err = plan_worker_supervisor_lifecycle_json(&json!({
-        "repo_root": "/repo",
+        "repo_root": path_to_string(&plan_repo_root()),
         "operation": "start",
         "worker": {"kind": "mastodon", "name": "main"}
     }))
@@ -152,18 +181,25 @@ fn supervisor_lifecycle_json_contract_rejects_bad_requests() {
     assert!(err.contains("invalid ait-agent supervisor lifecycle request"));
 
     let err = plan_worker_supervisor_lifecycle_json(&json!({
-        "repo_root": "/repo",
+        "repo_root": path_to_string(&plan_repo_root()),
         "operation": "start",
         "worker": {"kind": "telegram", "name": "bad/name"}
     }))
     .expect_err("worker names with slash must fail");
     assert!(err.contains("worker.name must not contain"));
+
+    let mut request = input(AgentWorkerLifecycleOperation::Start);
+    request.repo_root = "relative-repo".to_string();
+    let err = plan_worker_supervisor_lifecycle(request)
+        .expect_err("relative repo roots must remain rejected");
+    assert!(err.contains("repo_root must be an absolute path"));
 }
 
 #[test]
 fn supervisor_lifecycle_json_contract_serializes_fail_closed_flags() {
+    let repo_root = plan_repo_root();
     let payload = plan_worker_supervisor_lifecycle_json(&json!({
-        "repo_root": "/repo",
+        "repo_root": path_to_string(&repo_root),
         "operation": "start",
         "worker": {"transport": "line", "name": "main"},
         "stop_timeout_seconds": 1.5,
@@ -174,8 +210,11 @@ fn supervisor_lifecycle_json_contract_serializes_fail_closed_flags() {
     assert_eq!(payload["worker_key"], "line/main");
     assert_eq!(payload["transport"], "line");
     assert_eq!(
-        payload["paths"]["env_path"],
-        "/repo/.ait/agent-runtime/line.env"
+        Path::new(payload["paths"]["env_path"].as_str().expect("env path")),
+        repo_root
+            .join(".ait")
+            .join("agent-runtime")
+            .join("line.env")
     );
     assert_eq!(payload["python_worker_execution_allowed"], false);
     assert_eq!(

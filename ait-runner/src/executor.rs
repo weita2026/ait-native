@@ -31,6 +31,7 @@ use crate::workflow_package::{WorkflowPackageReference, materialize_workflow_pac
 
 const MAX_SOURCE_ENTRIES: u64 = 1_000_000;
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(10);
+#[cfg(unix)]
 const PROCESS_GROUP_GRACE: Duration = Duration::from_millis(50);
 static ATTEMPT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -628,6 +629,10 @@ fn make_runner_owned_entry_removable(
 }
 
 #[cfg(not(unix))]
+#[expect(
+    clippy::permissions_set_readonly_false,
+    reason = "This branch clears a non-Unix read-only attribute; Unix uses explicit mode bits."
+)]
 fn make_runner_owned_entry_removable(
     path: &Path,
     metadata: &fs::Metadata,
@@ -699,6 +704,8 @@ fn validate_repository_ci_entrypoint(
     path: &Path,
     platform: RunnerPlatform,
 ) -> Result<(), RunnerError> {
+    #[cfg(not(unix))]
+    let _ = platform;
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| RunnerError::fs("inspect repository CI entrypoint", path, error))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -961,6 +968,10 @@ fn make_file_owner_writable(path: &Path, source: &fs::Metadata) -> Result<(), Ru
 }
 
 #[cfg(not(unix))]
+#[expect(
+    clippy::permissions_set_readonly_false,
+    reason = "This branch clears a non-Unix read-only attribute; Unix uses explicit mode bits."
+)]
 fn make_file_owner_writable(path: &Path, _source: &fs::Metadata) -> Result<(), RunnerError> {
     let mut permissions = fs::metadata(path)
         .map_err(|error| RunnerError::fs("inspect materialized file permissions", path, error))?
@@ -1193,6 +1204,12 @@ mod tests {
         source
     }
 
+    fn make_native_source(script: &str, powershell: &str) -> TempDir {
+        let source = make_source(script);
+        fs::write(source.path().join("ci/run.ps1"), powershell).expect("run.ps1");
+        source
+    }
+
     fn request(environment: BTreeMap<String, String>, timeout_ms: u64) -> NativeJobRequest {
         NativeJobRequest {
             contract: NATIVE_JOB_CONTRACT.to_string(),
@@ -1398,8 +1415,10 @@ mod tests {
 
     #[test]
     fn success_and_command_failure_are_bounded_and_clean() {
-        let success =
-            make_source("#!/bin/sh\nset -eu\nprintf 'hello-out'\nprintf 'hello-err' >&2\nexit 0\n");
+        let success = make_native_source(
+            "#!/bin/sh\nset -eu\nprintf 'hello-out'\nprintf 'hello-err' >&2\nexit 0\n",
+            "[Console]::Out.Write('hello-out')\n[Console]::Error.Write('hello-err')\nexit 0\n",
+        );
         let attempts = tempfile::tempdir().expect("attempts");
         let result = executor(&success, &attempts)
             .execute(&request(BTreeMap::new(), 5_000))
@@ -1410,7 +1429,10 @@ mod tests {
         assert!(result.encoded_len().unwrap() <= crate::protocol::MAX_TERMINAL_RESULT_BYTES);
         assert_attempts_empty(&attempts);
 
-        let failure = make_source("#!/bin/sh\nset -eu\nprintf 'failed' >&2\nexit 7\n");
+        let failure = make_native_source(
+            "#!/bin/sh\nset -eu\nprintf 'failed' >&2\nexit 7\n",
+            "[Console]::Error.Write('failed')\nexit 7\n",
+        );
         let result = executor(&failure, &attempts)
             .execute(&request(BTreeMap::new(), 5_000))
             .expect("command failure is a terminal result");
@@ -1439,8 +1461,9 @@ mod tests {
 
     #[test]
     fn large_output_is_reduced_to_bounded_digest_and_tail() {
-        let source = make_source(
+        let source = make_native_source(
             "#!/bin/sh\nset -eu\ni=0\nwhile [ \"$i\" -lt 20000 ]; do\n  printf 'abcdef'\n  i=$((i + 1))\ndone\n",
+            "[Console]::Out.Write(('abcdef' * 20000))\n",
         );
         let attempts = tempfile::tempdir().expect("attempts");
         let result = executor(&source, &attempts)
@@ -1456,8 +1479,9 @@ mod tests {
 
     #[test]
     fn timeout_kills_process_group_and_cleans_attempt() {
-        let source = make_source(
+        let source = make_native_source(
             "#!/bin/sh\nset -eu\nsleep 30 &\nchild=$!\nprintf '%s' \"$child\" > \"$PID_FILE\"\nwait \"$child\"\n",
+            "$child = Start-Process -FilePath \"$env:SystemRoot\\System32\\ping.exe\" -ArgumentList @('-n', '31', '127.0.0.1') -NoNewWindow -PassThru\n[IO.File]::WriteAllText($env:PID_FILE, $child.Id.ToString())\n$child.WaitForExit()\n",
         );
         let attempts = tempfile::tempdir().expect("attempts");
         let pid_file = attempts
@@ -1497,6 +1521,23 @@ mod tests {
             }
             assert!(
                 gone,
+                "descendant process {child_pid} survived timeout cleanup"
+            );
+        }
+        #[cfg(windows)]
+        {
+            let child_pid = fs::read_to_string(&pid_file).expect("child pid");
+            let tasklist = windows_system_root(RunnerPlatform::Windows)
+                .expect("Windows root")
+                .expect("Windows root")
+                .join("System32/tasklist.exe");
+            let output = Command::new(tasklist)
+                .args(["/FI", &format!("PID eq {child_pid}"), "/FO", "CSV", "/NH"])
+                .output()
+                .expect("inspect descendant process");
+            assert!(output.status.success());
+            assert!(
+                !String::from_utf8_lossy(&output.stdout).contains(&format!(",\"{child_pid}\",")),
                 "descendant process {child_pid} survived timeout cleanup"
             );
         }

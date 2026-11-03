@@ -717,7 +717,7 @@ fn markdown_link_checker_rebases_sibling_repo_links_against_source_root() {
     fs::create_dir_all(&worktree_docs).unwrap();
     fs::write(
         temp.path().join(".ait-worktree.json"),
-        format!("{{\"repo_root\":\"{}\"}}\n", source_root.display()),
+        json!({"repo_root": source_root}).to_string(),
     )
     .unwrap();
     fs::write(

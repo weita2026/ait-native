@@ -1,0 +1,16 @@
+ait-native public source license scope
+
+The default license for this public monorepo is the Apache License, Version
+2.0 (`Apache-2.0`). It applies to the root release controls and documentation
+and to the complete `ait-core/**`, `ait-runner/**`, `ait-python/**`, and
+`ait-node/**` subtrees unless a file identifies incorporated third-party
+material under its own terms.
+
+The sole component exception is `ait-server/**`. That complete subtree is
+licensed under the GNU Affero General Public License, Version 3 only
+(`AGPL-3.0-only`), as stated by `ait-server/LICENSE`.
+
+Bundling these separately licensed components does not relicense either one.
+No commercial or proprietary license applies to a public 1.0 source path.
+Complete component notices remain in each subtree. The full Apache-2.0 terms
+for the default grant follow.

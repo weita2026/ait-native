@@ -1,0 +1,148 @@
+name: AIT source quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      diagnostic_reuse_r4_unix_runner:
+        description: '1.2.1 diagnostic batch only: validate retained R4 Unix Runner results'
+        type: boolean
+        required: false
+        default: false
+      diagnostic_windows_batch:
+        description: '1.2.1 diagnostic only: fixed Core probes, exact Runner case and strict Clippy'
+        type: boolean
+        required: false
+        default: false
+      diagnostic_runner_windows_verify:
+        description: '1.2.1 verification only: exact corrected Windows Runner legacy case'
+        type: boolean
+        required: false
+        default: false
+      diagnostic_affected_windows_verify:
+        description: '1.2.1 verification only: reviewed Core affected union and exact Runner case'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: source-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  locked-rust:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.diagnostic_windows_batch || inputs.diagnostic_runner_windows_verify || inputs.diagnostic_affected_windows_verify)) }}
+    name: Locked Core and Runner / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - name: Check out the tested source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust with quality components
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain=$(node -p 'JSON.parse(require("fs").readFileSync("ci/native_bootstrap_matrix.json", "utf8")).rust_toolchain')
+          rustup toolchain install "${toolchain}" --profile minimal --component rustfmt,clippy
+          rustup default "${toolchain}"
+      - name: Core gates (Unix)
+        id: core_unix
+        if: runner.os != 'Windows'
+        continue-on-error: true
+        shell: bash
+        run: bash ait-core/ci/run.sh patchset
+      - name: Runner gates (Unix)
+        id: runner_unix
+        if: runner.os != 'Windows' && !(github.event_name == 'workflow_dispatch' && inputs.diagnostic_reuse_r4_unix_runner)
+        continue-on-error: true
+        shell: bash
+        run: bash ait-runner/ci/run.sh all
+      - name: Core gates (Windows)
+        id: core_windows
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./ait-core/ci/run.ps1 patchset
+      - name: Runner gates (Windows)
+        id: runner_windows
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./ait-runner/ci/run.ps1 all
+      - name: Require both component results
+        if: always()
+        shell: bash
+        env:
+          CORE_RESULT: ${{ runner.os == 'Windows' && steps.core_windows.outcome || steps.core_unix.outcome }}
+          RUNNER_RESULT: ${{ runner.os == 'Windows' && steps.runner_windows.outcome || steps.runner_unix.outcome }}
+          DIAGNOSTIC_REUSE_R4: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_reuse_r4_unix_runner }}
+          SOURCE_QUALITY_EVENT: ${{ github.event_name }}
+          SOURCE_QUALITY_REPOSITORY: ${{ github.repository }}
+          SOURCE_QUALITY_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${DIAGNOSTIC_REUSE_R4:-false}" == true ]]; then
+            node ci/source-quality-r4-reuse.mjs
+          else
+            printf 'Core: %s\nRunner: %s\n' "${CORE_RESULT}" "${RUNNER_RESULT}"
+            [[ "${CORE_RESULT}" == success && "${RUNNER_RESULT}" == success ]]
+          fi
+  windows-diagnostic:
+    name: Windows diagnostic only
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.diagnostic_windows_batch || inputs.diagnostic_runner_windows_verify || inputs.diagnostic_affected_windows_verify) }}
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - name: Check out the exact diagnostic source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust for the diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain=$(node -p 'JSON.parse(require("fs").readFileSync("ci/native_bootstrap_matrix.json", "utf8")).rust_toolchain')
+          rustup toolchain install "${toolchain}" --profile minimal --component rustfmt,clippy
+          rustup default "${toolchain}"
+      - name: Collect the fixed minimal Windows inventory
+        id: diagnostic
+        shell: pwsh
+        env:
+          SOURCE_QUALITY_EVENT: ${{ github.event_name }}
+          SOURCE_QUALITY_REPOSITORY: ${{ github.repository }}
+          SOURCE_QUALITY_REF: ${{ github.ref }}
+          DIAGNOSTIC_REUSE_R4: ${{ inputs.diagnostic_reuse_r4_unix_runner }}
+          DIAGNOSTIC_WINDOWS_BATCH: ${{ inputs.diagnostic_windows_batch }}
+          DIAGNOSTIC_RUNNER_WINDOWS_VERIFY: ${{ inputs.diagnostic_runner_windows_verify }}
+          DIAGNOSTIC_AFFECTED_WINDOWS_VERIFY: ${{ inputs.diagnostic_affected_windows_verify }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./ci/windows-diagnostic.ps1
+          exit $LASTEXITCODE
+      - name: Retain original diagnostic streams and Process Monitor capture
+        if: always() && (inputs.diagnostic_windows_batch || inputs.diagnostic_affected_windows_verify) && steps.diagnostic.outputs.evidence_root != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.diagnostic.outputs.evidence_root }}/*.stdout
+            ${{ steps.diagnostic.outputs.evidence_root }}/*.stderr
+            ${{ steps.diagnostic.outputs.evidence_root }}/*.pml
+            ${{ steps.diagnostic.outputs.evidence_root }}/*.csv
+          if-no-files-found: error

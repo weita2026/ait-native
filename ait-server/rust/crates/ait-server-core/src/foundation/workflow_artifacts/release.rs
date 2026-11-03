@@ -201,6 +201,10 @@ fn release_artifact_pack_content(
         &format!("Release artifact {kind} content_pack.bytes"),
     )?;
     let mut archive = ZipArchive::new(Cursor::new(pack_bytes)).map_err(|exc| exc.to_string())?;
+    // Reject ambiguous local/central headers before reading manifest or content.
+    archive
+        .validate_header_consistency()
+        .map_err(|exc| exc.to_string())?;
     let manifest_bytes = read_zip_entry(&mut archive, RELEASE_ARTIFACT_PACK_MANIFEST_ENTRY)
         .map_err(|_| format!("Release artifact {kind} content_pack is missing manifest"))?;
     let manifest = serde_json::from_slice::<JsonValue>(&manifest_bytes).map_err(|exc| {

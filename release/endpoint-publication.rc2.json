@@ -1,0 +1,93 @@
+{
+  "contract": "ait.release.family.endpoints/v1",
+  "release": {
+    "id": "REL-FAM-0B6EDBCCA2EFE26B",
+    "version": "1.0.0-rc.2",
+    "python_version": "1.0.0rc2",
+    "tag": "v1.0.0-rc.2",
+    "source_commit": "3dfd9dde5a9867cfe265352f48540fa8241f8e66",
+    "coordinator_snapshot": "SNP-152CBCB22EAC",
+    "frozen_manifest_sha256": "38cf7635d398294e2a433caf4d54444fdf97ffdfaa8307a0782247939841ac56",
+    "frozen_checksums_sha256": "51cadec032ca6bcab2a27fc60538886a90288e1c9eff97a82e7a15be13fd3896"
+  },
+  "source_dossier": {
+    "workflow_run_id": 31629973956,
+    "workflow_run_attempt": 1,
+    "artifact_id": 9155572246,
+    "artifact_digest": "sha256:c474158c8d1c60ea31b7c32f179cf870154ca66ff0584aec936996bc76d13f1c"
+  },
+  "protected_authorization": {
+    "workflow_run_id": 31633959182,
+    "workflow_run_attempt": 1,
+    "artifact_id": 9156215006,
+    "artifact_digest": "sha256:facc6cc34d3543840b2f66952368d8e1f9b15e2b6e60e219138a22106e64a9ae",
+    "evidence_sha256": "bf39d37aec86cbb83d58cdd218fb179668cabc08ca0c3b0049b9c6722245414d"
+  },
+  "publisher": {
+    "repository": "weita2026/ait-native",
+    "workflow": "pypi-publish.yml",
+    "environment": "pypi"
+  },
+  "endpoints": {
+    "github": {
+      "repository": "weita2026/ait-native",
+      "prerelease": true
+    },
+    "pypi": {
+      "base_url": "https://pypi.org",
+      "identity": "ait-native",
+      "trusted_publisher": {
+        "repository": "weita2026/ait-native",
+        "workflow": "pypi-publish.yml",
+        "environment": "pypi"
+      }
+    },
+    "npm": {
+      "registry": "https://registry.npmjs.org",
+      "dist_tag": "rc",
+      "credential_secret": "AIT_NPM_TOKEN",
+      "packages": [
+        "ait-native",
+        "ait-native-ait-darwin-arm64",
+        "ait-native-ait-darwin-x64",
+        "ait-native-ait-linux-arm64",
+        "ait-native-ait-linux-x64",
+        "ait-native-ait-win32-arm64",
+        "ait-native-ait-win32-x64"
+      ]
+    },
+    "homebrew": {
+      "repository": "weita2026/homebrew-ait-native",
+      "branch": "main",
+      "formula_path": "Formula/ait-native-rc.rb",
+      "tap": "weita2026/ait-native",
+      "deploy_key_secret": "AIT_HOMEBREW_DEPLOY_KEY"
+    },
+    "apt": {
+      "repository": "weita2026/apt-ait-native",
+      "branch": "main",
+      "base_url": "https://raw.githubusercontent.com/weita2026/apt-ait-native/main",
+      "suite": "testing",
+      "component": "main",
+      "signing_fingerprint": "F3A43E51AB73AD580ADE43634D84B16BA88BC9BD",
+      "signing_key_secret": "AIT_APT_SIGNING_KEY_B64",
+      "signing_passphrase_secret": "AIT_APT_SIGNING_PASSPHRASE",
+      "deploy_key_secret": "AIT_APT_REPO_DEPLOY_KEY"
+    },
+    "winget": {
+      "identity": "Weita.AitNative",
+      "route": "validation",
+      "community_manifest_submission": false
+    },
+    "oci": {
+      "dockerfile_frontend": "docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e",
+      "base_image": "docker.io/library/debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241",
+      "images": [
+        "ghcr.io/weita2026/ait-server",
+        "ghcr.io/weita2026/ait-runner"
+      ],
+      "immutable_tag": "1.0.0-rc.2",
+      "moving_tag": "rc"
+    }
+  }
+}

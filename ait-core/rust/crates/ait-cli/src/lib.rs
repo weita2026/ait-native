@@ -2,6 +2,7 @@
 
 extern crate self as ait_cli;
 
+mod closeout_context;
 mod main_app;
 
 pub use main_app::{entry, entry_with_args};

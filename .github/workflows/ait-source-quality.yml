@@ -1,50 +1,123 @@
 name: AIT source quality
 
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      diagnostic_affected_consumers:
+        description: Frozen complete-source 1.2.1 consumer preparation only
+        required: true
+        type: boolean
+        default: false
+      coordinator_snapshot:
+        description: Exact independently reviewed Native control Snapshot
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: source-quality-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: affected-consumers-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
-  locked-rust:
-    name: Locked Core and Runner / ${{ matrix.os }}
+  affected-consumers:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_affected_consumers }}
+    name: Affected ${{ matrix.consumer }} / ${{ matrix.target }}
     strategy:
       fail-fast: false
+      max-parallel: 12
       matrix:
-        os: [ubuntu-22.04, macos-14, windows-2025]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+        consumer: [runner, node, python]
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-gnu
+          - aarch64-pc-windows-msvc
+          - x86_64-pc-windows-msvc
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-15
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
     steps:
-      - name: Check out the tested source
+      - name: Check out the immutable reviewed carrier
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Install pinned Rust with quality components
+      - name: Install Node.js for source validation and bindings
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install Python 3.11
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Install the pinned Rust target and quality components
         shell: bash
+        env:
+          AIT_TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          toolchain=$(node -p 'JSON.parse(require("fs").readFileSync("ci/native_bootstrap_matrix.json", "utf8")).rust_toolchain')
-          rustup toolchain install "${toolchain}" --profile minimal --component rustfmt,clippy
-          rustup default "${toolchain}"
-      - name: Core and Runner gates (Unix)
-        if: runner.os != 'Windows'
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt,clippy
+          rustup target add --toolchain 1.96.0 "${AIT_TARGET}"
+          rustup default 1.96.0
+      - name: Install the declared wheel builder
+        if: matrix.consumer == 'python'
         shell: bash
-        run: |
-          set -euo pipefail
-          bash ait-core/ci/run.sh patchset
-          bash ait-runner/ci/run.sh all
-      - name: Core and Runner gates (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & ./ait-core/ci/run.ps1 patchset
-          & ./ait-runner/ci/run.ps1 all
+        run: python -m pip install --no-cache-dir --disable-pip-version-check maturin==1.13.3
+      - name: Install the declared manylinux linker
+        if: matrix.consumer == 'python' && runner.os == 'Linux'
+        shell: bash
+        run: python -m pip install --no-cache-dir --disable-pip-version-check ziglang==0.15.2
+      - name: Run the complete affected consumer inventory
+        shell: bash
+        env:
+          AIT_CONTROL_SNAPSHOT: ${{ inputs.coordinator_snapshot }}
+          DIAGNOSTIC_AFFECTED_CONSUMERS: ${{ inputs.diagnostic_affected_consumers }}
+          AIT_CONSUMER: ${{ matrix.consumer }}
+          AIT_TARGET: ${{ matrix.target }}
+        run: node ci/release_affected_consumers.mjs "${AIT_CONSUMER}" "${AIT_TARGET}"
+      - name: Retain prepared Python wheels
+        if: always() && matrix.consumer == 'python'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: affected-python-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ait-python/dist/wheels/*.whl
+          if-no-files-found: warn
+      - name: Retain prepared Node addon
+        if: always() && matrix.consumer == 'node'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: affected-node-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ait-node/dist/npm-addons/*.tgz
+          if-no-files-found: warn
+      - name: Retain the selected portable envelope
+        if: always() && matrix.consumer == 'node' && matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: affected-node-portable-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ait-node/dist/wa120-ait-native-1.2.1.tgz
+          if-no-files-found: warn
+      - name: Retain prepared Runner binary
+        if: always() && matrix.consumer == 'runner'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: affected-runner-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ait-affected-runner/binary/${{ matrix.target }}/release/ait-runner
+            ${{ runner.temp }}/ait-affected-runner/binary/${{ matrix.target }}/release/ait-runner.exe
+          if-no-files-found: warn

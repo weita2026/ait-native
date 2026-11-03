@@ -226,7 +226,9 @@ impl BinaryDbCommandScope {
 }
 
 pub(crate) fn validate_store_relative_path(path: &Path) -> StoreResult<&Path> {
-    if path.is_absolute() {
+    // Windows rooted and drive-relative paths can replace an authority prefix
+    // during join even though is_absolute() returns false.
+    if path.has_root() || matches!(path.components().next(), Some(Component::Prefix(_))) {
         return Err(BinaryDbError::invalid_domain_data(format!(
             "path must be relative: {}",
             path.display()

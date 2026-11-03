@@ -84,9 +84,9 @@ fn generated_worktree_cargo_config_text(root: &Path) -> String {
         .join("task-workspaces")
         .join("lct-test");
     format!(
-        "# Managed by ait: workspace-isolated final artifacts and intermediates.\n[build]\ntarget-dir = \"{}\"\nbuild-dir = \"{}\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
-        target_dir.to_string_lossy(),
-        build_dir.to_string_lossy(),
+        "# Managed by ait: workspace-isolated final artifacts and intermediates.\n[build]\ntarget-dir = {}\nbuild-dir = {}\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
+        json!(target_dir),
+        json!(build_dir),
     )
 }
 
@@ -194,11 +194,8 @@ fn activated_task_worktree_uses_canonical_repository_and_scans_only_its_workspac
     );
     write_file(
         &workspace.join(".ait-worktree.json"),
-        &format!(
-            r#"{{"repo_root":"{}","workspace_root":"{}","worktree_name":"rct-test"}}"#,
-            repo.to_string_lossy(),
-            workspace.to_string_lossy()
-        ),
+        &json!({"repo_root": repo, "workspace_root": workspace, "worktree_name": "rct-test"})
+            .to_string(),
     );
     write_file(&workspace.join("worktree.txt"), "worktree content\n");
 
@@ -2394,10 +2391,7 @@ fn binary_db_store_factory_uses_task_scope_for_worktrees() {
     write_file(&root.join(".ait/config.json"), r#"{"repo_name":"ait"}"#);
     write_file(
         &root.join(".ait-worktree.json"),
-        &format!(
-            r#"{{"repo_root":"{}","worktree_name":"rt-1"}}"#,
-            authoritative_root.to_string_lossy()
-        ),
+        &json!({"repo_root": authoritative_root, "worktree_name": "rt-1"}).to_string(),
     );
 
     let ctx = RepoRuntime::discover_from(root).unwrap();
@@ -2421,10 +2415,7 @@ fn binary_store_factory_uses_authoritative_repo_root() {
     write_file(&root.join(".ait/config.json"), r#"{"repo_name":"ait"}"#);
     write_file(
         &root.join(".ait-worktree.json"),
-        &format!(
-            r#"{{"repo_root":"{}","worktree_name":"rt-1"}}"#,
-            authoritative_root.to_string_lossy()
-        ),
+        &json!({"repo_root": authoritative_root, "worktree_name": "rt-1"}).to_string(),
     );
 
     let ctx = RepoRuntime::discover_from(root).unwrap();
@@ -2445,32 +2436,31 @@ fn binary_store_factory_uses_authoritative_repo_root() {
 fn authoritative_repo_root_prefers_overlay_repo_root() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
+    let authoritative_root = root.join("ait-root");
     fs::create_dir_all(root.join(".ait")).unwrap();
     write_file(&root.join(".ait/config.json"), r#"{"repo_name":"ait"}"#);
     write_file(
         &root.join(".ait-worktree.json"),
-        r#"{"repo_root":"/tmp/ait-root","worktree_name":"rt-1"}"#,
+        &json!({"repo_root": authoritative_root, "worktree_name": "rt-1"}).to_string(),
     );
     let ctx = RepoRuntime::discover_from(root).unwrap();
-    assert_eq!(
-        ctx.authoritative_repo_root(),
-        PathBuf::from("/tmp/ait-root")
-    );
+    assert_eq!(ctx.authoritative_repo_root(), authoritative_root);
 }
 
 #[test]
 fn workspace_root_prefers_overlay_workspace_root() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
+    let workspace_root = root.join("ait-worktree");
     fs::create_dir_all(root.join(".ait")).unwrap();
     fs::write(root.join(".ait/config.json"), r#"{"repo_name":"fixture"}"#).unwrap();
     fs::write(
         root.join(".ait-worktree.json"),
-        r#"{"workspace_root":"/tmp/ait-worktree","worktree_name":"rt-1"}"#,
+        json!({"workspace_root": workspace_root, "worktree_name": "rt-1"}).to_string(),
     )
     .unwrap();
     let ctx = RepoRuntime::discover_from(root).unwrap();
-    assert_eq!(ctx.workspace_root(), PathBuf::from("/tmp/ait-worktree"));
+    assert_eq!(ctx.workspace_root(), workspace_root);
 }
 
 #[test]

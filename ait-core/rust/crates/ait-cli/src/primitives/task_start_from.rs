@@ -1172,8 +1172,9 @@ mod tests {
             "# Root [plan-ref: root]\n\n- [x] Closed. [ref: root/closed]\n- [ ] First. [ref: root/duplicate]\n- [ ] Second. [ref: root/duplicate]\n",
         );
 
+        let absolute = format!("{}#root/closed", temp.path().join("card.md").display());
         for (source, expected) in [
-            ("/tmp/card.md#root/closed", "repository-relative"),
+            (absolute.as_str(), "repository-relative"),
             ("../card.md#root/closed", "parent-directory traversal"),
             ("docs/sprints/card.txt#root/closed", "Markdown"),
             ("docs/sprints/card.md", "must use"),

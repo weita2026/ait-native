@@ -1059,7 +1059,8 @@ pub(in crate::primitives::git_interop) fn migrate(
         repo_root: canonical.clone(),
         generation_root: stage.clone(),
         expected_current_authority_fingerprint: None,
-    })?;
+    })
+    .map_err(|error| format!("Failed to activate legacy Git migration generation: {error}"))?;
     #[cfg(test)]
     if let Some(marker) = std::env::var_os("AIT_GIT_LEGACY_ARCHIVE_TEST_PAUSE") {
         fs::write(
@@ -1082,10 +1083,20 @@ pub(in crate::primitives::git_interop) fn migrate(
         if retained.exists() {
             return Err("retained Tag evidence destination appeared".into());
         }
-        fs::rename(&tags, &retained).map_err(|e| e.to_string())?;
-        fs::File::open(tags.parent().unwrap())
-            .and_then(|f| f.sync_all())
-            .map_err(|e| e.to_string())?;
+        fs::rename(&tags, &retained).map_err(|error| {
+            format!(
+                "Failed to archive legacy Tag evidence {} -> {}: {error}",
+                tags.display(),
+                retained.display()
+            )
+        })?;
+        let directory = tags.parent().unwrap();
+        FilesystemFileIoStore.sync_dir(directory).map_err(|error| {
+            format!(
+                "Failed to sync legacy Tag archive directory {}: {error}",
+                directory.display()
+            )
+        })?;
     }
     Ok(
         json!({"operation":"git.migrate","status":"migrated","mutated":true,"staging_root":stage,"content_fingerprint":fingerprint,"legacy_mapping_count":input.mappings.len(),"legacy_tag_count":input.tags.len(),"retained_previous_authority":activated.retained_previous_authority,"retained_tag_evidence":retained,"runtime_json_writes":0}),
