@@ -716,12 +716,35 @@ git -C "${fixture}" checkout -q --detach "${unbound_qualified_commit}"
 immutable_core=${fixture}/ait-runner/.ait-external/ait-core
 mkdir -p "${immutable_core}"
 printf 'version = "1.2.3"\n' >"${immutable_core}/Cargo.toml"
+printf '[package]\nversion = "1.2.3"\n[dependencies]\nait-core = { path = ".ait-external/ait-core/rust/crates/ait-core" }\n' \
+  >"${fixture}/ait-runner/Cargo.toml"
 git -C "${fixture}" add -A
 git -C "${fixture}" commit -qm 'qualified immutable Runner dependency'
 immutable_qualified=$(git -C "${fixture}" rev-parse HEAD)
 write_component_authority_family 1.2.4 1.2.4 SNP-CCCCCCCCCCCC SNP-CCCCCCCCCCCC
 jq -S '.components[].source_snapshot = "unbound"' "${fixture}/ait-core/ait-release-family.json" >"${fixture}/ait-core/family.tmp"
 mv "${fixture}/ait-core/family.tmp" "${fixture}/ait-core/ait-release-family.json"
+printf '[package]\nversion = "1.2.4"\n[dependencies]\nait-core = { path = ".ait-external/ait-core/rust/crates/ait-core" }\n' \
+  >"${fixture}/ait-runner/Cargo.toml"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'version-only pair retains the declared Runner dependency'
+retained_release=$(git -C "${fixture}" rev-parse HEAD)
+node "${delta}" --repository "${fixture}" --qualified-commit "${immutable_qualified}" \
+  --release-commit "${retained_release}" >"${temporary_root}/retained-runner-delta.json"
+jq -e '.decision == "pass"' "${temporary_root}/retained-runner-delta.json" >/dev/null
+git -C "${fixture}" checkout -q --detach "${immutable_qualified}"
+git -C "${fixture}" checkout "${retained_release}" -- .
+printf '[package]\nversion = "1.2.4"\n[dependencies]\nait-core = { path = "../ait-core/rust/crates/ait-core" }\n' \
+  >"${fixture}/ait-runner/Cargo.toml"
+git -C "${fixture}" add -A
+git -C "${fixture}" commit -qm 'forbidden non-version Runner dependency path change'
+changed_runner_path=$(git -C "${fixture}" rev-parse HEAD)
+expect_failure runner-dependency-path node "${delta}" --repository "${fixture}" \
+  --qualified-commit "${immutable_qualified}" --release-commit "${changed_runner_path}"
+grep -F 'release delta contains non-version changes: ait-runner/Cargo.toml' \
+  "${temporary_root}/runner-dependency-path.stderr" >/dev/null
+git -C "${fixture}" checkout -q --detach "${immutable_qualified}"
+git -C "${fixture}" checkout "${retained_release}" -- .
 printf 'version = "1.2.4"\n' >"${immutable_core}/Cargo.toml"
 git -C "${fixture}" add -A
 git -C "${fixture}" commit -qm 'forbidden version rewrite of immutable dependency'

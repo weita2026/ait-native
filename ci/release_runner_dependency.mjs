@@ -119,8 +119,11 @@ export function validateRunnerDependencySource(runner, mainCore) {
   const cargo = regular(path.join(runner, "Cargo.toml"));
   const matches = [...cargo.matchAll(/^ait-core\s*=\s*\{[^\n]*\bpath\s*=\s*"([^"]+)"[^\n]*\}\s*$/gm)];
   assert.equal(matches.length, 1, "Runner must use one explicit Core Cargo path");
-  const expected = equivalent ? "../ait-core/rust/crates/ait-core" : `${RUNNER_CORE_PATH}/rust/crates/ait-core`;
-  assert.equal(matches[0][1], expected, "Runner Core path does not preserve the declared source or proven equivalent subtree");
+  const retainedPath = `${RUNNER_CORE_PATH}/rust/crates/ait-core`;
+  // New exports retain the declared path even when the main Core is equal.
+  // Historical sibling-path exports still require complete byte/mode equality.
+  assert(matches[0][1] === retainedPath || (equivalent && matches[0][1] === "../ait-core/rust/crates/ait-core"),
+    "Runner Core path does not preserve the declared source or proven equivalent subtree");
   return { declared, equivalent, source };
 }
 
