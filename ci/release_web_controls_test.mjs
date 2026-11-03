@@ -7,13 +7,19 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { currentControls, unchangedSettings, validateCurrentDoctor, renderedControls, explicitAuthority,
-  authorityArgv, scopedReadUrl, taskStartRequest, taskStartInspectLocation, taskStartOutcome, validateCaptureAuthority, webPersonalInScope, webCommunityInScope, validateWebOperation, webAcceptanceTree, validateBrowserRuntimeHead, validateWebBrowser, validateWebDirect } from "./release_web_controls.mjs";
+  authorityArgv, scopedReadUrl, taskStartRequest, taskStartInspectLocation, taskStartOutcome, validateCaptureAuthority, webPersonalMayBeOmitted, webPersonalInScope, webCommunityInScope, validateWebOperation, webAcceptanceTree, validateBrowserRuntimeHead, validateWebBrowser, validateWebDirect } from "./release_web_controls.mjs";
 import { Cdp, openNativeBrowser } from "./release_web_browser_evidence.mjs";
 
 const browserSource = readFileSync(new URL("./release_web_browser_evidence.mjs", import.meta.url), "utf8");
 assert(!/window\.(?:confirm|fetch)\s*=|\.requestSubmit\s*\(/.test(browserSource), "UI qualification must use actual controls and dialogs");
 assert(!/runPersonalTaskStartBrowserScenario\(\{\s*cdp:/.test(browserSource), "the live adapter requires WT's Playwright page");
 await assert.rejects(openNativeBrowser({ helper: "relative", playwrightModule: "relative" }), /absolute path/);
+assert.equal(webPersonalMayBeOmitted({ version: "1.2.0" }), true);
+assert.equal(webPersonalMayBeOmitted({ version: "1.2.1", channel: "stable" }), true);
+for (const release of [undefined, { version: "1.1.4", channel: "stable" }, { version: "1.2.2", channel: "stable" },
+  { version: "2.0.0", channel: "stable" }, { version: "1.2.1", channel: "preview" }, { version: "1.2.1" }]) {
+  assert.equal(webPersonalMayBeOmitted(release), false);
+}
 
 const config = { repo_name: "ait-web-test", repository_index: 23,
   workflow_default_scope: { workflow: { value: "local", source: "core_route" }, task: { value: "remote", source: "fixture_explicit" }, change: { value: "local", source: "core_route" } },
@@ -366,6 +372,23 @@ run_direct solo_local solo_local solo-local local
   const nextProduced = spawnSync(process.execPath, nextArgs, { encoding: "utf8", env: environment });
   assert.equal(nextProduced.status, 0, nextProduced.stderr);
   assert.equal(JSON.parse(readFileSync(nextInput)).components.community, communityStatus.head_snapshot_id);
+  const retainedPatchRoot = path.join(temporary, "patch-retained"); mkdirSync(retainedPatchRoot);
+  const retainedPatchPath = path.join(retainedPatchRoot, "input.json"), retainedPatchArgs = [...initArgs];
+  retainedPatchArgs[retainedPatchArgs.indexOf("--output") + 1] = retainedPatchPath;
+  const retainedPatchProduced = spawnSync(process.execPath, retainedPatchArgs, { encoding: "utf8", env: environment });
+  assert.equal(retainedPatchProduced.status, 0, retainedPatchProduced.stderr);
+  const retainedPatch = JSON.parse(readFileSync(retainedPatchPath));
+  assert.equal(webPersonalInScope(retainedPatch), false); assert.equal(webCommunityInScope(retainedPatch), true);
+  assert(!Object.hasOwn(retainedPatch.components, "personal")); assert(!Object.hasOwn(retainedPatch.executables, "personal"));
+  assert.deepEqual(Object.keys(retainedPatch.browser_evidence).sort(), ["solo_local", "solo_remote"]);
+  for (const release of [{ version: "1.2.2", channel: "stable" }, { version: "1.2.1", channel: "preview" }]) {
+    assert.throws(() => webPersonalInScope({ ...retainedPatch, release }));
+  }
+  const missingPatchCommunity = copy(retainedPatch);
+  delete missingPatchCommunity.components.community;
+  delete missingPatchCommunity.executables.community; delete missingPatchCommunity.executables.community_cli;
+  assert.throws(() => webCommunityInScope(missingPatchCommunity), /Community omission/);
+  assert.throws(() => webPersonalInScope({ ...retainedPatch, components: { ...retainedPatch.components, personal: browserStatus.head_snapshot_id } }));
   writeFileSync(candidateFile, JSON.stringify(candidate));
   // The opposite partial selection, executable without component, also rejects
   // at initialization rather than executing a downgraded branch.
@@ -380,6 +403,8 @@ run_direct solo_local solo_local solo-local local
       filesystem_path_leak: false, repository_identity_leak: false, upstream_server_url_leak: false }, routes: ["/", "/actions"] };
   const browserEvidence = mode => ({ contract: "ait-web-test.browser-evidence.v1", mode, repository: { head_snapshot_id: browserStatus.head_snapshot_id, index: 23, name: "ait-web-test", namespace: "WT", line: "main", workspace: "clean" }, community: metrics });
   validateWebBrowser(browserEvidence("solo_local"), bound, "solo_local");
+  validateWebBrowser(browserEvidence("solo_local"), retainedPatch, "solo_local");
+  assert.throws(() => validateWebBrowser({ ...browserEvidence("solo_local"), personal: {} }, retainedPatch, "solo_local"));
   assert.throws(() => validateWebBrowser({ ...browserEvidence("solo_local"), personal: {} }, bound, "solo_local"));
   assert.throws(() => validateWebBrowser({ ...browserEvidence("solo_local"), community: { ...metrics, failed_request_count: 1 } }, bound, "solo_local"));
   const { catalog: unusedCatalog, companion_binary_sha256: unusedCompanion, ...personalMetrics } = metrics;
@@ -438,6 +463,17 @@ process.exit(state.diffStatus ?? 0);
   for (const head of [undefined, "SNP-UNKNOWN", "SNP-222222222222\n"]) assert.throws(() => validateBrowserRuntimeHead(head, headInput, temporary));
   assert.throws(() => validateBrowserRuntimeHead(runtimeHead, headInput));
   assert.throws(() => validateBrowserRuntimeHead(runtimeHead, bound, temporary), /full Personal lifecycle/);
+  const retainedHeadInput = copy(headInput);
+  retainedHeadInput.release = { ...retainedPatch.release };
+  delete retainedHeadInput.components.personal; delete retainedHeadInput.executables.personal;
+  validateBrowserRuntimeHead(runtimeHead, retainedHeadInput, temporary);
+  for (const state of [{ ancestorStatus: 1 }, { ancestorStatus: 2 },
+    { difference: { ...emptyDifference, files: [{ path: "fixture.txt", status: "modified" }] } },
+    { difference: { ...emptyDifference, mode_changed: ["fixture.txt"] } }]) {
+    writeHeadProof(state);
+    assert.throws(() => validateBrowserRuntimeHead(runtimeHead, retainedHeadInput, temporary));
+  }
+  writeHeadProof({});
   const alteredSource = copy(headInput); alteredSource.components.web_test = runtimeHead;
   assert.throws(() => validateBrowserRuntimeHead(runtimeHead, alteredSource, temporary), /original Web source identity/);
   const alteredReader = copy(headInput); alteredReader.executables.ait.sha256 = "0".repeat(64);

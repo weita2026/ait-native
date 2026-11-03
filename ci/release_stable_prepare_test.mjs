@@ -299,6 +299,18 @@ else process.exit(99);\n`, 0o755);
     const fullSpec = path.join(fullRequest.records_root, "release-spec.json");
     run("release_stable_spec.mjs", ["--input", fullAcceptedPath, "--output", fullSpec]);
     assert.equal(JSON.parse(readFileSync(fullSpec)).values.community_root, communityRoot);
+    // A new scope selection writes new records; the original accepted input
+    // and its full/paused source bindings stay immutable.
+    const patchAccepted = structuredClone(fullAccepted);
+    patchAccepted.release = { channel: "stable", prior_version: "1.2.0", version: "1.2.1" };
+    patchAccepted.records_root = path.join(root, "patch-scope-records"); mkdirSync(patchAccepted.records_root);
+    const patchAcceptedPath = path.join(patchAccepted.records_root, "accepted-input.json");
+    const patchSpec = path.join(patchAccepted.records_root, "release-spec.json");
+    writeFileSync(patchAcceptedPath, JSON.stringify(patchAccepted));
+    run("release_stable_spec.mjs", ["--input", patchAcceptedPath, "--output", patchSpec]);
+    const patchValues = JSON.parse(readFileSync(patchSpec)).values;
+    assert.equal(patchValues.personal_bin, ""); assert.equal(patchValues.personal_root, "");
+    assert.equal(patchValues.community_bin, service); assert.equal(patchValues.community_root, communityRoot);
     data.head = "SNP-BBBBBBBBBBBB"; persist();
     run("release_stable_prepare.mjs", ["run", "--request", requestPath], 75);
     data.head = head; persist();
@@ -590,6 +602,14 @@ try {
       `import { validateRequest } from ${JSON.stringify(new URL("./release_stable_prepare.mjs", import.meta.url).href)}; const {request}=validateRequest(process.argv[1]); console.log(Object.hasOwn(request.paths,"personal_bin")?"full":"retained");`, requestFile], { encoding: "utf8" });
   };
   assert.equal(checkRequest(sourceRequest).stdout.trim(), "retained");
+  const patchRequest = structuredClone(sourceRequest);
+  patchRequest.release = { channel: "stable", prior_version: "1.2.0", version: "1.2.1" };
+  assert.equal(checkRequest(patchRequest).stdout.trim(), "retained");
+  for (const version of ["1.1.4", "1.2.2", "2.0.0"]) {
+    const changed = structuredClone(patchRequest);
+    changed.release = { channel: "stable", prior_version: version === "1.1.4" ? "1.1.3" : version === "1.2.2" ? "1.2.1" : "1.9.9", version };
+    assert.notEqual(checkRequest(changed).status, 0);
+  }
   const pausedRequest = structuredClone(sourceRequest);
   for (const key of ["community_root", "community_bin", "community_cli_bin", "chrome"]) delete pausedRequest.paths[key];
   delete pausedRequest.web.community_snapshot;

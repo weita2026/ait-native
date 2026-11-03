@@ -1494,11 +1494,17 @@ mod tests {
             "PID_FILE".to_string(),
             pid_file.to_string_lossy().to_string(),
         );
+        #[cfg(windows)]
+        assert!(!pid_file.exists(), "child PID evidence must start absent");
+        // Cold Windows PowerShell/Start-Process startup can exceed two seconds.
+        // Leave startup time before exercising real descendant timeout cleanup.
+        let timeout_ms = if cfg!(windows) { 10_000 } else { 2_000 };
         let result = executor(&source, &attempts)
-            .execute(&request(environment, 2_000))
+            .execute(&request(environment, timeout_ms))
             .expect("timeout result");
         assert_eq!(result.status, TerminalStatus::TimedOut);
         assert!(result.suite_results[0].execution.timed_out);
+        assert!(result.suite_results[0].execution.duration_ms >= timeout_ms);
         assert_attempts_empty(&attempts);
 
         #[cfg(unix)]
@@ -1526,7 +1532,11 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            let child_pid = fs::read_to_string(&pid_file).expect("child pid");
+            let child_pid = fs::read_to_string(&pid_file)
+                .expect("child pid")
+                .parse::<u32>()
+                .expect("numeric child pid");
+            assert_ne!(child_pid, 0, "child PID evidence must identify a process");
             let tasklist = windows_system_root(RunnerPlatform::Windows)
                 .expect("Windows root")
                 .expect("Windows root")

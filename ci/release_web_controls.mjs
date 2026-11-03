@@ -47,7 +47,11 @@ export function validateCurrentDoctor(config, doctor) {
   assert.equal(doctor.repository.sprint, controls.sprint.value);
 }
 
-// The owner's deferral is specific to this release. Presence of the existing
+export function webPersonalMayBeOmitted(release) {
+  return release?.version === "1.2.0" || (release?.version === "1.2.1" && release.channel === "stable");
+}
+
+// The owner's deferrals cover 1.2.0 and stable 1.2.1. Presence of the existing
 // Personal executable selects the original full-Web contract.
 export function webPersonalInScope(input) {
   const personal = Object.hasOwn(input.executables ?? {}, "personal");
@@ -58,7 +62,7 @@ export function webPersonalInScope(input) {
     assert(typeof input.executables.personal.path === "string" && path.isAbsolute(input.executables.personal.path));
     assert.match(input.executables.personal.sha256, /^[0-9a-f]{64}$/);
   }
-  assert(personal || input.release?.version === "1.2.0", "Personal omission is authorized only for the selected 1.2.0 release");
+  assert(personal || webPersonalMayBeOmitted(input.release), "Personal omission is authorized only for 1.2.0 or stable 1.2.1");
   return personal;
 }
 
@@ -237,7 +241,8 @@ export function validateBrowserRuntimeHead(runtimeHead, input, repository) {
   assert.equal(original.length, 16); assert.equal(runtimeHead.length, 16);
   assert.equal(input.components?.web_test, original, "original Web source identity differs from its input");
   if (runtimeHead === original) return;
-  assert(webPersonalInScope(input), "runtime head equivalence requires the full Personal lifecycle scope");
+  assert(webPersonalInScope(input) || (input.release?.version === "1.2.1" && input.release.channel === "stable"),
+    "runtime head equivalence requires the full Personal lifecycle or stable 1.2.1 retained native scope");
   assert(typeof repository === "string" && path.isAbsolute(repository), "runtime head proof requires the bound Repository");
   const reader = input.executables?.ait;
   const readerStat = lstatSync(reader.path);

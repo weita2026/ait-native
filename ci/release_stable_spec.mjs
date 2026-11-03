@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { webCommunityPathsInScope } from "./release_web_controls.mjs";
+import { webCommunityPathsInScope, webPersonalMayBeOmitted } from "./release_web_controls.mjs";
 
 function fail(message, code = 65) {
   process.stderr.write(`${message}\n`);
@@ -40,7 +40,7 @@ if (!output.startsWith(`${recordsRoot}${path.sep}`)) fail("stable release spec o
 
 const paths = input.paths ?? {};
 const personal = Object.hasOwn(paths, "personal_bin") || Object.hasOwn(paths, "personal_root");
-if (!personal && input.release.version !== "1.2.0") fail("Personal omission is authorized only for 1.2.0");
+if (!personal && !webPersonalMayBeOmitted(input.release)) fail("Personal omission is authorized only for 1.2.0 or stable 1.2.1");
 const community = webCommunityPathsInScope(paths, input.release, personal);
 if (community !== Object.hasOwn(input.web ?? {}, "community_snapshot")) fail("Community source Snapshot and paths must be selected together");
 const requiredPaths = [

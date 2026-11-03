@@ -13,6 +13,11 @@ on:
         required: false
         type: boolean
         default: false
+      diagnostic_runner_windows_verify:
+        description: Exact corrected Runner timeout library case on Windows x64 and ARM64
+        required: false
+        type: boolean
+        default: false
       coordinator_snapshot:
         description: Exact independently reviewed Native control Snapshot
         required: true
@@ -28,7 +33,7 @@ concurrency:
 
 jobs:
   affected-consumers:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_affected_consumers && !inputs.diagnostic_runner_timeout }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_affected_consumers && !inputs.diagnostic_runner_timeout && !inputs.diagnostic_runner_windows_verify }}
     name: Affected ${{ matrix.consumer }} / ${{ matrix.target }}
     strategy:
       fail-fast: false
@@ -130,10 +135,14 @@ jobs:
           if-no-files-found: warn
 
   windows-diagnostic:
-    name: Windows diagnostic only
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_runner_timeout }}
-    runs-on: windows-2025
-    timeout-minutes: 10
+    name: Windows diagnostic / ${{ matrix.target }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.diagnostic_runner_timeout || inputs.diagnostic_runner_windows_verify) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.diagnostic_runner_windows_verify && '[{"runner":"windows-2025","target":"x86_64-pc-windows-msvc"},{"runner":"windows-11-arm","target":"aarch64-pc-windows-msvc"}]' || '[{"runner":"windows-2025","target":"x86_64-pc-windows-msvc"}]') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ inputs.diagnostic_runner_windows_verify && 60 || 10 }}
     steps:
       - name: Check out the exact diagnostic source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -151,6 +160,7 @@ jobs:
           AIT_CONTROL_SNAPSHOT: ${{ inputs.coordinator_snapshot }}
           DIAGNOSTIC_AFFECTED_CONSUMERS: ${{ inputs.diagnostic_affected_consumers }}
           DIAGNOSTIC_RUNNER_TIMEOUT: ${{ inputs.diagnostic_runner_timeout }}
+          DIAGNOSTIC_RUNNER_WINDOWS_VERIFY: ${{ inputs.diagnostic_runner_windows_verify }}
         run: |
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
@@ -159,22 +169,68 @@ jobs:
           assert.equal(process.env.GITHUB_EVENT_NAME, 'workflow_dispatch');
           assert.equal(process.env.GITHUB_REPOSITORY, 'weita2026/ait-native');
           assert.match(process.env.GITHUB_REF, /^refs\/heads\/diagnostic\/release-121-/);
-          assert.equal(process.env.DIAGNOSTIC_RUNNER_TIMEOUT, 'true');
+          const verify = process.env.DIAGNOSTIC_RUNNER_WINDOWS_VERIFY === 'true';
+          assert.equal(process.env.DIAGNOSTIC_RUNNER_TIMEOUT, verify ? 'false' : 'true', 'select exactly one bounded Windows mode');
+          assert.equal(process.env.DIAGNOSTIC_RUNNER_WINDOWS_VERIFY, verify ? 'true' : 'false');
           assert.equal(process.env.DIAGNOSTIC_AFFECTED_CONSUMERS, 'false', 'the 18-job batch must not be selected');
           const head = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' });
           assert.equal(head.status, 0); assert.equal(head.stdout.trim(), process.env.GITHUB_SHA);
           console.log(verifyControlIdentity(process.cwd(), process.env.AIT_CONTROL_SNAPSHOT));
-          for (const [name, snapshot, extra] of [
-            ['ait-runner', 'SNP-07E0076369EE', []],
-            ['ait-core', 'SNP-49762426B59A', ['.ait-external-marker.json']],
-          ]) {
-            const source = SOURCES.find(row => row.name === name);
-            assert.equal(source?.snapshot, snapshot);
-            verifySource(process.cwd(), source, extra);
-          }
+          const runner = SOURCES.find(row => row.name === 'ait-runner');
+          assert.equal(runner?.snapshot, 'SNP-07E0076369EE');
+          const candidate = verify ? { ...runner, snapshot: 'SNP-3781594E65F2',
+            manifest: '3781594e65f2cd2a07be503a95441fd12d680ea1b2da496cc99975d88d265402', count: 28,
+            tree: 'abb2cca968707f652cd03eccb1f6ab58297899653e05763cde835a7c18dac1b9', epoch: '1793707421',
+            authority: 'RRT-0072 R01 source review accepted; affected case and origin completion pending' } : runner;
+          verifySource(process.cwd(), candidate);
+          console.log('Selected Runner source', candidate.snapshot, candidate.manifest, candidate.authority);
+          const core = SOURCES.find(row => row.name === 'ait-core');
+          assert.equal(core?.snapshot, 'SNP-49762426B59A');
+          verifySource(process.cwd(), core, ['.ait-external-marker.json']);
           NODE
+      - name: Install the pinned native Rust host for the affected case
+        if: inputs.diagnostic_runner_windows_verify
+        shell: bash
+        env:
+          AIT_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup default 1.96.0
+          rustup target add --toolchain 1.96.0 "${AIT_TARGET}"
+          rustc -vV
+      - name: Run the one corrected Runner library case
+        id: runner_case
+        if: inputs.diagnostic_runner_windows_verify
+        shell: pwsh
+        env:
+          AIT_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $expectedArchitecture = if ($env:AIT_TARGET -eq 'aarch64-pc-windows-msvc') { 'Arm64' } else { 'X64' }
+          if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ine $expectedArchitecture) {
+            throw 'The selected test target must execute on its actual native Windows architecture'
+          }
+          $evidence = Join-Path $env:RUNNER_TEMP ('ait-runner-timeout-case-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          "evidence_root=$evidence" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'ait-runner-timeout-case-build'
+          $env:CARGO_BUILD_TARGET = $env:AIT_TARGET
+          @'
+          import { materializeCore } from './ci/release_affected_consumers.mjs';
+          import { runSingleCargoCase } from './ci/release_windows_retained_source.mjs';
+          materializeCore(process.cwd(), 'ait-runner');
+          process.chdir('ait-runner');
+          runSingleCargoCase(['--lib'], 'executor::tests::timeout_kills_process_group_and_cleans_attempt', { nocapture: true });
+          '@ | node --input-type=module > (Join-Path $evidence 'case.stdout') 2> (Join-Path $evidence 'case.stderr')
+          $caseExit = $LASTEXITCODE
+          Get-Content -LiteralPath (Join-Path $evidence 'case.stdout') -Raw | Write-Output
+          Get-Content -LiteralPath (Join-Path $evidence 'case.stderr') -Raw | Write-Output
+          if ($caseExit -ne 0) { throw "Exact Runner timeout case did not execute and pass (exit $caseExit)" }
       - name: Collect the fixed minimal Windows inventory
         id: diagnostic
+        if: inputs.diagnostic_runner_timeout
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -368,7 +424,7 @@ jobs:
             $childProof = $first -and $first.alive -eq $true -and $null -ne $first.alive_observed_host_wall_ms -and $first.alive_observed_host_wall_ms -lt $budget
             $nativeProof = $exitCode -eq 0 -and $result -and $result.contract -eq 'ait.runner.native-result.v1' -and $result.status -eq 'timed_out' -and
               $result.suite_results[0].execution.timed_out -eq $true -and $result.cleanup.attempt_root_removed -eq $true -and
-              @($result.cleanup.remaining_owned_paths).Count -eq 0 -and $remaining.Count -eq 0
+              $result.cleanup.remaining_owned_paths -is [long] -and $result.cleanup.remaining_owned_paths -eq 0 -and $remaining.Count -eq 0
             $gone = $tasklistExit -eq 0 -and $tasklistHasPid -eq $false -and $childAfter -and $childAfter.ContainsKey('alive') -and $childAfter.alive -eq $false
             if (-not ($childProof -and $nativeProof -and $gone)) { $diagnosticFailed = $true }
             Save-Json "$label.observation.json" @{ requested_timeout_ms = $budget; runner_pid = $runnerId; runner_exit_code = $exitCode;
@@ -384,10 +440,10 @@ jobs:
           if ($diagnosticFailed) { throw 'Bounded observations collected; child/timeout/cleanup evidence is failed, absent or inconclusive. F02 remains open.' }
           Write-Output 'Bounded observations collected only. No product acceptance or F02 closure is granted.'
       - name: Retain original diagnostic streams and observations
-        if: always() && steps.diagnostic.outputs.evidence_root != ''
+        if: always() && (steps.diagnostic.outputs.evidence_root != '' || steps.runner_case.outputs.evidence_root != '')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: windows-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.diagnostic.outputs.evidence_root }}
+          name: windows-diagnostic-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.runner_case.outputs.evidence_root || steps.diagnostic.outputs.evidence_root }}
           if-no-files-found: error
           retention-days: 90

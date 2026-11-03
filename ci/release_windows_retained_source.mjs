@@ -73,9 +73,9 @@ export function requirePassedCase(stdout, name) {
     `native case did not execute and pass: ${name}; ignored/zero-test output is not a pass`);
 }
 
-export function runSingleCargoCase(flags, name) {
+export function runSingleCargoCase(flags, name, { nocapture = false } = {}) {
   const result = spawnSync("cargo", ["test", "--locked", ...flags, name,
-    "--", "--exact", "--test-threads=1", "--color", "never"],
+    "--", "--exact", ...(nocapture ? ["--nocapture"] : []), "--test-threads=1", "--color", "never"],
     { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
   process.stdout.write(result.stdout ?? "");
   process.stderr.write(result.stderr ?? "");

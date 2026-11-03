@@ -23,7 +23,7 @@ import { qualificationCarrier, priorWebInput, correctedWTIdentity, sameProductCo
 import { enterOperation } from "./release_operation_owner.mjs";
 import { originalLocalSnapshot } from "./release_native_workflow.mjs";
 import { validateReleaseDependencyGraph } from "./release_runner_dependency.mjs";
-import { webCommunityPathsInScope } from "./release_web_controls.mjs";
+import { webCommunityPathsInScope, webPersonalMayBeOmitted } from "./release_web_controls.mjs";
 
 const TASK_RE = /^[A-Z]+T-[0-9]{4}$/;
 const SNAPSHOT_RE = /^SNP-[0-9A-F]{12}$/;
@@ -117,7 +117,7 @@ export function validateRequest(requestPath) {
   request.roots = roots;
   const paths = request.paths ?? {};
   const personal = Object.hasOwn(paths, "personal_bin") || Object.hasOwn(paths, "personal_root") || Object.hasOwn(request.web ?? {}, "personal_snapshot");
-  if (!personal && request.release.version !== "1.2.0") fail("Personal omission is authorized only for 1.2.0");
+  if (!personal && !webPersonalMayBeOmitted(request.release)) fail("Personal omission is authorized only for 1.2.0 or stable 1.2.1");
   const community = webCommunityPathsInScope(paths, request.release, personal);
   if (community !== Object.hasOwn(request.web ?? {}, "community_snapshot")) fail("Community source Snapshot and paths must be selected together");
   for (const key of ["public_source", "web_test_root", ...(personal ? ["personal_root"] : []), ...(community ? ["community_root"] : [])]) {

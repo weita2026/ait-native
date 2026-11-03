@@ -112,8 +112,8 @@ input_personal=$(jq -r '.executables.personal.path // ""' "${input}")
 if jq -e '.executables | has("personal")' "${input}" >/dev/null; then
   [[ ${personal_bin} == /* ]] || usage
 else
-  jq -e '.release.version == "1.2.0"' "${input}" >/dev/null || {
-    printf 'Personal omission is authorized only for the selected 1.2.0 release\n' >&2
+  jq -e '.release.version == "1.2.0" or (.release.version == "1.2.1" and .release.channel == "stable")' "${input}" >/dev/null || {
+    printf 'Personal omission is authorized only for 1.2.0 or stable 1.2.1\n' >&2
     exit 65
   }
   [[ -z ${personal_bin} ]] || { printf 'Personal differs from immutable retained scope\n' >&2; exit 65; }
