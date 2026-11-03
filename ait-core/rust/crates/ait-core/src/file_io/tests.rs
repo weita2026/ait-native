@@ -327,7 +327,10 @@ fn filesystem_process_lock_guard_clears_metadata_and_releases_on_drop() {
         )
         .expect("second lock attempt");
     assert!(second.is_none());
+    #[cfg(not(windows))]
     assert_eq!(store.read_bytes(&path).expect("metadata"), b"scope=test\n");
+    #[cfg(windows)]
+    assert_eq!(std::fs::read(&path).unwrap_err().raw_os_error(), Some(33));
 
     first.clear_contents_and_flush().expect("clear metadata");
     first.release().expect("release");
@@ -341,6 +344,22 @@ fn filesystem_process_lock_guard_clears_metadata_and_releases_on_drop() {
         )
         .expect("second lock after release");
     assert!(second.is_some());
+}
+
+#[cfg(windows)]
+#[test]
+fn filesystem_atomic_replace_supports_long_paths_and_existing_targets() {
+    let temp = tempdir().unwrap();
+    let mut directory = temp.path().to_path_buf();
+    for index in 0..8 {
+        directory.push(format!("long-path-component-{index}-abcdefghij"));
+    }
+    let target = directory.join("state.json");
+    assert!(target.as_os_str().encode_wide().count() > 260);
+    let store = FilesystemFileIoStore;
+    FileIoStore::write_string_atomically(&store, &target, "old", "long-path test").unwrap();
+    FileIoStore::write_string_atomically(&store, &target, "new", "long-path test").unwrap();
+    assert_eq!(fs::read_to_string(target).unwrap(), "new");
 }
 
 #[test]

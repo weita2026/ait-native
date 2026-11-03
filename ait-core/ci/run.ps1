@@ -106,7 +106,7 @@ try {
                 "--locked", "--all-features",
                 "-p", "ait-core", "-p", "ait-cli", "-p", "ait-agent-core",
                 "-p", "ait-agent-worker", "-p", "ait-benchmark", "-p", "ait-napi",
-                "-p", "ait-py", "--lib", "--no-fail-fast"
+                "-p", "ait-py", "--lib", "--no-fail-fast", "--", "--show-output"
             )
             Invoke-Collect "patchset-integrations" "cargo" @(
                 "test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci",

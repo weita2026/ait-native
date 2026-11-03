@@ -544,7 +544,7 @@ fn expected_native_ci_test_invocations() -> Vec<Vec<String>> {
     let mut build = libraries.clone();
     build.extend(targets);
     build.extend(["--test", "team_session_cli", "--no-run"]);
-    libraries.push("--no-fail-fast");
+    libraries.extend(["--no-fail-fast", "--", "--show-output"]);
     integrations.push("--no-fail-fast");
     let mut commands = vec![build, libraries, integrations];
     for case in [

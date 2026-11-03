@@ -901,6 +901,13 @@ pub(in crate::primitives) fn cleanup_registered_worktree_cargo_build_dir(
     )
 }
 
+fn worktree_lock_is_contended(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::WouldBlock
+        || error
+            .raw_os_error()
+            .is_some_and(|code| Some(code) == fs2::lock_contended_error().raw_os_error())
+}
+
 fn cleanup_worktree_cargo_dirs(
     worktree_name: &str,
     cache_paths: Vec<PathBuf>,
@@ -962,7 +969,7 @@ fn cleanup_worktree_cargo_dirs(
         };
         match FileExt::try_lock_exclusive(&file) {
             Ok(()) => locks.push(file),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(error) if worktree_lock_is_contended(&error) => {
                 return Err(format!(
                     "Refusing to close Task worktree {worktree_name} while its Cargo target/build state is active through {}.",
                     lock_path.display()
@@ -1113,6 +1120,17 @@ fn remove_one_worktree_with_policy_observed(
     )
     .map_err(|error| error.to_string())?;
     observe_retirement(false);
+    #[cfg(windows)]
+    if delete_path
+        && workspace_status_policy
+            == WorktreeRemovalWorkspaceStatusPolicy::SkipForAuthoritativeTaskLand
+        && worktree_path.exists()
+    {
+        crate::closeout_context::release_owned_worktree_cwd(
+            &repo.authoritative_repo_root(),
+            &worktree_path,
+        )?;
+    }
     if !abandoned && marker_path.exists() {
         fs::remove_file(&marker_path).map_err(|err| err.to_string())?;
     }
@@ -1490,10 +1508,10 @@ mod tests {
                 |retired| {
                     observations += 1;
                     let probe = fs::File::open(&lock_path).expect("open metadata lock");
-                    assert_eq!(
-                        FileExt::try_lock_shared(&probe).unwrap_err().kind(),
-                        std::io::ErrorKind::WouldBlock,
-                        "admission reader must be excluded throughout destructive cleanup"
+                    let contention = FileExt::try_lock_shared(&probe).unwrap_err();
+                    assert!(
+                        worktree_lock_is_contended(&contention),
+                        "admission reader must be excluded throughout destructive cleanup: {contention}"
                     );
                     assert_eq!(worktree_registry_path(&repo, name).exists(), !retired);
                     assert_eq!(worktree.join(".ait-worktree/cursor.bin").exists(), !retired);

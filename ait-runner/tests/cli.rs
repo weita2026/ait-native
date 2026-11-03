@@ -70,6 +70,11 @@ fn execute_reads_typed_stdin_and_leaves_attempt_parent_empty() {
     fs::create_dir(source.path().join("ci")).expect("ci directory");
     let script = source.path().join("ci/run.sh");
     fs::write(&script, "#!/bin/sh\nset -eu\nprintf 'cli-ok'\n").expect("script");
+    fs::write(
+        source.path().join("ci/run.ps1"),
+        "[Console]::Out.Write('cli-ok')\n",
+    )
+    .expect("PowerShell script");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -195,6 +200,11 @@ fn child_attempt_root_environment_does_not_configure_the_runner_cli() {
     fs::create_dir(source.path().join("ci")).expect("ci directory");
     let script = source.path().join("ci/run.sh");
     fs::write(&script, "#!/bin/sh\nset -eu\nprintf 'explicit-cli-only'\n").expect("script");
+    fs::write(
+        source.path().join("ci/run.ps1"),
+        "[Console]::Out.Write('explicit-cli-only')\n",
+    )
+    .expect("PowerShell script");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

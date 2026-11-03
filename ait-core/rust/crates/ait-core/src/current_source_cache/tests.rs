@@ -12,6 +12,15 @@ use super::source_ports::{
     CurrentSourceNativeCacheSourceEntry, CurrentSourceNativeCacheSourceStore,
 };
 
+// Fake stores key paths by their native components, so equivalent joined
+// spellings identify the same fixture on Windows as on Unix.
+fn path_text(path: &Path) -> String {
+    path.components()
+        .collect::<PathBuf>()
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn temp_dir(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -473,34 +482,31 @@ fn cache_contract_returns_stable_path_shape() {
     let build_key = payload["build_key"].as_str().unwrap();
     let cache_root = namespace_root
         .join(CURRENT_SOURCE_CACHE_NAMESPACE)
-        .join(build_key)
-        .to_string_lossy()
-        .to_string();
+        .join(build_key);
     assert_eq!(
         payload["cache_schema_version"],
         CURRENT_SOURCE_CACHE_SCHEMA_VERSION
     );
     assert_eq!(payload["namespace"], CURRENT_SOURCE_CACHE_NAMESPACE);
-    assert_eq!(payload["cache_root"], cache_root);
-    assert_eq!(
-        payload["runtime_extensions_root"],
-        format!("{cache_root}/runtime-extensions")
-    );
-    assert_eq!(
-        payload["package_dir"],
-        format!("{cache_root}/runtime-extensions/ait_py")
-    );
-    assert_eq!(payload["target_dir"], format!("{cache_root}/cargo-target"));
+    for (field, relative) in [
+        ("cache_root", ""),
+        ("runtime_extensions_root", "runtime-extensions"),
+        ("package_dir", "runtime-extensions/ait_py"),
+        ("target_dir", "cargo-target"),
+        ("lock_path", ".build.lock"),
+        ("manifest_path", "manifest.json"),
+        ("leases_dir", "leases"),
+    ] {
+        assert_eq!(
+            Path::new(payload[field].as_str().unwrap()),
+            cache_root.join(relative),
+            "{field}"
+        );
+    }
     assert_eq!(
         payload["binary_profile"],
         CURRENT_SOURCE_CACHE_BINARY_PROFILE
     );
-    assert_eq!(payload["lock_path"], format!("{cache_root}/.build.lock"));
-    assert_eq!(
-        payload["manifest_path"],
-        format!("{cache_root}/manifest.json")
-    );
-    assert_eq!(payload["leases_dir"], format!("{cache_root}/leases"));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -822,7 +828,7 @@ fn source_fingerprint_reads_inputs_through_source_store_trait_object() {
     assert_eq!(
         store.calls.borrow().as_slice(),
         [
-            "resolve:/repo".to_string(),
+            format!("resolve:{}", path_text(&root)),
             format!("exists:{}", path_text(&cargo_toml)),
             format!("exists:{}", path_text(&root.join("rust/Cargo.lock"))),
             format!(
@@ -894,7 +900,7 @@ fn source_mtime_reads_inputs_through_source_store_trait_object() {
     assert_eq!(
         store.calls.borrow().as_slice(),
         [
-            "resolve:/server".to_string(),
+            format!("resolve:{}", path_text(&root)),
             format!("exists:{}", path_text(&cargo_toml)),
             format!("exists:{}", path_text(&server_toml)),
             format!("is-dir:{}", path_text(&server_src)),

@@ -4,6 +4,11 @@ use std::os::unix::fs::symlink as symlink_dir;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_dir;
 
+fn cargo_config_build_path(contents: &str, key: &str) -> PathBuf {
+    let config: toml::Value = toml::from_str(contents).expect("valid Cargo config TOML");
+    PathBuf::from(config["build"][key].as_str().expect("Cargo build path"))
+}
+
 #[test]
 fn remote_worktree_retarget_uses_authoritative_change_without_local_change_record() {
     let repo_tmp = tempdir().expect("repo tempdir");
@@ -1116,8 +1121,8 @@ fn repository_worktrees_share_ram_root_with_cargo_workspace_isolation() {
     write_runtime_config(
         repo_root,
         &format!(
-            r#"{{"repo_name":"Repo.Name","task_worktree":{{"memory_root":{{"kind":"macos_ram_volume","root":"{}"}}}}}}"#,
-            memory_root.display()
+            r#"{{"repo_name":"Repo.Name","task_worktree":{{"memory_root":{{"kind":"macos_ram_volume","root":{}}}}}}}"#,
+            json!(memory_root)
         ),
     );
     let shared = ensure_repository_shared_cargo_build_dir(repo_root)
@@ -1172,8 +1177,8 @@ fn repository_cargo_build_setup_recovers_exact_managed_dangling_ram_link() {
     write_runtime_config(
         repo_root,
         &format!(
-            r#"{{"repo_name":"fixture","task_worktree":{{"memory_root":{{"kind":"macos_ram_volume","root":"{}"}}}}}}"#,
-            memory_root.display()
+            r#"{{"repo_name":"fixture","task_worktree":{{"memory_root":{{"kind":"macos_ram_volume","root":{}}}}}}}"#,
+            json!(memory_root)
         ),
     );
     let shared_path = repo_root.join(".ait/cargo-build");
@@ -1208,8 +1213,8 @@ fn repository_cargo_build_setup_rejects_unexpected_dangling_ram_link() {
     write_runtime_config(
         repo_root,
         &format!(
-            r#"{{"repo_name":"fixture","task_worktree":{{"memory_root":{{"kind":"macos_ram_volume","root":"{}"}}}}}}"#,
-            memory_root.display()
+            r#"{{"repo_name":"fixture","task_worktree":{{"memory_root":{{"kind":"macos_ram_volume","root":{}}}}}}}"#,
+            json!(memory_root)
         ),
     );
     let shared_path = repo_root.join(".ait/cargo-build");
@@ -1237,8 +1242,8 @@ fn repository_cargo_build_setup_preserves_existing_directory_and_custom_config()
     write_runtime_config(
         repo_root,
         &format!(
-            r#"{{"repo_name":"fixture","task_worktree":{{"memory_root":{{"kind":"macos_ram_volume","root":"{}"}}}}}}"#,
-            memory_root.display()
+            r#"{{"repo_name":"fixture","task_worktree":{{"memory_root":{{"kind":"macos_ram_volume","root":{}}}}}}}"#,
+            json!(memory_root)
         ),
     );
     let existing = repo_root.join(".ait/cargo-build");
@@ -1294,8 +1299,8 @@ fn managed_worktree_cargo_config_upgrades_legacy_build_path() {
         .starts_with("# Managed by ait: workspace-isolated final artifacts and intermediates.\n"));
     assert!(upgraded.contains("jobs = 8\n"));
     assert!(upgraded.contains(&format!(
-        "build-dir = \"{}\"\n",
-        worktree_cargo_build_dir(repo_root).display()
+        "build-dir = {}\n",
+        json!(worktree_cargo_build_dir(repo_root))
     )));
 }
 
@@ -1312,9 +1317,9 @@ fn managed_worktree_cargo_config_upgrades_repository_shared_build_path() {
     fs::write(
         repo_root.join(".cargo/config.toml"),
         format!(
-            "# Managed by ait: stable final artifacts, repository-shared intermediates.\n[build]\ntarget-dir = \"{}\"\nbuild-dir = \"{}\"\n",
-            target_dir.display(),
-            previous_build_dir.display(),
+            "# Managed by ait: stable final artifacts, repository-shared intermediates.\n[build]\ntarget-dir = {}\nbuild-dir = {}\n",
+            json!(target_dir),
+            json!(previous_build_dir),
         ),
     )
     .expect("repository-shared managed config");
@@ -1324,7 +1329,7 @@ fn managed_worktree_cargo_config_upgrades_repository_shared_build_path() {
     let upgraded =
         fs::read_to_string(repo_root.join(".cargo/config.toml")).expect("upgraded config");
     assert_eq!(upgraded, generated_worktree_cargo_config_text(repo_root));
-    assert!(upgraded.contains("cargo-build/canonical"));
+    assert!(cargo_config_build_path(&upgraded, "build-dir").ends_with("cargo-build/canonical"));
 }
 
 #[test]
@@ -1356,12 +1361,12 @@ fn managed_worktree_cargo_config_upgrades_hash_template_and_uses_exact_task_cach
         &worktree, &upgraded
     ));
     assert!(upgraded.contains(&format!(
-        "target-dir = \"{}\"\n",
-        worktree_cargo_target_dir(&worktree).display()
+        "target-dir = {}\n",
+        json!(worktree_cargo_target_dir(&worktree))
     )));
     assert!(upgraded.contains(&format!(
-        "build-dir = \"{}\"\n",
-        worktree_cargo_build_dir(&worktree).display()
+        "build-dir = {}\n",
+        json!(worktree_cargo_build_dir(&worktree))
     )));
     assert!(upgraded.contains("[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n"));
     assert!(!upgraded.contains("{workspace-path-hash}"));
@@ -1383,8 +1388,8 @@ fn managed_worktree_cargo_config_upgrades_shared_final_artifact_projection() {
     fs::write(
         worktree.join(".cargo/config.toml"),
         format!(
-            "# Managed by ait: stable final artifacts, workspace-isolated intermediates.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \"{}\"\n",
-            worktree_cargo_build_dir(&worktree).display()
+            "# Managed by ait: stable final artifacts, workspace-isolated intermediates.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = {}\n",
+            json!(worktree_cargo_build_dir(&worktree))
         ),
     )
     .expect("shared final-artifact projection");
@@ -1397,7 +1402,8 @@ fn managed_worktree_cargo_config_upgrades_shared_final_artifact_projection() {
     assert_eq!(upgraded, generated_worktree_cargo_config_text(&worktree));
     assert!(upgraded
         .starts_with("# Managed by ait: workspace-isolated final artifacts and intermediates."));
-    assert!(upgraded.contains("cargo-target/task-workspaces/task-one"));
+    assert!(cargo_config_build_path(&upgraded, "target-dir")
+        .ends_with("cargo-target/task-workspaces/task-one"));
 }
 
 #[test]
@@ -1429,9 +1435,9 @@ fn managed_worktrees_use_distinct_final_artifact_and_intermediate_directories() 
     assert!(first_build.ends_with("cargo-build/task-workspaces/task-one"));
     assert!(second_build.ends_with("cargo-build/task-workspaces/task-two"));
     assert!(generated_worktree_cargo_config_text(&first)
-        .contains(&format!("target-dir = \"{}\"", first_target.display())));
+        .contains(&format!("target-dir = {}", json!(first_target))));
     assert!(generated_worktree_cargo_config_text(&second)
-        .contains(&format!("target-dir = \"{}\"", second_target.display())));
+        .contains(&format!("target-dir = {}", json!(second_target))));
 }
 
 #[test]
@@ -1473,15 +1479,15 @@ fn managed_worktree_cargo_config_retargets_copied_main_seed_projection() {
         &worktree, &upgraded
     ));
     assert!(upgraded.contains(&format!(
-        "target-dir = \"{}\"\n",
-        worktree_cargo_target_dir(&worktree).display()
+        "target-dir = {}\n",
+        json!(worktree_cargo_target_dir(&worktree))
     )));
     assert!(upgraded.contains(&format!(
-        "build-dir = \"{}\"\n",
-        worktree_cargo_build_dir(&worktree).display()
+        "build-dir = {}\n",
+        json!(worktree_cargo_build_dir(&worktree))
     )));
     assert!(upgraded.contains("[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n"));
-    assert!(!upgraded.contains("task-workspaces/main-seed"));
+    assert!(!cargo_config_build_path(&upgraded, "build-dir").ends_with("task-workspaces/main-seed"));
     assert_ne!(
         portable_mode(
             &fs::metadata(&config_path).expect("retargeted config metadata"),
@@ -1530,8 +1536,11 @@ fn managed_worktree_cargo_config_retargets_copied_previous_task_projection() {
             generated_worktree_cargo_config_text(&current).trim_end()
         )
     );
-    assert!(!upgraded.contains("task-workspaces/task-previous"));
-    assert!(upgraded.contains("task-workspaces/task-current"));
+    assert!(!cargo_config_build_path(&upgraded, "target-dir")
+        .ends_with("task-workspaces/task-previous"));
+    assert!(
+        cargo_config_build_path(&upgraded, "target-dir").ends_with("task-workspaces/task-current")
+    );
 }
 
 #[test]
@@ -1552,8 +1561,8 @@ fn managed_worktree_cargo_config_rejects_mismatched_previous_task_projection() {
     }
     let mut copied = generated_worktree_cargo_config_text(&previous);
     copied = copied.replace(
-        "cargo-build/task-workspaces/task-previous",
-        "cargo-build/task-workspaces/another-task",
+        &json!(worktree_cargo_build_dir(&previous)).to_string(),
+        &json!(worktree_cargo_build_dir(&previous).with_file_name("another-task")).to_string(),
     );
     fs::write(current.join(".cargo/config.toml"), &copied)
         .expect("mismatched previous Task projection");
@@ -1587,8 +1596,8 @@ fn managed_worktree_cargo_config_retargets_legacy_shared_final_main_seed_project
         .expect("canonical shared .ait")
         .join("cargo-build/task-workspaces/main-seed");
     let copied = format!(
-        "# Managed by ait: stable final artifacts, workspace-isolated intermediates.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = \"{}\"\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
-        copied_seed_build_dir.display()
+        "# Managed by ait: stable final artifacts, workspace-isolated intermediates.\n[build]\ntarget-dir = \".ait/cargo-target\"\nbuild-dir = {}\n\n[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n",
+        json!(copied_seed_build_dir)
     );
     fs::write(worktree.join(".cargo/config.toml"), &copied)
         .expect("copied legacy seed Cargo config");
@@ -1602,15 +1611,15 @@ fn managed_worktree_cargo_config_retargets_legacy_shared_final_main_seed_project
         &worktree, &upgraded
     ));
     assert!(upgraded.contains(&format!(
-        "target-dir = \"{}\"\n",
-        worktree_cargo_target_dir(&worktree).display()
+        "target-dir = {}\n",
+        json!(worktree_cargo_target_dir(&worktree))
     )));
     assert!(upgraded.contains(&format!(
-        "build-dir = \"{}\"\n",
-        worktree_cargo_build_dir(&worktree).display()
+        "build-dir = {}\n",
+        json!(worktree_cargo_build_dir(&worktree))
     )));
     assert!(upgraded.contains("[alias]\nmanaged-test = [\"test\", \"--profile\", \"ait-ci\"]\n"));
-    assert!(!upgraded.contains("task-workspaces/main-seed"));
+    assert!(!cargo_config_build_path(&upgraded, "build-dir").ends_with("task-workspaces/main-seed"));
 }
 
 #[test]

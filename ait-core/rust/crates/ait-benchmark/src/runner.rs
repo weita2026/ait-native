@@ -645,8 +645,18 @@ mod tests {
 
     fn fixture_subject(root: &Path) -> (CellSpec, SubjectSpec) {
         let command = CommandSpec {
+            #[cfg(not(windows))]
             program: "/bin/sh".to_string(),
+            #[cfg(windows)]
+            program: "cmd.exe".to_string(),
+            #[cfg(not(windows))]
             args: vec!["-c".to_string(), "test -d {workspace}".to_string()],
+            #[cfg(windows)]
+            args: vec![
+                "/D".to_string(),
+                "/C".to_string(),
+                "if not exist \"{workspace}\\\" exit /b 1".to_string(),
+            ],
             cwd: None,
             env: BTreeMap::new(),
             expected_exit_codes: vec![0],
@@ -703,7 +713,15 @@ mod tests {
     fn unexpected_exit_is_retained_as_failure_evidence() {
         let root = tempfile::tempdir().unwrap();
         let (cell, mut subject) = fixture_subject(root.path());
-        subject.command.args = vec!["-c".to_string(), "exit 7".to_string()];
+        #[cfg(not(windows))]
+        {
+            subject.command.args = vec!["-c".to_string(), "exit 7".to_string()];
+        }
+        #[cfg(windows)]
+        {
+            subject.command.args =
+                vec!["/D".to_string(), "/C".to_string(), "exit /b 7".to_string()];
+        }
         let measurement = execute_timed_command(&subject.command, &cell, &subject, 0).unwrap();
         assert!(!measurement.success);
         assert_eq!(measurement.exit_code, Some(7));

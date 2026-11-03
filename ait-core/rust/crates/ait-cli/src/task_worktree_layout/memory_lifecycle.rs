@@ -156,7 +156,8 @@ impl MemoryRootConfig {
                     .ok_or_else(|| {
                         format!("{MEMORY_ROOT_PATH_CONFIG_PATH} must be a non-empty string.")
                     })?;
-                let _ = parse_clean_absolute_path(MEMORY_ROOT_PATH_CONFIG_PATH, raw_root)?;
+                let _ =
+                    parse_clean_absolute_path(platform, MEMORY_ROOT_PATH_CONFIG_PATH, raw_root)?;
                 Some(normalize_task_worktree_memory_root(value).ok_or_else(|| {
                     format!("{MEMORY_ROOT_CONFIG_PATH} is malformed or unsupported.")
                 })?)
@@ -222,8 +223,11 @@ impl MemoryRootConfig {
         runtime_root_source: String,
     ) -> Result<Self, String> {
         validate_memory_root_kind(platform, &spec.kind)?;
-        let mount_point =
-            parse_clean_absolute_path(MEMORY_ROOT_PATH_CONFIG_PATH, &spec.root.to_string_lossy())?;
+        let mount_point = parse_clean_absolute_path(
+            platform,
+            MEMORY_ROOT_PATH_CONFIG_PATH,
+            &spec.root.to_string_lossy(),
+        )?;
         let (volume_name, volume_name_source) = if platform == TaskWorktreePlatform::Macos {
             let (value, source) = match spec.volume_name {
                 Some(value) => (value, format!("{MEMORY_ROOT_CONFIG_PATH}.volume_name")),
@@ -733,9 +737,21 @@ fn writable_probe_system(root: &Path) -> Result<(), String> {
     })
 }
 
-fn parse_clean_absolute_path(name: &str, raw: &str) -> Result<PathBuf, String> {
+fn parse_clean_absolute_path(
+    platform: TaskWorktreePlatform,
+    name: &str,
+    raw: &str,
+) -> Result<PathBuf, String> {
     let path = PathBuf::from(raw);
-    if !path.is_absolute() {
+    let absolute = if matches!(
+        platform,
+        TaskWorktreePlatform::Macos | TaskWorktreePlatform::Linux
+    ) {
+        raw.starts_with('/')
+    } else {
+        path.is_absolute()
+    };
+    if !absolute {
         return Err(format!("{name} must be an absolute path; got '{raw}'."));
     }
     if path

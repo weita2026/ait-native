@@ -146,7 +146,7 @@ run_patchset_tests() {
       -p ait-napi \
       -p ait-py \
       --lib \
-      --no-fail-fast
+      --no-fail-fast -- --show-output
 
     collect patchset-integrations cargo test \
       --manifest-path rust/Cargo.toml \

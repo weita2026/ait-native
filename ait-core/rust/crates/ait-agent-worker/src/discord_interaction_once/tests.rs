@@ -164,7 +164,8 @@ fn signed_interaction_dispatches_typed_job_and_returns_minimal_redacted_output()
     );
     assert!(job["state_path"]
         .as_str()
-        .is_some_and(|path| path.ends_with(".ait/agent-runtime/discord-main-sync.json")));
+        .is_some_and(|path| std::path::Path::new(path)
+            .ends_with(".ait/agent-runtime/discord-main-sync.json")));
     assert!(!job.to_string().contains(PUBLIC_KEY));
     assert!(!job.to_string().contains(VALID_SIGNATURE));
 

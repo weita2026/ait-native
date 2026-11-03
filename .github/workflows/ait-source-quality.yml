@@ -5,9 +5,16 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      diagnostic_reuse_r4_unix_runner:
+        description: '1.2.1 diagnostic batch only: validate retained R4 Unix Runner results'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: source-quality-${{ github.event.pull_request.number || github.ref }}
@@ -42,7 +49,7 @@ jobs:
         run: bash ait-core/ci/run.sh patchset
       - name: Runner gates (Unix)
         id: runner_unix
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && !(github.event_name == 'workflow_dispatch' && inputs.diagnostic_reuse_r4_unix_runner)
         continue-on-error: true
         shell: bash
         run: bash ait-runner/ci/run.sh all
@@ -68,6 +75,15 @@ jobs:
         env:
           CORE_RESULT: ${{ runner.os == 'Windows' && steps.core_windows.outcome || steps.core_unix.outcome }}
           RUNNER_RESULT: ${{ runner.os == 'Windows' && steps.runner_windows.outcome || steps.runner_unix.outcome }}
+          DIAGNOSTIC_REUSE_R4: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_reuse_r4_unix_runner }}
+          SOURCE_QUALITY_EVENT: ${{ github.event_name }}
+          SOURCE_QUALITY_REPOSITORY: ${{ github.repository }}
+          SOURCE_QUALITY_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          printf 'Core: %s\nRunner: %s\n' "${CORE_RESULT}" "${RUNNER_RESULT}"
-          [[ "${CORE_RESULT}" == success && "${RUNNER_RESULT}" == success ]]
+          if [[ "${DIAGNOSTIC_REUSE_R4:-false}" == true ]]; then
+            node ci/source-quality-r4-reuse.mjs
+          else
+            printf 'Core: %s\nRunner: %s\n' "${CORE_RESULT}" "${RUNNER_RESULT}"
+            [[ "${CORE_RESULT}" == success && "${RUNNER_RESULT}" == success ]]
+          fi

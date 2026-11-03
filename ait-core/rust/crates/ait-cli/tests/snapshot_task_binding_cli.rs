@@ -27,7 +27,7 @@ fn json(root: &Path, args: &[&str]) -> Value {
     assert!(
         output.status.success(),
         "{args:?}\n{}",
-        String::from_utf8_lossy(&output.stderr)
+        workflow_process::failure_output(&output)
     );
     serde_json::from_slice(&output.stdout).unwrap()
 }
@@ -775,7 +775,7 @@ fn ordinary_task_text_workflow_needs_no_change_and_creates_none() {
     assert!(
         finished.status.success(),
         "{}",
-        String::from_utf8_lossy(&finished.stderr)
+        workflow_process::failure_output(&finished)
     );
     let output = String::from_utf8_lossy(&finished.stdout);
     assert!(output.contains(&task), "{output}");

@@ -107,7 +107,9 @@ fn metadata_batch_checks_once_and_rejects_key_count_and_midcall_drift() {
     fs::write(&index, original).unwrap();
     let hook_path = index.clone();
     super::store::set_metadata_batch_test_hook(Box::new(move || {
-        std::fs::File::open(hook_path)
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(hook_path)
             .unwrap()
             .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(123456))
             .unwrap();

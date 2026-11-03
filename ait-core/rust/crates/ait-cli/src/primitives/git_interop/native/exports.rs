@@ -339,7 +339,7 @@ impl CurrentBuilder<'_> {
                 .map_err(|e| e.to_string())?;
             let env = vec![(
                 OsString::from("GIT_INDEX_FILE"),
-                index_temp.path().join("index").into_os_string(),
+                git_path_argument(&index_temp.path().join("index")),
             )];
             git_repo_bytes_os(
                 self.stage,
@@ -464,7 +464,7 @@ fn is_markdown_path(path: &str) -> bool {
 
 fn symbolic_head(git_dir: &Path) -> Result<Option<String>, String> {
     let output = Command::new("git")
-        .arg(format!("--git-dir={}", git_dir.display()))
+        .arg(git_directory_argument(git_dir))
         .args(["symbolic-ref", "--quiet", "HEAD"])
         .stdin(Stdio::null())
         .output()
@@ -674,8 +674,8 @@ fn cas_head_bytes(git_dir: &Path, expected: &[u8], wanted: &[u8]) -> Result<(), 
         .map_err(|e| format!("Git HEAD dependency fsync: {e}"))?;
     fs::rename(&guard.path, &path).map_err(|e| format!("Git HEAD CAS publish: {e}"))?;
     guard.owned = false;
-    fs::File::open(git_dir)
-        .and_then(|f| f.sync_all())
+    FilesystemFileIoStore
+        .sync_dir(git_dir)
         .map_err(|e| format!("Git HEAD directory fsync: {e}"))?;
     Ok(())
 }
