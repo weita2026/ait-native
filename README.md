@@ -377,7 +377,7 @@ required review. Accepted formal retries reuse their original acceptance.
 - [Python CLI/API](https://ait-native.dev/technical/1.2.1/integrations/python/) and [Node.js CLI/API](https://ait-native.dev/technical/1.2.1/integrations/node/)
 - [Components](https://ait-native.dev/components/) and [release status](https://ait-native.dev/proof/)
 
-Source target: **v1.2.0**. `ait-monorepo-source.json` records
+Source target: **v1.2.1**. `ait-monorepo-source.json` records
 the exported component Snapshots. See [release status](https://ait-native.dev/proof/)
 for package-channel availability.
 
