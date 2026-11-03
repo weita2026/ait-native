@@ -7,12 +7,20 @@ if ($env:RUNNER_OS -ne "Windows" -or $env:SOURCE_QUALITY_EVENT -ne "workflow_dis
     $env:DIAGNOSTIC_REUSE_R4 -ne "false") {
     throw "The Runner probe requires an exclusive Windows diagnostic dispatch"
 }
-if ($env:SOURCE_QUALITY_REF -in @("refs/heads/diagnostic/release-121-20261103-r4", "refs/heads/diagnostic/release-121-20261103-r5")) {
+if ($env:SOURCE_QUALITY_REF -in @("refs/heads/diagnostic/release-121-20261103-r4", "refs/heads/diagnostic/release-121-20261103-r5", "refs/heads/diagnostic/release-121-20261103-r6")) {
     throw "Previously frozen diagnostic branches must remain immutable"
+}
+$fullBatch = $env:DIAGNOSTIC_WINDOWS_BATCH -eq "true"
+$runnerVerify = $env:DIAGNOSTIC_RUNNER_WINDOWS_VERIFY -eq "true"
+$affectedVerify = $env:DIAGNOSTIC_AFFECTED_WINDOWS_VERIFY -eq "true"
+$inventory = @($env:DIAGNOSTIC_WINDOWS_BATCH, $env:DIAGNOSTIC_RUNNER_WINDOWS_VERIFY, $env:DIAGNOSTIC_AFFECTED_WINDOWS_VERIFY)
+if (@($inventory | Where-Object { $_ -notin @("true", "false") }).Count -ne 0 -or @($inventory | Where-Object { $_ -eq "true" }).Count -ne 1) {
+    throw "Select exactly one frozen Windows diagnostic inventory"
 }
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "../ait-runner")).Path
 $probeHash = (Get-FileHash -LiteralPath (Join-Path $repoRoot "src/server.rs") -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($probeHash -ne "de7e870c2f622c23fb6514d5f88f20d8b71c9d0b6a57e4730605e997be6e8fb5") {
+$expectedHash = if ($runnerVerify -or $affectedVerify) { "3798355c96d796edeacbaea4e661df9a2f9ab02b645a33edc874328141635e02" } else { "de7e870c2f622c23fb6514d5f88f20d8b71c9d0b6a57e4730605e997be6e8fb5" }
+if ($probeHash -ne $expectedHash) {
     throw "Runner source differs from the frozen RRT-0071 diagnostic"
 }
 
@@ -51,6 +59,7 @@ try {
     New-Item -ItemType Directory -Force -Path $evidence | Out-Null
     $env:AIT_WINDOWS_DIAGNOSTIC_EVIDENCE = $evidence
     if ($env:GITHUB_OUTPUT) { "evidence_root=$evidence" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8 }
+    if ($fullBatch -or $affectedVerify) {
     $saved = @{}
     foreach ($name in @("TMPDIR", "TMP", "TEMP", "CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "CARGO_INCREMENTAL", "PYO3_BUILD_EXTENSION_MODULE", "CARGO_MANIFEST_DIR", "CARGO_BIN_EXE_ait-cli", "PATH")) {
         $saved[$name] = [Environment]::GetEnvironmentVariable($name)
@@ -67,6 +76,9 @@ try {
     } finally {
         foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
     }
+    } else {
+        Write-Output "Core: not selected; original evidence keeps its original source binding"
+    }
     $tmpRoot = Join-Path $ownedRoot "tmp"
     $cargoHome = Join-Path $ownedRoot "cache/cargo"
     $cargoTargetRoot = Join-Path $ownedRoot "build/cargo-target"
@@ -82,14 +94,18 @@ try {
     $env:CARGO_BUILD_BUILD_DIR = $cargoBuildRoot
     $env:CARGO_INCREMENTAL = "0"
     Set-Location -LiteralPath $repoRoot
-    Write-Output "Windows diagnostic only: selected Core cases, one Runner legacy-transition case and strict Runner Clippy; no full-suite qualification"
+    Write-Output "Windows diagnostic only; no full-suite qualification"
     Invoke-DiagnosticCommand "runner-legacy-transition" @(
         "test", "--locked", "--lib", "server::tests::legacy_transition_executes_and_preserves_attempt_cleanup",
         "--", "--exact", "--nocapture"
     )
+    if ($fullBatch) {
     Invoke-DiagnosticCommand "runner-strict-clippy" @(
         "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"
     )
+    } else {
+        Write-Output "Runner Clippy: not executed; prior matching results are not a fresh result"
+    }
 } catch {
     Write-Output $_
     Write-Output "CI BLOCKED Runner diagnostic: unsafe setup or source boundary"

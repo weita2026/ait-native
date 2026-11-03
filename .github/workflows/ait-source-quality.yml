@@ -16,6 +16,16 @@ on:
         type: boolean
         required: false
         default: false
+      diagnostic_runner_windows_verify:
+        description: '1.2.1 verification only: exact corrected Windows Runner legacy case'
+        type: boolean
+        required: false
+        default: false
+      diagnostic_affected_windows_verify:
+        description: '1.2.1 verification only: reviewed Core affected union and exact Runner case'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -27,7 +37,7 @@ concurrency:
 
 jobs:
   locked-rust:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.diagnostic_windows_batch) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.diagnostic_windows_batch || inputs.diagnostic_runner_windows_verify || inputs.diagnostic_affected_windows_verify)) }}
     name: Locked Core and Runner / ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -95,9 +105,9 @@ jobs:
           fi
   windows-diagnostic:
     name: Windows diagnostic only
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostic_windows_batch }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.diagnostic_windows_batch || inputs.diagnostic_runner_windows_verify || inputs.diagnostic_affected_windows_verify) }}
     runs-on: windows-2025
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Check out the exact diagnostic source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -118,12 +128,15 @@ jobs:
           SOURCE_QUALITY_REPOSITORY: ${{ github.repository }}
           SOURCE_QUALITY_REF: ${{ github.ref }}
           DIAGNOSTIC_REUSE_R4: ${{ inputs.diagnostic_reuse_r4_unix_runner }}
+          DIAGNOSTIC_WINDOWS_BATCH: ${{ inputs.diagnostic_windows_batch }}
+          DIAGNOSTIC_RUNNER_WINDOWS_VERIFY: ${{ inputs.diagnostic_runner_windows_verify }}
+          DIAGNOSTIC_AFFECTED_WINDOWS_VERIFY: ${{ inputs.diagnostic_affected_windows_verify }}
         run: |
           $ErrorActionPreference = 'Stop'
           & ./ci/windows-diagnostic.ps1
           exit $LASTEXITCODE
       - name: Retain original diagnostic streams and Process Monitor capture
-        if: always() && steps.diagnostic.outputs.evidence_root != ''
+        if: always() && (inputs.diagnostic_windows_batch || inputs.diagnostic_affected_windows_verify) && steps.diagnostic.outputs.evidence_root != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}

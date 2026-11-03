@@ -1091,13 +1091,7 @@ pub(in crate::primitives::git_interop) fn migrate(
             )
         })?;
         let directory = tags.parent().unwrap();
-        let handle = fs::File::open(directory).map_err(|error| {
-            format!(
-                "Failed to open legacy Tag archive directory {} for sync: {error}",
-                directory.display()
-            )
-        })?;
-        handle.sync_all().map_err(|error| {
+        FilesystemFileIoStore.sync_dir(directory).map_err(|error| {
             format!(
                 "Failed to sync legacy Tag archive directory {}: {error}",
                 directory.display()

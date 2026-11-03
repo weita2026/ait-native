@@ -91,8 +91,25 @@ function Stop-CoreCapture {
     }
 }
 
+function Assert-CoreAffectedSource {
+    param([string]$Core)
+    $pins = @{
+        "rust/crates/ait-benchmark/src/runner.rs" = "fd61ef692212af06b58d53c39457a8a697067071936e65f772d512e053569488"
+        "rust/crates/ait-cli/src/primitives/git_interop/native/migration.rs" = "012992672677429bfb6bf7e80b130cdee6a6e440378b9e144b553310f5d2d7c7"
+        "rust/crates/ait-cli/src/primitives/workflow/bound_worktree.rs" = "765c51c23d0f36b0557925e699da749887a6d1c5b24ddadf7847209c13382bfe"
+        "rust/crates/ait-cli/src/primitives/worktree.rs" = "dfdcc6b816eafd10b786a4757eb020a032a7e5c14deee75da5ec729c054c889b"
+        "rust/crates/ait-cli/src/primitives/worktree/cleanup.rs" = "978b16d120499fafab017350412dc271b1fe2c25d921079aac67762b0a589f2e"
+    }
+    foreach ($relative in $pins.Keys) {
+        if ((Get-FileHash -LiteralPath (Join-Path $Core $relative) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pins[$relative]) {
+            throw "Core source differs from the frozen affected projection: $relative"
+        }
+    }
+}
+
 function Invoke-CoreDiagnostics {
-    param([string]$Core, [string]$Owned, [string]$Evidence)
+    param([string]$Core, [string]$Owned, [string]$Evidence, [bool]$AffectedVerification = $false)
+    if ($AffectedVerification) { Assert-CoreAffectedSource $Core }
     $failed = $false
     foreach ($directory in @($Owned, $Evidence, (Join-Path $Owned "tmp"), (Join-Path $Owned "cargo-target"), (Join-Path $Owned "cargo-build"))) {
         New-Item -ItemType Directory -Force -Path $directory | Out-Null
@@ -105,6 +122,7 @@ function Invoke-CoreDiagnostics {
     $env:CARGO_INCREMENTAL = "0"
     Remove-Item Env:\PYO3_BUILD_EXTENSION_MODULE -ErrorAction SilentlyContinue
     $cargo = (Get-Command cargo -CommandType Application).Source
+    if (-not $AffectedVerification) {
     $session = $null
     try {
         Write-Host "CI RUN core-cleanup-prebuild (outside capture)"
@@ -143,20 +161,48 @@ function Invoke-CoreDiagnostics {
             try { Stop-CoreCapture $session } catch { $failed = $true; Write-Host "CI BLOCKED cleanup trace: $_" }
         }
     }
+    } else {
+        # One complete target batch includes the original nested cleanup case.
+        # The library child regression checks CWD/root deletion before exit.
+        $common = @("test", "--manifest-path", "rust/Cargo.toml", "--profile", "ait-ci", "--locked", "--all-features", "--no-fail-fast")
+        $batches = @(
+            @{ Name = "shared-libraries"; Arguments = $common + @("-p", "ait-cli", "--lib", "--", "primitives::worktree::cleanup", "closeout_context", "--nocapture") },
+            @{ Name = "shared-integrations"; Arguments = $common + @("-p", "ait-cli", "--test", "patchset_ci_runner", "--test", "workflow_friction_cli", "--test", "workflow_recovery_cli", "--test", "snapshot_task_binding_cli", "--", "--nocapture") },
+            @{ Name = "core87-guard"; Arguments = $common + @("-p", "ait-core", "--lib", "--", "current_source_cache::tests::cli_bootstrap_rejects_changed_content_under_nonadvancing_maximum", "--exact", "--nocapture") }
+        )
+        foreach ($batch in $batches) {
+            try {
+                Write-Host "CI RUN core-$($batch.Name)"
+                $result = Invoke-CoreProcess $cargo $batch.Arguments $Core (Join-Path $Evidence $batch.Name) 3600000
+                if ($result.Code -ne 0) { throw "exit $($result.Code)" }
+                Write-Host "CI PASS core-$($batch.Name)"
+            } catch { $failed = $true; Write-Host "CI FAIL core-$($batch.Name): $_" }
+        }
+        Write-Host "No standalone nested-case replay or unconditional fresh ProcMon capture; retain the R6 before-trace. Inconclusive/failing child assertions or another holder require same-attempt capture before another repair."
+    }
     # These independent cases are always outside the bounded PML capture.
-    $targets = @(
-        @{ Package = "ait-benchmark"; Name = "benchmark"; Cases = @("runner::tests::timed_external_subject_records_resource_and_exit_contract") },
-        @{ Package = "ait-cli"; Name = "cli"; Cases = @(
-            "primitives::git_interop::mirror::tests::mirror_resumes_after_typed_object_transfer_interruption",
+    $benchmarkCases = @("runner::tests::timed_external_subject_records_resource_and_exit_contract")
+    $migrationCases = @(
             "primitives::git_interop::native::migration::tests::legacy_migration_admits_export_ref_aliases_without_old_export_commit_rows",
             "primitives::git_interop::native::migration::tests::legacy_migration_converts_native_export_commit_rows_and_preserves_source_json",
             "primitives::git_interop::native::migration::tests::legacy_migration_converts_tag_only_with_exact_metadata",
             "primitives::git_interop::native::migration::tests::legacy_migration_preserves_raw_history_native_heads_and_offline_evidence",
             "primitives::git_interop::native::migration::tests::legacy_migration_rejects_changed_input_without_canonical_writes",
-            "primitives::git_interop::native::migration::tests::legacy_migration_source_export_preserves_frozen_refs_and_symbolic_head",
-            "primitives::git_interop::import_object_reader_tests::git_source_arguments_preserve_remote_urls") },
-        @{ Package = "ait-core"; Name = "leases"; Cases = @("current_source_cache::tests::register_lease_writes_through_lease_store_trait_object", "current_source_cache::tests::release_lease_prunes_through_lease_store_trait_object") }
+            "primitives::git_interop::native::migration::tests::legacy_migration_source_export_preserves_frozen_refs_and_symbolic_head"
     )
+    if ($AffectedVerification) {
+        $benchmarkCases += "runner::tests::unexpected_exit_is_retained_as_failure_evidence"
+        $cliCases = $migrationCases
+    } else {
+        $cliCases = @("primitives::git_interop::mirror::tests::mirror_resumes_after_typed_object_transfer_interruption") + $migrationCases + @("primitives::git_interop::import_object_reader_tests::git_source_arguments_preserve_remote_urls")
+    }
+    $targets = @(
+        @{ Package = "ait-benchmark"; Name = "benchmark"; Cases = $benchmarkCases },
+        @{ Package = "ait-cli"; Name = "cli"; Cases = $cliCases }
+    )
+    if (-not $AffectedVerification) {
+        $targets += @{ Package = "ait-core"; Name = "leases"; Cases = @("current_source_cache::tests::register_lease_writes_through_lease_store_trait_object", "current_source_cache::tests::release_lease_prunes_through_lease_store_trait_object") }
+    }
     foreach ($target in $targets) {
         try {
             Write-Host "CI RUN core-nonshared-$($target.Name)"
@@ -176,8 +222,9 @@ if ($MyInvocation.InvocationName -ne ".") {
             $env:SOURCE_QUALITY_REPOSITORY -ne "weita2026/ait-native" -or $env:DIAGNOSTIC_REUSE_R4 -ne "false" -or
             -not ([string]$env:SOURCE_QUALITY_REF).StartsWith("refs/heads/diagnostic/release-121-")) { throw "Core diagnostic context is unavailable" }
         $core = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "../ait-core")).Path
+        if ($env:DIAGNOSTIC_AFFECTED_WINDOWS_VERIFY -notin @("true", "false")) { throw "Missing exact Core inventory selection" }
         $owned = Join-Path ([IO.Path]::GetTempPath()) ("ait-core-ci-" + [guid]::NewGuid().ToString("N"))
-        if (Invoke-CoreDiagnostics $core $owned $env:AIT_WINDOWS_DIAGNOSTIC_EVIDENCE) { exit 1 }
+        if (Invoke-CoreDiagnostics $core $owned $env:AIT_WINDOWS_DIAGNOSTIC_EVIDENCE ($env:DIAGNOSTIC_AFFECTED_WINDOWS_VERIFY -eq "true")) { exit 1 }
         exit 0
     } catch { Write-Host "CI BLOCKED Core diagnostics: $_"; exit 1 }
 }

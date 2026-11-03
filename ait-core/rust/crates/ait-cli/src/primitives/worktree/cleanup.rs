@@ -673,6 +673,12 @@ enum WorktreeRemovalWorkspaceStatusPolicy {
     SkipForAbandonedTask,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum WorktreeRemovalCwdPolicy {
+    Preserve,
+    ReleaseCliOwned,
+}
+
 fn read_worktree_removal_workspace_status(
     worktree_repo: &RepoRuntime,
 ) -> Result<JsonValue, String> {
@@ -791,6 +797,22 @@ pub(in crate::primitives) fn preflight_worktree_removal(
     )
 }
 
+pub(in crate::primitives) fn remove_one_worktree_after_local_task_finish(
+    repo: &RepoRuntime,
+    name: &str,
+) -> Result<JsonValue, String> {
+    // A local receipt does not waive workspace inspection. CLI process
+    // context is released independently, after that inspection and locking.
+    remove_one_worktree_with_policy(
+        repo,
+        name,
+        true,
+        false,
+        WorktreeRemovalWorkspaceStatusPolicy::Inspect,
+        WorktreeRemovalCwdPolicy::ReleaseCliOwned,
+    )
+}
+
 pub(in crate::primitives) fn remove_one_worktree(
     repo: &RepoRuntime,
     name: &str,
@@ -803,6 +825,7 @@ pub(in crate::primitives) fn remove_one_worktree(
         delete_path,
         force,
         WorktreeRemovalWorkspaceStatusPolicy::Inspect,
+        WorktreeRemovalCwdPolicy::Preserve,
     )
 }
 
@@ -816,6 +839,7 @@ pub(in crate::primitives) fn remove_one_worktree_after_authoritative_task_land(
         true,
         true,
         WorktreeRemovalWorkspaceStatusPolicy::SkipForAuthoritativeTaskLand,
+        WorktreeRemovalCwdPolicy::ReleaseCliOwned,
     )
 }
 
@@ -830,6 +854,7 @@ pub(in crate::primitives) fn remove_one_worktree_after_task_abandon(
         true,
         true,
         WorktreeRemovalWorkspaceStatusPolicy::SkipForAbandonedTask,
+        WorktreeRemovalCwdPolicy::Preserve,
         configuration,
         |_| {},
     )
@@ -1058,6 +1083,7 @@ fn remove_one_worktree_with_policy(
     delete_path: bool,
     force: bool,
     workspace_status_policy: WorktreeRemovalWorkspaceStatusPolicy,
+    cwd_policy: WorktreeRemovalCwdPolicy,
 ) -> Result<JsonValue, String> {
     let mut configuration = crate::config_surface::begin_root_config_mutation(repo)?;
     remove_one_worktree_with_policy_observed(
@@ -1066,6 +1092,7 @@ fn remove_one_worktree_with_policy(
         delete_path,
         force,
         workspace_status_policy,
+        cwd_policy,
         &mut configuration,
         |_| {},
     )
@@ -1096,9 +1123,12 @@ fn remove_one_worktree_with_policy_observed(
     delete_path: bool,
     force: bool,
     workspace_status_policy: WorktreeRemovalWorkspaceStatusPolicy,
+    cwd_policy: WorktreeRemovalCwdPolicy,
     configuration: &mut crate::config_surface::RootConfigMutation,
     mut observe_retirement: impl FnMut(bool),
 ) -> Result<JsonValue, String> {
+    #[cfg(not(windows))]
+    let _ = cwd_policy;
     let removal =
         preflight_worktree_removal_with_policy(repo, name, force, workspace_status_policy)?;
     let worktree_name = required_string_field(&removal, "name")?;
@@ -1141,8 +1171,7 @@ fn remove_one_worktree_with_policy_observed(
     observe_retirement(false);
     #[cfg(windows)]
     if delete_path
-        && workspace_status_policy
-            == WorktreeRemovalWorkspaceStatusPolicy::SkipForAuthoritativeTaskLand
+        && cwd_policy == WorktreeRemovalCwdPolicy::ReleaseCliOwned
         && worktree_path.exists()
     {
         crate::closeout_context::release_owned_worktree_cwd(
@@ -1488,6 +1517,104 @@ mod tests {
     }
 
     #[test]
+    fn local_finish_inspects_workspace_before_releasing_cli_cwd() {
+        const ROOT: &str = "AIT_TEST_LOCAL_FINISH_CWD_ROOT";
+        if let Some(root) = std::env::var_os(ROOT) {
+            let root = PathBuf::from(root);
+            let authority = root.join("repo");
+            fs::create_dir(&authority).unwrap();
+            std::env::set_current_dir(&authority).unwrap();
+            let run = |args: &[&str]| {
+                let argv = std::iter::once("ait")
+                    .chain(args.iter().copied())
+                    .map(std::ffi::OsString::from)
+                    .collect();
+                assert_eq!(crate::main_app::entry_with_args(argv), 0, "{args:?}");
+            };
+            run(&["init", "--json"]);
+            run(&[
+                "config",
+                "set",
+                "--user-name",
+                "closeout-regression",
+                "--json",
+            ]);
+            run(&["config", "set", "--sprint", "off", "--json"]);
+            let repo = RepoRuntime::discover_from_path(&authority).unwrap();
+            let edit_root = root.join("edit");
+            let started = crate::binding_services::start_task(
+                &repo,
+                &crate::binding_services::TaskStartRequest {
+                    title: Some("Local finish CWD".into()),
+                    source: None,
+                    intent: "Preserve inspection before releasing the finishing CLI CWD".into(),
+                    local: true,
+                    remote_name: None,
+                    edit_root: Some(edit_root.clone()),
+                },
+                None,
+            )
+            .unwrap();
+            let task_id = required_string_field(&started, "task_id").unwrap();
+            let name = required_string_field(&started["worktree"], "name").unwrap();
+            fs::write(edit_root.join("closeout.rs"), "fn closeout() {}\n").unwrap();
+            std::env::set_current_dir(&edit_root).unwrap();
+            let before = std::env::current_dir().unwrap();
+            let refused = crate::closeout_context::with_cli_closeout(|| {
+                remove_one_worktree_after_local_task_finish(&repo, &name)
+            })
+            .expect_err("local closeout must inspect and protect unsaved changes");
+            assert!(refused.contains("unsaved changes"), "{refused}");
+            assert_eq!(std::env::current_dir().unwrap(), before);
+            assert!(edit_root.join(WORKTREE_CONFIG_NAME).is_file());
+            assert!(worktree_registry_path(&repo, &name).is_file());
+
+            // Exercise real dispatch and the receipted local finish caller once.
+            run(&[
+                "task",
+                "finish",
+                &task_id,
+                "--message",
+                "CWD closeout",
+                "--local",
+                "--json",
+                "--full",
+            ]);
+            #[cfg(windows)]
+            assert_eq!(
+                std::env::current_dir().unwrap().canonicalize().unwrap(),
+                authority.canonicalize().unwrap()
+            );
+            // Other platforms allow unlinking their CWD; keep this isolated
+            // test process valid before it returns to the harness.
+            std::env::set_current_dir(&authority).unwrap();
+            assert!(!edit_root.exists());
+            assert!(!worktree_registry_path(&repo, &name).exists());
+            assert_eq!(
+                fs::read_to_string(authority.join("closeout.rs")).unwrap(),
+                "fn closeout() {}\n"
+            );
+            return;
+        }
+        let temp = tempdir().unwrap();
+        let case = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &case, "--nocapture"])
+            .env(ROOT, temp.path())
+            .env("CODEX_HOME", temp.path().join("native-home"))
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "status={:?}\nstdout={}\nstderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn current_admission_and_finish_or_abandon_cursor_retirement_are_exclusive() {
         use ait_core::binary_db_generation::admit_activated_binary_db_generation_for_runtime;
         use std::sync::mpsc;
@@ -1532,6 +1659,7 @@ mod tests {
                 true,
                 true,
                 policy,
+                WorktreeRemovalCwdPolicy::Preserve,
                 &mut configuration,
                 |retired| {
                     observations += 1;

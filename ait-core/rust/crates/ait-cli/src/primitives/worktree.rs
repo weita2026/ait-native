@@ -20,9 +20,9 @@ pub(in crate::primitives) use bootstrap::*;
 pub use bootstrap::{task_resolve_worktree_location, task_start, worktree_recover_task};
 pub(super) use cleanup::{
     cleanup_candidate_sort_key, cleanup_registered_worktree_cargo_build_dir,
-    coerce_worktree_datetime, finalize_promoted_worktree_registration, remove_one_worktree,
-    remove_one_worktree_after_authoritative_task_land, remove_one_worktree_after_task_abandon,
-    worktree_cleanup_decision,
+    coerce_worktree_datetime, finalize_promoted_worktree_registration,
+    remove_one_worktree_after_authoritative_task_land, remove_one_worktree_after_local_task_finish,
+    remove_one_worktree_after_task_abandon, worktree_cleanup_decision,
 };
 pub use cleanup::{
     worktree_cleanup, worktree_cleanup_candidates, worktree_prune_stale, worktree_remove,
