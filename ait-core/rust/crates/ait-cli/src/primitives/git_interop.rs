@@ -435,16 +435,16 @@ fn inspect_source(source: &str) -> Result<SourceInfo, String> {
     } else {
         source.to_string()
     };
-    let output = run_git(
-        [
-            "ls-remote",
-            "--symref",
-            source,
-            "HEAD",
-            "refs/heads/*",
-            "refs/tags/*",
-            "refs/notes/*",
-            "refs/replace/*",
+    let output = run_git_os(
+        vec![
+            "ls-remote".into(),
+            "--symref".into(),
+            git_path_argument(Path::new(source)),
+            "HEAD".into(),
+            "refs/heads/*".into(),
+            "refs/tags/*".into(),
+            "refs/notes/*".into(),
+            "refs/replace/*".into(),
         ],
         &[],
         None,
@@ -581,7 +581,7 @@ fn prepare_retained_repository(
             OsString::from("fetch"),
             OsString::from("--no-tags"),
             OsString::from("--no-write-fetch-head"),
-            OsString::from(&source.source),
+            git_path_argument(Path::new(&source.source)),
         ];
         args.extend(refspecs.into_iter().map(OsString::from));
         run_git_os(args, &[], None)?;
@@ -3253,6 +3253,17 @@ fn git_update_ref(
 mod import_object_reader_tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn git_source_arguments_preserve_remote_urls() {
+        for source in [
+            "https://example.test/owner/repository.git",
+            "ssh://git@example.test:2222/owner/repository.git",
+            "git@example.test:owner/repository.git",
+        ] {
+            assert_eq!(git_path_argument(Path::new(source)), OsString::from(source));
+        }
+    }
 
     #[cfg(windows)]
     #[test]

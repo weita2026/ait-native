@@ -1071,6 +1071,25 @@ fn remove_one_worktree_with_policy(
     )
 }
 
+fn worktree_cleanup_error(operation: &str, path: &Path, error: impl std::fmt::Display) -> String {
+    #[cfg(all(windows, debug_assertions))]
+    {
+        use std::io::Write;
+        // Observe the original failure while this process and its locks are
+        // still alive. Diagnostics must not replace or retry that operation.
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "worktree-cleanup-failure operation={operation:?} path={path:?} pid={} cwd={:?} error={error}",
+            std::process::id(),
+            std::env::current_dir()
+        );
+    }
+    format!(
+        "Worktree cleanup {operation} failed for {}: {error}",
+        path.display()
+    )
+}
+
 fn remove_one_worktree_with_policy_observed(
     repo: &RepoRuntime,
     name: &str,
@@ -1132,18 +1151,20 @@ fn remove_one_worktree_with_policy_observed(
         )?;
     }
     if !abandoned && marker_path.exists() {
-        fs::remove_file(&marker_path).map_err(|err| err.to_string())?;
+        fs::remove_file(&marker_path)
+            .map_err(|err| worktree_cleanup_error("remove_file", &marker_path, err))?;
     }
     if !abandoned && path_exists_or_directory_link(&ait_link) {
-        remove_path_entry(&ait_link)?;
+        remove_path_entry(&ait_link)
+            .map_err(|err| worktree_cleanup_error("remove_path_entry", &ait_link, err))?;
     }
     if delete_path && worktree_path.exists() {
         let mut children = fs::read_dir(&worktree_path)
-            .map_err(|err| err.to_string())?
+            .map_err(|err| worktree_cleanup_error("read_dir", &worktree_path, err))?
             .map(|entry| {
                 entry
                     .map(|value| value.path())
-                    .map_err(|err| err.to_string())
+                    .map_err(|err| worktree_cleanup_error("read_dir_entry", &worktree_path, err))
             })
             .collect::<Result<Vec<_>, _>>()?;
         children.sort_by(|left, right| right.cmp(left));
@@ -1151,25 +1172,30 @@ fn remove_one_worktree_with_policy_observed(
             if abandoned && (child == marker_path || child == ait_link) {
                 continue;
             }
-            remove_tree_force(&child)?;
+            remove_tree_force(&child)
+                .map_err(|err| worktree_cleanup_error("remove_tree_force", &child, err))?;
         }
         // Retain owner evidence until only the overlay/link remain. Interrupted
         // abandonment can then verify and resume without a new receipt.
         if abandoned {
             if path_exists_or_directory_link(&ait_link) {
-                remove_path_entry(&ait_link)?;
+                remove_path_entry(&ait_link)
+                    .map_err(|err| worktree_cleanup_error("remove_path_entry", &ait_link, err))?;
             }
             if marker_path.exists() {
-                fs::remove_file(&marker_path).map_err(|err| err.to_string())?;
+                fs::remove_file(&marker_path)
+                    .map_err(|err| worktree_cleanup_error("remove_file", &marker_path, err))?;
             }
         }
         if worktree_path.exists() {
-            fs::remove_dir(&worktree_path).map_err(|err| err.to_string())?;
+            fs::remove_dir(&worktree_path)
+                .map_err(|err| worktree_cleanup_error("remove_dir", &worktree_path, err))?;
         }
     }
     if let Some(alias_path) = alias_path.as_ref() {
         if path_exists_or_directory_link(alias_path) {
-            remove_path_entry(alias_path)?;
+            remove_path_entry(alias_path)
+                .map_err(|err| worktree_cleanup_error("remove_path_entry", alias_path, err))?;
         }
     }
     let mut clear_root_binding = || {
@@ -1188,7 +1214,9 @@ fn remove_one_worktree_with_policy_observed(
     if abandoned {
         clear_root_binding()?;
     }
-    fs::remove_file(worktree_registry_path(repo, &worktree_name)).map_err(|err| err.to_string())?;
+    let registry_path = worktree_registry_path(repo, &worktree_name);
+    fs::remove_file(&registry_path)
+        .map_err(|err| worktree_cleanup_error("remove_file", &registry_path, err))?;
     observe_retirement(true);
     if !abandoned {
         clear_root_binding()?;

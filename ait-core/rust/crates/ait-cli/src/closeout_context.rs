@@ -46,7 +46,18 @@ pub(crate) fn release_owned_worktree_cwd(
             current.display(),
             root.display()
         )
-    })
+    })?;
+    #[cfg(all(windows, debug_assertions))]
+    {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "worktree-closeout-cwd pid={} before={current:?} after={:?} worktree={worktree:?}",
+            std::process::id(),
+            std::env::current_dir()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

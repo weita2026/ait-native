@@ -702,7 +702,20 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (cell, subject) = fixture_subject(root.path());
         let measurement = execute_timed_command(&subject.command, &cell, &subject, 3).unwrap();
-        assert!(measurement.success);
+        assert!(
+            measurement.success,
+            "program={} args={:?} cwd={} exit_code={:?} failure={:?}",
+            subject.command.program,
+            subject
+                .command
+                .args
+                .iter()
+                .map(|arg| expand(arg, &cell, &subject, 3))
+                .collect::<Vec<_>>(),
+            subject.workspace_root.display(),
+            measurement.exit_code,
+            measurement.failure,
+        );
         assert_eq!(measurement.exit_code, Some(0));
         assert!(measurement.wall_time_ns > 0);
         #[cfg(unix)]

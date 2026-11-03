@@ -526,7 +526,10 @@ fn register_lease_writes_through_lease_store_trait_object() {
     .unwrap();
 
     let lease_path = PathBuf::from(payload["lease_path"].as_str().unwrap());
-    assert_eq!(payload["namespace_root"], path_text(&paths.namespace_root));
+    assert_eq!(
+        Path::new(payload["namespace_root"].as_str().unwrap()),
+        paths.namespace_root
+    );
     assert_eq!(payload["build_key"], "lease-build");
     assert_eq!(
         store.calls.borrow().as_slice(),
@@ -596,7 +599,7 @@ fn release_lease_prunes_through_lease_store_trait_object() {
     )
     .unwrap();
 
-    assert_eq!(payload["released"], path_text(&lease_path));
+    assert_eq!(Path::new(payload["released"].as_str().unwrap()), lease_path);
     assert_eq!(payload["prune"]["removed_unleased_ready"], json!([]));
     assert!(paths.cache_root.exists());
     assert_eq!(

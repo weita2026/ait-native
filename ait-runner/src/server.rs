@@ -2111,6 +2111,8 @@ mod tests {
         } else {
             ("complete-job", "succeeded")
         };
+        let terminal_response =
+            legacy_service(operation, "job", legacy_job(state, JsonValue::Null));
         let server = MockServer::start(vec![
             (200, legacy_health()),
             (
@@ -2121,10 +2123,7 @@ mod tests {
                     legacy_job("running", runtime),
                 ),
             ),
-            (
-                200,
-                legacy_service(operation, "job", legacy_job(state, JsonValue::Null)),
-            ),
+            (200, terminal_response.clone()),
         ]);
         let source = source("#!/bin/sh\nset -eu\nprintf 'legacy-ok'\n");
         let attempts = tempfile::tempdir().expect("attempts");
@@ -2140,6 +2139,21 @@ mod tests {
         );
         if cfg!(windows) {
             let error = report.expect_err("Windows must reject legacy execution");
+            eprintln!(
+                "R02/D01 actual_error={}",
+                bounded_text(&format!("{error:?}"), MAX_FAILURE_MESSAGE_CHARS)
+            );
+            eprintln!(
+                "R02/D01 observed_mock_requests={}",
+                bounded_text(
+                    &format!("{:?}", server.requests.lock().expect("request lock")),
+                    MAX_FAILURE_MESSAGE_CHARS
+                )
+            );
+            eprintln!(
+                "R02/D01 configured_terminal_response={}",
+                bounded_text(&terminal_response.to_string(), MAX_FAILURE_MESSAGE_CHARS)
+            );
             assert!(error.to_string().contains("unsupported on Windows"));
             assert!(error.to_string().contains("acknowledged fail-job"));
         } else {
