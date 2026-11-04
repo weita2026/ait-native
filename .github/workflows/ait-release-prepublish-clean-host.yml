@@ -351,6 +351,39 @@ jobs:
           node-version: "24.5.0"
           check-latest: false
 
+      - name: Select Go for the Mac language repositories
+        if: runner.os == 'macOS' && matrix.channel == 'github' && matrix.lifecycle == 'product'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.27.3"
+          check-latest: false
+          cache: false
+
+      - name: Check all Mac language repository toolchains
+        if: runner.os == 'macOS' && matrix.channel == 'github' && matrix.lifecycle == 'product'
+        shell: bash
+        env:
+          CARGO_NET_OFFLINE: "true"
+          GOPROXY: "off"
+          GOTOOLCHAIN: "local"
+        run: |
+          node --input-type=module <<'LANGUAGE_TOOLCHAINS'
+          import { spawnSync } from 'node:child_process';
+          import { languageRepository, languageRepositoryNames } from './control/ci/release_language_repositories.mjs';
+          const failures = [];
+          for (const name of languageRepositoryNames) {
+            for (const [command, ...args] of languageRepository(name).toolchains) {
+              const result = spawnSync(command, args, { encoding: 'utf8', timeout: 120000 });
+              const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim();
+              console.log(`${name}: ${command} ${args.join(' ')}\n${output}`);
+              if (result.error || result.status !== 0 || !/[0-9]/.test(output)) {
+                failures.push(`${name}/${command}: ${result.error?.message ?? result.status}`);
+              }
+            }
+          }
+          if (failures.length) throw new Error(`Language toolchains unavailable: ${failures.join('; ')}`);
+          LANGUAGE_TOOLCHAINS
+
       - name: Select Python for the PyPI row
         id: python
         if: matrix.channel == 'pypi'

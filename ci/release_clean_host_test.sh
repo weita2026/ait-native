@@ -191,6 +191,64 @@ if [[ ${node_entry_host} == windows ]]; then
   exit 0
 fi
 
+# The Mac install prerequisite check must report every declared tool, including
+# Java after a missing Go compiler, before any installed-candidate execution.
+node --input-type=module - "${repo_root}" <<'MAC_TOOLCHAINS_TEST'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+import { pathToFileURL } from 'node:url';
+const root = process.argv[2];
+const { languageRepository, languageRepositoryNames } =
+  await import(pathToFileURL(path.join(root, 'ci/release_language_repositories.mjs')));
+const workflow = readFileSync(path.join(root, '.github/workflows/ait-release-prepublish-clean-host.yml'), 'utf8');
+const install = workflow.split('  install:\n')[1].split('  upgrade:\n')[0];
+const steps = install.split(/^      - name: /m);
+const setup = steps.find(step => step.startsWith('Select Go for the Mac language repositories\n'));
+const check = steps.find(step => step.startsWith('Check all Mac language repository toolchains\n'));
+for (const step of [setup, check]) {
+  assert(step);
+  assert.match(step, /if: runner.os == 'macOS' && matrix.channel == 'github' && matrix.lifecycle == 'product'/);
+  assert(!step.includes('continue-on-error:'));
+}
+assert.match(setup, /uses: actions\/setup-go@[0-9a-f]{40} # v6/);
+assert.match(setup, /go-version: "1\.27\.3"/);
+assert.match(setup, /check-latest: false/);
+assert.match(setup, /cache: false/);
+assert(install.indexOf(setup) < install.indexOf(check));
+assert(install.indexOf(check) < install.indexOf('Verify candidate inventory and execute clean install'));
+for (const setting of ['CARGO_NET_OFFLINE: "true"', 'GOPROXY: "off"', 'GOTOOLCHAIN: "local"']) {
+  assert(check.includes(setting));
+}
+const source = check.split("<<'LANGUAGE_TOOLCHAINS'\n")[1].split('          LANGUAGE_TOOLCHAINS')[0]
+  .replace(/^          /gm, '').replace(/^import .*;\n/gm, '');
+const expected = languageRepositoryNames.flatMap(name => languageRepository(name).toolchains);
+assert.deepEqual(expected.map(([command]) => command), ['rustc', 'cargo', 'node', 'go', 'javac', 'java']);
+for (const failure of [null, 'missing-go', 'missing-java', 'multiple', 'empty-version', 'nonzero']) {
+  const calls = [];
+  const run = () => vm.runInNewContext(source, {
+    languageRepository, languageRepositoryNames, console: { log() {} },
+    spawnSync(command, args, options) {
+      calls.push([command, ...args]);
+      assert.equal(options.timeout, 120000);
+      assert.equal(options.encoding, 'utf8');
+      if ((failure === 'missing-go' && command === 'go') ||
+          (failure === 'missing-java' && command === 'javac') ||
+          (failure === 'multiple' && ['go', 'javac', 'java'].includes(command))) {
+        return { status: null, error: new Error(`spawnSync ${command} ENOENT`) };
+      }
+      return { status: failure === 'nonzero' && command === 'cargo' ? 1 : 0,
+        stdout: failure === 'empty-version' && command === 'java' ? '' : `${command} 1.2.3`, stderr: '' };
+    },
+  });
+  if (failure) assert.throws(run, /Language toolchains unavailable:/);
+  else run();
+  assert.deepEqual(calls, expected, `all toolchains must be checked: ${failure}`);
+}
+console.log('Mac prerequisite regression: all declared tools checked; missing Go and Java fail without masking later probes');
+MAC_TOOLCHAINS_TEST
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
