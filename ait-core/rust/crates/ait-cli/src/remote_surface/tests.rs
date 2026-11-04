@@ -49,8 +49,18 @@ impl RemoteStore for FakeRemoteStore {
 }
 
 fn write_remote_add_fixture(root: &Path, repository_index: Option<u32>) -> RepoRuntime {
+    fs::create_dir_all(root).unwrap();
+    crate::init_surface::init_repo(&crate::init_surface::InitRequest {
+        root: root.to_path_buf(),
+        name: None,
+        default_line: "main".to_string(),
+        policy_profile: "prototype".to_string(),
+        default_author_mode: "ai_only_experimental".to_string(),
+        default_model: None,
+        repair_existing: false,
+    })
+    .unwrap();
     let ait_dir = root.join(".ait");
-    fs::create_dir_all(&ait_dir).unwrap();
     let mut config = json!({
         "repo_name": "duplicate-name",
         "user_name": "Alice",

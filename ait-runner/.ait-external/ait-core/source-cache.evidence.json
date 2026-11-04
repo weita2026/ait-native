@@ -12,7 +12,7 @@
   "license": "Apache-2.0",
   "source_authority": "ait_remote_snapshot_boundary",
   "local_selection_authority": "ait_external_lock",
-  "materialize_to": ".ait-external/ait-core",
+  "materialize_to": ".ait-external/ait-runner/.ait-external/ait-core",
   "shallow_history_boundary": true,
   "workspace_clean": true,
   "workspace_external_materialized": false,

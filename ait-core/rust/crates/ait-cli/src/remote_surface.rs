@@ -84,13 +84,11 @@ fn remote_add_unlocked(
                 "delivery_policy_default_requires_tests": delivery_policy_default_requires_tests,
             }),
         );
-    if request.make_default {
-        let agent_harness = converge_agent_workflow_harness(&refreshed)?;
-        payload
-            .as_object_mut()
-            .ok_or_else(|| "Remote add payload must be an object.".to_string())?
-            .insert("agent_harness".to_string(), agent_harness);
-    }
+    let agent_harness = converge_agent_workflow_harness(&refreshed)?;
+    payload
+        .as_object_mut()
+        .ok_or_else(|| "Remote add payload must be an object.".to_string())?
+        .insert("agent_harness".to_string(), agent_harness);
     Ok(payload)
 }
 

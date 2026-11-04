@@ -313,7 +313,7 @@ Remote `ait workflow ready` 唯讀檢查 readiness；加 `--apply` 才準備 can
 - [Python CLI/API](https://ait-native.dev/zh-tw/technical/1.2.1/integrations/python/)與[Node.js CLI/API](https://ait-native.dev/zh-tw/technical/1.2.1/integrations/node/)
 - [元件](https://ait-native.dev/zh-tw/components/)與[發行狀態](https://ait-native.dev/zh-tw/proof/)
 
-原始碼目標：**v1.2.1**。`ait-monorepo-source.json` 記錄匯出的元件 Snapshot。
+原始碼目標：**v1.2.0**。`ait-monorepo-source.json` 記錄匯出的元件 Snapshot。
 套件通路可用性請參閱[發行狀態](https://ait-native.dev/zh-tw/proof/)。
 
 <details>

@@ -23,6 +23,15 @@ const TOOL_DISCIPLINE: &str = "\
 Before a query, identify the missing fact and reuse authoritative facts still
 valid in context. Batch independent searches and reads; filter results before
 returning them to the model. After truncation, retrieve only the missing segment.";
+const REGISTERED_SERVER_PACKET_GUIDANCE: &str = "\
+For this registered AIT Server repository, perform AIT Server operations only
+through existing approved AIT commands. Agents must not handcraft, assemble or
+directly send request packets or upload packages for AIT Server through direct
+API calls or custom helpers that replace those commands. Normal command-internal
+packaging and transport remain allowed. This restriction does not prohibit
+authorized REST/API development for other services. Report a command's precise
+failure and repair the supported command; PM approval, urgency and AI-only mode
+do not authorize a bypass.";
 const REBASE_GUIDANCE: &str = "\
 Rebase as needed when main or the target Line advances, preserving others'
 accepted changes. With teams disabled, the current executor rebases and resolves
@@ -390,6 +399,11 @@ fn render_workflow_block(repo: &RepoRuntime, audience: GuidanceAudience) -> Resu
     // Shared command routing remains local; team review affects fresh author mode.
     let worktree_facts = render_worktree_facts("local", "");
     let admission = render_effective_workflow_admission(repo, sprint_enabled);
+    let server_guidance = if repo.repository_index().is_some() {
+        format!("\n\n{REGISTERED_SERVER_PACKET_GUIDANCE}")
+    } else {
+        String::new()
+    };
     let plan_sync_command = "ait plan sync <markdown-file-or-dir> --local";
     let markdown_sync_rule = if sprint_enabled {
         format!(
@@ -492,7 +506,7 @@ retain the returned Task ID and verify that its `edit_root` is the selected path
         r#"{MANAGED_START}
 ## Effective Ait Workflow (Generated)
 
-{admission}
+{admission}{server_guidance}
 
 {prose_guidance}
 
@@ -971,6 +985,37 @@ mod tests {
     }
 
     #[test]
+    fn server_packet_guidance_requires_valid_registration_in_both_audiences() {
+        for teams in [false, true] {
+            for sprint in ["on", "off"] {
+                for (index, registered) in [
+                    (None, false),
+                    (Some(json!(0)), true),
+                    (Some(json!(7)), true),
+                    (Some(json!(-1)), false),
+                    (Some(json!("0")), false),
+                    (Some(json!(u64::MAX)), false),
+                ] {
+                    let mut runtime = repo(teams, sprint);
+                    runtime
+                        .config
+                        .insert("server_url".into(), json!("http://127.0.0.1:1"));
+                    if let Some(index) = index {
+                        runtime.config.insert("repository_index".into(), index);
+                    }
+                    for audience in [GuidanceAudience::Agents, GuidanceAudience::Claude] {
+                        let rendered = render_workflow_block(&runtime, audience).unwrap();
+                        assert_eq!(
+                            rendered.matches(REGISTERED_SERVER_PACKET_GUIDANCE).count(),
+                            usize::from(registered)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn teams_preserve_shared_local_commands_and_add_independent_review_guidance() {
         for sprint in ["on", "off"] {
             for default in [Some("upstream"), None] {
@@ -1378,6 +1423,8 @@ mod tests {
                 "default_line": "main",
                 "current_line": "main",
                 "default_remote": null,
+                "repository_index": 0,
+                "agent_teams": false,
                 "workflow_default_scope": "remote",
                 "task_default_scope": "remote",
                 "change_default_scope": "remote",
@@ -1388,6 +1435,15 @@ mod tests {
         )
         .unwrap();
         let repo = RepoRuntime::discover_from_path(temp.path()).unwrap();
+        for name in [AGENT_HARNESS_PATH, CLAUDE_HARNESS_PATH] {
+            let path = temp.path().join(name);
+            let body = fs::read_to_string(&path).unwrap();
+            fs::write(
+                path,
+                format!("{body}\nCustom registered repository rule.\n"),
+            )
+            .unwrap();
+        }
         let mut executed = false;
 
         let convergence = converge_agent_workflow_harness_with_executor(&repo, |_| {
@@ -1401,5 +1457,24 @@ mod tests {
         let agents = fs::read_to_string(temp.path().join("AGENTS.md")).unwrap();
         assert!(agents.contains("Route: sprint=`on`; scope=`local`"));
         assert!(!agents.contains("required by `solo_remote`"));
+        let bodies = [AGENT_HARNESS_PATH, CLAUDE_HARNESS_PATH].map(|name| {
+            let body = fs::read_to_string(temp.path().join(name)).unwrap();
+            assert_eq!(body.matches(REGISTERED_SERVER_PACKET_GUIDANCE).count(), 1);
+            assert!(body.ends_with("Custom registered repository rule.\n"));
+            body
+        });
+        let repeated = converge_agent_workflow_harness_with_executor(&repo, |request| {
+            assert_eq!(request["local"], true);
+            assert!(request["base_url"].is_null());
+            Ok(json!({"status": "ok"}))
+        })
+        .unwrap();
+        assert_eq!(repeated["refresh"]["changed"], false);
+        for (name, body) in [AGENT_HARNESS_PATH, CLAUDE_HARNESS_PATH]
+            .into_iter()
+            .zip(bodies)
+        {
+            assert_eq!(fs::read_to_string(temp.path().join(name)).unwrap(), body);
+        }
     }
 }

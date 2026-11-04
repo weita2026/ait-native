@@ -2276,8 +2276,6 @@ fn validate_storefront_readme(
         "ait init",
         "## What initialization provides",
         OFFICIAL_WEBSITE,
-        "## Upgrading from 0.x",
-        "There is no `ait install` command in 1.",
         "ait workflow ready <task-id> --apply",
         "ait workflow finish <task-id> --apply",
     ] {
@@ -2437,17 +2435,6 @@ The default local flow finishes dirty work with `ait task finish
 remote flow, the author prepares the selected Patchset and CI evidence with
 `ait workflow ready <task-id> --apply`; a reviewer then runs
 `ait workflow finish <task-id> --apply` for Review, Policy, and atomic closeout.
-
-## Upgrading from 0.x
-
-There is no `ait install` command in 1.x. Install or upgrade `ait-native`
-through your selected package manager, verify it with `ait --version`, then run
-`ait init` only when creating a new 1.0 repository authority. Keep the existing
-Git repository and history, but do not treat a release candidate as proof that
-legacy 0.x `.ait` data can be migrated in place. Preserve the old authority for
-recovery and use a clean clone or a new repository authority unless the
-selected release notes explicitly admit that migration.
-Read the [public transition contract]({documentation_url}#public-0x-to-10-transition).
 "#
     );
     validate_storefront_readme(
@@ -4349,6 +4336,294 @@ mod tests {
         (input, entries)
     }
 
+    fn npm_current_storefront_fixture() -> (FamilyPackageInput, PackageEntries) {
+        let (mut input, mut entries) = npm_language_validation_fixture();
+        input.version = "1.2.1".to_string();
+        input.tag = "v1.2.1".to_string();
+        for component in input.components.values_mut() {
+            component.version.clone_from(&input.version);
+        }
+        for path in [
+            "package/package.json",
+            "package/lib/npm-payload-contract.json",
+            "package/README.md",
+        ] {
+            let bytes = &mut entries.get_mut(path).unwrap().0;
+            *bytes = String::from_utf8(bytes.clone())
+                .unwrap()
+                .replace("1.2.0", "1.2.1")
+                .into_bytes();
+        }
+        // Current copy from the original 1.2.1 portable Node component envelope.
+        entries.get_mut("package/README.md").unwrap().0 = r#"# ait-native
+
+AIT turns an ordinary coding request into an isolated, sprint-bound repository
+change with validation evidence and a recoverable closeout path. It is for
+individual developers and maintainers who use coding agents and want the work
+to remain reviewable without inventing a workflow for every repository.
+
+AIT is repository-language-neutral. It does not detect or change behavior for
+Python, Node.js, Rust, Java, or any other project type.
+
+Official website: <https://ait-native.dev/>
+
+## Install and initialize
+
+```sh
+npm install --global @wa120/ait-native@1.2.1
+ait init
+```
+
+Run `ait init` once inside the repository your coding agent will change. Then
+ask for the outcome normally; for example, “Update the login flow, preserve
+public behavior, and add the relevant tests.”
+
+## What initialization provides
+
+- Repository-local AIT authority and a generated `AGENTS.md` workflow router.
+- Sprint-backed Task creation and a dedicated worktree for each code change.
+- Snapshots, validation evidence, regression attribution through `ait blame`,
+  and recoverable Task finish closeout.
+- An inactive server boundary: local work does not require a running
+  `ait-server`.
+
+The generated `AGENTS.md` block is authoritative for the repository. Describe
+the result to your coding agent normally; it reads that contract and follows
+the configured local or reviewed closeout path.
+
+For a reviewed remote flow, the author prepares the exact Patchset with
+`ait workflow ready <task-id> --apply`; the reviewer records the decision
+and finishes it with `ait workflow finish <task-id> --apply`.
+
+## Node.js API
+
+`@wa120/ait-native` also provides the direct in-process Node-API binding for
+the Rust-owned AIT runtime. JavaScript and TypeScript load the package-owned
+`native/ait_napi.node`; the package does not launch an `ait` executable.
+
+```js
+import { NativeRuntime } from "@wa120/ait-native";
+
+const ait = new NativeRuntime();
+console.log(ait.bindingInfo());
+console.log(ait.taskWorkflowConfigShow("/path/to/repository"));
+```
+
+Chat integrations are retired in AIT 1.2.0. The old `AgentClient`,
+`AgentCapabilities`, runtime methods and native symbols remain available for
+compatibility. Chat calls throw an error containing
+`Chat integrations are retired in AIT 1.2.0` through the existing native error
+channel. Binding metadata advertises only `ait-core`; loading it does not probe
+chat capabilities. Core CLI and Agent Teams remain available in process.
+
+## Package boundary
+
+The package installs one `ait` JavaScript CLI backed by the same addon.
+JavaScript parses terminal arguments and calls named N-API functions. It does
+not forward arguments to Rust CLI parsing or dispatch. `ait-server`
+is distributed separately and is not part of npm. Runtime code does not use
+install hooks, downloads, project-language detection, or `child_process`
+transport.
+
+The source authority for the language CLI boundary is
+`ait-core/docs/product.md#language-cli-binding-contract`. Existing command
+syntax, text/JSON output, errors and exit codes remain part of that contract.
+
+The complete product, platform, source, and licensing contract is published
+at <https://github.com/weita2026/ait-native/blob/main/docs/distribution.md>.
+"#
+        .as_bytes()
+        .to_vec();
+        (input, entries)
+    }
+
+    #[test]
+    fn npm_current_storefront_admits_copy_without_retired_upgrade_section() {
+        let (input, entries) = npm_current_storefront_fixture();
+        let materials = npm_validation_materials();
+        let readme = std::str::from_utf8(&entries["package/README.md"].0).unwrap();
+        assert!(!readme.contains("## Upgrading from 0.x"));
+        assert!(!readme.contains("`ait install`"));
+        assert_eq!(
+            validate_npm_envelope(&input, &entries, &materials)
+                .unwrap()
+                .len(),
+            REGISTRY_TARGETS.len()
+        );
+    }
+
+    #[test]
+    fn npm_current_storefront_retains_copy_identity_and_metadata_guards() {
+        let (input, entries) = npm_current_storefront_fixture();
+        let materials = npm_validation_materials();
+        validate_npm_envelope(&input, &entries, &materials).unwrap();
+        let readme = std::str::from_utf8(&entries["package/README.md"].0).unwrap();
+        for required in [
+            "AIT turns an ordinary coding request into an isolated, sprint-bound repository",
+            "individual developers and maintainers",
+            "ait init",
+            "## What initialization provides",
+            OFFICIAL_WEBSITE,
+            "ait workflow ready <task-id> --apply",
+            "ait workflow finish <task-id> --apply",
+        ] {
+            let mut invalid = entries.clone();
+            invalid.get_mut("package/README.md").unwrap().0 =
+                readme.replace(required, "").into_bytes();
+            let error = validate_npm_envelope(&input, &invalid, &materials).unwrap_err();
+            assert!(error.contains("npm storefront copy is missing"), "{error}");
+            assert!(error.contains(&format!("{required:?}")), "{error}");
+        }
+        for wrong_install in [
+            "npm install --global ait-native@1.2.1",
+            "npm install --global @wa120/ait-native@1.2.0",
+        ] {
+            let mut invalid = entries.clone();
+            invalid.get_mut("package/README.md").unwrap().0 = readme
+                .replace(
+                    "npm install --global @wa120/ait-native@1.2.1",
+                    wrong_install,
+                )
+                .into_bytes();
+            assert!(validate_npm_envelope(&input, &invalid, &materials)
+                .unwrap_err()
+                .contains("npm install --global @wa120/ait-native@1.2.1"));
+        }
+        for (forbidden, expected_error) in [
+            ("@AIT_NPM_VERSION@", "unresolved release token"),
+            ("Jira-like", "legacy claim"),
+            ("parallel AI execution", "legacy claim"),
+            ("90 seconds", "legacy claim"),
+        ] {
+            let mut invalid = entries.clone();
+            invalid
+                .get_mut("package/README.md")
+                .unwrap()
+                .0
+                .extend_from_slice(format!("\n{forbidden}\n").as_bytes());
+            assert!(validate_npm_envelope(&input, &invalid, &materials)
+                .unwrap_err()
+                .contains(expected_error));
+        }
+        for (field, value) in [
+            ("name", "ait-native"),
+            ("version", "1.2.0"),
+            ("description", "fixture"),
+            ("homepage", "https://example.invalid/"),
+            ("license", "MIT"),
+        ] {
+            let mut invalid = entries.clone();
+            let mut package: JsonValue =
+                serde_json::from_slice(&invalid["package/package.json"].0).unwrap();
+            package[field] = json!(value);
+            invalid.get_mut("package/package.json").unwrap().0 =
+                serde_json::to_vec(&package).unwrap();
+            assert!(validate_npm_envelope(&input, &invalid, &materials)
+                .unwrap_err()
+                .contains("portable direct Node-API product"));
+        }
+    }
+
+    #[test]
+    fn python_storefront_generation_uses_current_copy_and_preserves_metadata() {
+        let source = concat!(
+            "Metadata-Version: 2.4\n",
+            "Name: ait-python\n",
+            "Version: 1.2.1\n",
+            "Summary: fixture\n",
+            "License-Expression: Apache-2.0\n",
+            "Requires-Python: >=3.11\n",
+            "Classifier: Programming Language :: Python :: 3\n",
+            "\nstale source description\n",
+        );
+        let license_files = vec!["licenses/ait-core/LICENSE".to_string()];
+        let source_url = "https://github.com/weita2026/ait-native/tree/v1.2.1";
+        let documentation_url = "https://github.com/weita2026/ait-native/blob/v1.2.1/README.md";
+        for language_cli in [true, false] {
+            let generated = rewrite_python_metadata(
+                source.as_bytes(),
+                "1.2.1",
+                "Apache-2.0",
+                &license_files,
+                source_url,
+                documentation_url,
+                language_cli,
+            )
+            .unwrap();
+            let metadata = std::str::from_utf8(&generated).unwrap();
+            let (header, description) = metadata.split_once("\n\n").unwrap();
+            validate_storefront_readme(
+                description,
+                "python -m pip install ait-native==1.2.1",
+                "PyPI",
+            )
+            .unwrap();
+            for retired in [
+                "## Upgrading from 0.x",
+                "`ait install`",
+                "new 1.0 repository authority",
+                "public transition contract",
+                "stale source description",
+            ] {
+                assert!(!description.contains(retired), "retained {retired}");
+            }
+            for field in [
+                "Metadata-Version: 2.4",
+                "Name: ait-native",
+                "Version: 1.2.1",
+                "License-Expression: Apache-2.0",
+                "License-File: licenses/ait-core/LICENSE",
+                "Requires-Python: >=3.11",
+                "Classifier: Programming Language :: Python :: 3",
+                "Description-Content-Type: text/markdown",
+            ] {
+                assert!(header.lines().any(|line| line == field), "missing {field}");
+            }
+            for (name, url) in [
+                ("Homepage", OFFICIAL_WEBSITE.to_string()),
+                ("Quickstart", OFFICIAL_QUICKSTART.to_string()),
+                ("Source", source_url.to_string()),
+                ("Documentation", documentation_url.to_string()),
+                (
+                    "Migration",
+                    format!("{documentation_url}#public-0x-to-10-transition"),
+                ),
+            ] {
+                assert!(header
+                    .lines()
+                    .any(|line| line == format!("Project-URL: {name}, {url}")));
+            }
+            if language_cli {
+                assert!(description.contains("Python `ait` CLI"));
+                assert!(description.contains("named Rust domain APIs through the extension"));
+                assert!(description.contains("recoverable finish path"));
+                assert!(!description.contains("inactive-by-default"));
+            } else {
+                assert!(description.contains("language-neutral `ait` CLI"));
+                assert!(description.contains("inactive-by-default"));
+                assert!(description.contains("recoverable land path"));
+            }
+        }
+        for invalid in [
+            source.replace("Metadata-Version: 2.4", "Metadata-Version: 2.3"),
+            source.replace("Name: ait-python", "Name: other-package"),
+            source.replace("Version: 1.2.1", "Version: 1.2.0"),
+            source.replace("Summary: fixture\n", ""),
+            source.replace("License-Expression: Apache-2.0\n", ""),
+        ] {
+            assert!(rewrite_python_metadata(
+                invalid.as_bytes(),
+                "1.2.1",
+                "Apache-2.0",
+                &license_files,
+                source_url,
+                documentation_url,
+                true,
+            )
+            .is_err());
+        }
+    }
+
     #[test]
     fn npm_language_envelope_requires_exact_inventory_and_scans_terminal_members() {
         let (input, entries) = npm_language_validation_fixture();
@@ -5002,6 +5277,16 @@ mod tests {
             }
             let metadata =
                 String::from_utf8(entries[&format!("{output_info}/METADATA")].0.clone()).unwrap();
+            let (_, description) = metadata.split_once("\n\n").unwrap();
+            assert!(!description.contains("## Upgrading from 0.x"));
+            assert!(!description.contains("`ait install`"));
+            assert!(!description.contains("new 1.0 repository authority"));
+            validate_storefront_readme(
+                description,
+                "python -m pip install ait-native==1.2.0rc1",
+                "PyPI",
+            )
+            .unwrap();
             assert!(metadata.contains("Python `ait` CLI"));
             assert!(!metadata.contains("inactive-by-default"));
             assert_eq!(artifact.evidence["metadata"]["native_script_count"], 0);

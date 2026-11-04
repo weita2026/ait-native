@@ -22,7 +22,7 @@ import { ADDON_FILES, assertPackageFiles, ENVELOPE_FILES } from "../scripts/pack
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_NAME = "@wa120/ait-native";
-const PACKAGE_VERSION = "1.2.1";
+const PACKAGE_VERSION = "1.2.0";
 const PORTABLE_TARGET = "portable";
 const PRODUCT_DESCRIPTION =
   "Agent-first, language-neutral workflow for verified repository changes";
@@ -176,7 +176,7 @@ async function validateContract(target, version) {
           payload.version === version &&
           payload.component === "ait-node" &&
           payload.binding_repository === "ait-core" &&
-          payload.binding_snapshot === "SNP-43AE055BA6AA" &&
+          payload.binding_snapshot === "SNP-EE4210D00D8F" &&
           payload.addon === "native/ait_napi.node"
         );
       },
@@ -541,7 +541,7 @@ async function main() {
   const [action, target, version] = process.argv.slice(2);
   if (process.argv.length !== 5) {
     throw new Error(
-      "usage: node release/release-adapter.mjs {check|build|smoke} <target|portable> 1.2.1",
+      "usage: node release/release-adapter.mjs {check|build|smoke} <target|portable> 1.2.0",
     );
   }
   const handlers = { build, check, smoke };

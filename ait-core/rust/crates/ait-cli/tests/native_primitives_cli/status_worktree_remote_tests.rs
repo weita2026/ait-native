@@ -776,9 +776,20 @@ fn native_remote_add_default_persists_remote_config_and_validates_fixed_server_a
     assert_eq!(added["is_default_pull"].as_i64(), Some(1));
     assert_eq!(added["patch_ci"]["status"], json!("deferred_to_workflow"));
     assert_eq!(added["patch_ci"]["required"], json!(false));
-    assert_eq!(added["patch_ci"]["delivery_policy_default_requires_tests"], json!(true));
+    assert_eq!(
+        added["patch_ci"]["delivery_policy_default_requires_tests"],
+        json!(true)
+    );
     assert_eq!(added["agent_harness"]["status"], json!("synced"));
     assert_eq!(added["agent_harness"]["scope"], json!("local"));
+    for name in ["AGENTS.md", "CLAUDE.md"] {
+        let body = fs::read_to_string(root.join(name)).unwrap();
+        assert_eq!(
+            body.matches("For this registered AIT Server repository")
+                .count(),
+            1
+        );
+    }
     assert_eq!(
         added["agent_harness"]["plan_sync"]["results"][0]["artifact_path"],
         json!("AGENTS.md")
@@ -825,11 +836,43 @@ fn native_remote_add_without_ci_preserves_required_delivery_tests() {
         &root.join(".ait/policy.yaml"),
         "version: 1\npolicy_id: prototype\ndefaults:\n  require_tests: true\n",
     );
+    for name in ["AGENTS.md", "CLAUDE.md"] {
+        let path = root.join(name);
+        let body = fs::read_to_string(&path).unwrap();
+        write_file(
+            &path,
+            &format!("{body}\nCustom registration instructions.\n"),
+        );
+    }
 
     let added = json_output(root, &["remote", "add", "mirror", &base_url, "--json"]);
 
+    assert_eq!(added["agent_harness"]["status"], json!("synced"));
+    assert_eq!(
+        added["agent_harness"]["plan_syncs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    for name in ["AGENTS.md", "CLAUDE.md"] {
+        let body = fs::read_to_string(root.join(name)).unwrap();
+        assert_eq!(
+            body.matches("For this registered AIT Server repository")
+                .count(),
+            1
+        );
+        assert!(body.ends_with("Custom registration instructions.\n"));
+    }
+    let config = parse_json_file(root.join(".ait/config.json"));
+    assert_eq!(config["default_remote"], "origin");
+    assert_eq!(added["is_default_push"], 0);
+    assert_eq!(added["is_default_pull"], 0);
     assert_eq!(added["patch_ci"]["status"], json!("deferred_to_workflow"));
-    assert_eq!(added["patch_ci"]["delivery_policy_default_requires_tests"], json!(true));
+    assert_eq!(
+        added["patch_ci"]["delivery_policy_default_requires_tests"],
+        json!(true)
+    );
     assert_eq!(added["patch_ci"]["required"], json!(false));
     assert_eq!(added["repo_name"], json!(repo_directory_name));
     assert!(!root.join("ci/patch_ci.json").exists());
@@ -877,6 +920,11 @@ fn native_remote_add_does_not_persist_when_server_ensure_fails() {
         .unwrap()
         .to_string();
     configure_remote_patch_ci_snapshot(root);
+    let config_path = root.join(".ait/config.json");
+    let mut config = parse_json_file(&config_path);
+    config.as_object_mut().unwrap().remove("repository_index");
+    write_file(&config_path, &encode_json_pretty(&config));
+    let guidance = ["AGENTS.md", "CLAUDE.md"].map(|name| fs::read(root.join(name)).unwrap());
 
     let mut command = cargo_bin();
     let output = command
@@ -911,6 +959,13 @@ fn native_remote_add_does_not_persist_when_server_ensure_fails() {
 
     let config: JsonValue = parse_json_file(root.join(".ait/config.json"));
     assert_eq!(config["default_remote"].as_str(), Some("origin"));
+    assert!(config.get("repository_index").is_none());
+    for (name, body) in ["AGENTS.md", "CLAUDE.md"].into_iter().zip(guidance) {
+        assert_eq!(fs::read(root.join(name)).unwrap(), body);
+        assert!(!String::from_utf8(body)
+            .unwrap()
+            .contains("For this registered AIT Server repository"));
+    }
 }
 
 #[test]
