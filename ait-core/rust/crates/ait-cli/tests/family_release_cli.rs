@@ -2229,6 +2229,10 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
     assert!(metadata.contains(
         "Project-URL: Migration, https://github.com/weita2026/ait-native/blob/v1.0.0-rc.2/docs/distribution.md#public-0x-to-10-transition\n"
     ));
+    // This description is generated now; the version belongs to the fixture.
+    let (_, storefront_description) = metadata
+        .split_once("\n\n")
+        .expect("repacked wheel METADATA has a description body");
     for storefront_marker in [
         "AIT turns an ordinary coding request into an isolated, sprint-bound repository",
         "individual developers and maintainers",
@@ -2236,14 +2240,23 @@ fn family_package_assembles_registry_channels_without_endpoint_mutation() {
         "ait init",
         "## What initialization provides",
         "Official website: <https://ait-native.dev/>",
-        "## Upgrading from 0.x",
-        "There is no `ait install` command in 1.x.",
         "ait workflow ready <task-id> --apply",
         "ait workflow finish <task-id> --apply",
     ] {
         assert!(
-            metadata.contains(storefront_marker),
+            storefront_description.contains(storefront_marker),
             "missing {storefront_marker}"
+        );
+    }
+    for retired in [
+        "## Upgrading from 0.x",
+        "`ait install`",
+        "new 1.0 repository authority",
+        "public transition contract",
+    ] {
+        assert!(
+            !storefront_description.contains(retired),
+            "retired storefront copy {retired:?}"
         );
     }
     assert!(!metadata.contains("@AIT_"));
